@@ -216,3 +216,67 @@ describe("MyTasksOverviewCard", () => {
     expect(spies.setMainView).toHaveBeenCalledWith("my_tasks");
   });
 });
+
+describe("MyTasksOverviewCard on the start page (rowLimit, showFilter, embedded, onOpenList)", () => {
+  const MANY = Array.from({ length: 12 }, (_, index) =>
+    task(200 + index, { title: `Aufgabe ${200 + index}`, due_date: "2026-09-18" }),
+  );
+
+  function renderEmbedded(props: Parameters<typeof MyTasksOverviewCard>[0], rows: Task[] = MANY) {
+    const context = makeAppContextStub({
+      overrides: {
+        sortedTasks: rows,
+        todayIso: TODAY,
+        isTaskAssignedToCurrentUser: (row: Task) => (row.assignee_ids ?? []).includes(1),
+        taskProjectTitleParts: () => ({ title: "P-1 · Müller", subtitle: "" }),
+        canManageTasks: false,
+        setMainView: vi.fn(),
+        setExpandedMyTaskId: vi.fn(),
+      },
+    });
+    return render(
+      <AppContext.Provider value={context as never}>
+        <MyTasksOverviewCard {...props} />
+      </AppContext.Provider>,
+    );
+  }
+
+  it("keeps today's card when no prop is given", () => {
+    const { container } = renderEmbedded({});
+    expect(container.querySelector("article.overview-card")).not.toBeNull();
+    expect(screen.getAllByRole("listitem")).toHaveLength(MY_TASKS_CARD_ROW_LIMIT);
+    expect(screen.getByLabelText("Aufgaben nach Status filtern")).toBeInTheDocument();
+  });
+
+  it("caps the rows at rowLimit and folds the rest behind „+n weitere“", () => {
+    renderEmbedded({ rowLimit: 3 });
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "+9 weitere" })).toBeInTheDocument();
+  });
+
+  it("hides the status filter with showFilter={false}", () => {
+    renderEmbedded({ showFilter: false });
+    expect(screen.queryByLabelText("Aufgaben nach Status filtern")).toBeNull();
+  });
+
+  it("drops its own card, title and „Alle anzeigen“ when embedded, and keeps the empty copy", () => {
+    const { container } = renderEmbedded({ embedded: true }, []);
+    expect(container.querySelector("article")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Meine Aufgaben" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Alle anzeigen/ })).toBeNull();
+    expect(screen.getByText("Keine Aufgaben.")).toBeInTheDocument();
+  });
+
+  it("still names the overdue count when embedded", () => {
+    renderEmbedded({ embedded: true }, [task(1, { title: "Überfällig", due_date: "2026-09-10" })]);
+    expect(screen.getByText("1 überfällig")).toBeInTheDocument();
+  });
+
+  it("hands the way to the list to onOpenList instead of choosing the page itself", () => {
+    const onOpenList = vi.fn();
+    renderEmbedded({ embedded: true, rowLimit: 3, onOpenList });
+    fireEvent.click(screen.getByRole("button", { name: "Aufgabe öffnen: Aufgabe 200" }));
+    fireEvent.click(screen.getByRole("button", { name: "+9 weitere" }));
+    expect(onOpenList).toHaveBeenCalledTimes(2);
+  });
+});

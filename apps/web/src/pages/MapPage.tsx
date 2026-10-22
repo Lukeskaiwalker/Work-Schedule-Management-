@@ -221,8 +221,8 @@ export function MapPage() {
   }, [user]);
 
   // Toggle a single pin type's visibility. Persist to localStorage
-  // immediately, then fire-and-forget to the server (failure is non-fatal
-  // and handled silently by saveUserPreference).
+  // immediately, then fire-and-forget to the server (failure is non-fatal:
+  // saveUserPreference only warns with the key and resolves false).
   const togglePinType = useCallback(
     (type: MapPinFilter) => {
       setHiddenTypes((prev) => {

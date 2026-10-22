@@ -1,8 +1,8 @@
 /**
  * The Verwaltungszentrum's section tabs: Benutzer · Gruppen · Rollen ·
- * Werkzeuge · Protokoll · Einstellungen · System · Backups.
+ * Werkzeuge · Protokoll · Einstellungen · Startseiten · System · Backups.
  *
- * Eight tabs are ~780 px of strip. On a phone, and on a tablet beside the
+ * Nine tabs are ~880 px of strip. On a phone, and on a tablet beside the
  * sidebar, that is wider than the page, and the page root clips (`html, body
  * { overflow-x: clip }` — it stops the whole page wobbling sideways), so the
  * last tabs were simply unreachable. The strip is therefore its own sideways

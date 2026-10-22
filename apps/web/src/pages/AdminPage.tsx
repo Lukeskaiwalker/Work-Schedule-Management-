@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type FormEvent } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, type FormEvent } from "react";
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
@@ -15,8 +15,14 @@ import { UserStationBadge } from "../components/admin/UserStationBadge";
 import { AdminTabBar, adminTabId, adminTabPanelId } from "../components/admin/AdminTabBar";
 import "../styles/admin-mobile.css";
 
-type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system" | "backups";
+type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "dashboards" | "system" | "backups";
 type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
+
+// Lazy: it brings the start-page editor and @dnd-kit, which only this tab and
+// „Anpassen“ on the overview need (docs/DASHBOARD.md §9.7).
+const AdminDashboardDefaultsPanel = lazy(() =>
+  import("../components/admin/AdminDashboardDefaultsPanel").then((m) => ({ default: m.AdminDashboardDefaultsPanel })),
+);
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
 
@@ -234,7 +240,7 @@ export function AdminPage() {
     ...(canManagePermissions ? (["roles"] as AdminTab[]) : []),
     ...(toolsVisible ? (["tools"] as AdminTab[]) : []),
     ...(canViewAudit ? (["audit"] as AdminTab[]) : []),
-    ...(canManageSettings ? (["settings"] as AdminTab[]) : []),
+    ...(canManageSettings ? (["settings", "dashboards"] as AdminTab[]) : []),
     ...(systemVisible ? (["system"] as AdminTab[]) : []),
     ...(backupsVisible ? (["backups"] as AdminTab[]) : []),
   ];
@@ -317,6 +323,8 @@ export function AdminPage() {
     { id: "tools", label: de ? "Werkzeuge" : "Tools", visible: toolsVisible },
     { id: "audit", label: de ? "Protokoll" : "Audit", visible: canViewAudit },
     { id: "settings", label: de ? "Einstellungen" : "Settings", visible: canManageSettings },
+    // Role default start pages are UI configuration, so `settings:manage` (D16).
+    { id: "dashboards", label: de ? "Startseiten" : "Start pages", visible: canManageSettings },
     { id: "system", label: "System", visible: systemVisible },
     { id: "backups", label: de ? "Backups" : "Backups", visible: backupsVisible },
   ];
@@ -2364,6 +2372,15 @@ export function AdminPage() {
                 )}
               </form>
             </div>
+          </div>
+        )}
+
+        {/* ── Startseiten (role default start pages) ─────────────────────── */}
+        {tab === "dashboards" && (
+          <div className="admin-page-layout" {...tabPanelProps("dashboards")}>
+            <Suspense fallback={<p className="admin-page-muted">{de ? "Lade…" : "Loading…"}</p>}>
+              <AdminDashboardDefaultsPanel />
+            </Suspense>
           </div>
         )}
 

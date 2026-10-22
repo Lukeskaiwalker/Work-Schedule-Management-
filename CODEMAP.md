@@ -102,7 +102,8 @@ All registered in `main.py` under the `/api` prefix.
 
 | File | Handles |
 |------|---------|
-| `auth.py` | Login, logout, `/auth/me`, invite accept, password reset |
+| `auth.py` | Login, logout, `/auth/me`, invite accept, password reset. Every `/auth/me*` route that returns the caller answers `UserMeOut` from `_me_out`; `PATCH /auth/me/preferences` locks the user row |
+| `dashboard.py` | `/dashboard*`: the personal start page's layouts per device, role defaults (`settings:manage`) and `absent-today` (docs/DASHBOARD.md §4) |
 | `admin.py` | User management, runtime settings (weather, SMTP, company branding), system update center |
 | `time_tracking.py` | Clock in/out, break tracking, timesheets, vacations, school absences |
 | `events.py` | `GET /events` — SSE live-update stream (session cookie, or a single-use ticket from `POST /events/ticket`; see docs/LOG_HYGIENE.md) |
@@ -178,7 +179,7 @@ Key state variables in `App.tsx`:
 | File | `mainView` key | Description |
 |------|---------------|-------------|
 | `LoginPage.tsx` | *(no user)* | Login form |
-| `OverviewPage.tsx` | `"overview"` | Dashboard / project overview |
+| `OverviewPage.tsx` | `"overview"` | „Übersicht“, the personal start page: guard + `components/dashboard/DashboardHost` (docs/DASHBOARD.md) |
 | `MaterialsPage.tsx` | `"materials"` | Office material demand tracking |
 | `WerkstattPage.tsx` | `"werkstatt"` | Workshop / inventory dashboard (Paper 7DK-0); placeholder data until backend lands |
 | `ProjectsAllPage.tsx` | `"projects_all"` | All active projects list |
@@ -456,6 +457,35 @@ Owner: "'Waren Ausgabe' only works for tools never for consumables … when we s
 | `apps/api/app/routers/events.py`; `services/event_stream_tickets.py`; `schemas/events.py` | `GET /events` authenticates from a `?ticket=` (single use, 60 s, hashed in `user_action_tokens` purpose `event_stream`, minted by `POST /events/ticket`), else the session cookie; `?token=` is not read (removed 2026-10-11) |
 | `apps/web/src/hooks/useServerEvents.ts` | Browser: bare `/api/events` on the cookie, ticket when the cookie fails to open it; iOS shell: always a ticket. Reconnects itself (a ticket is spent; a non-200 closes an EventSource for good) |
 | `apps/api/app/core/log_redaction.py`; `apps/web/Caddyfile` snippet `(log_redaction)` | One regexp, kept identical in both (a test checks): `?token=`/`?ticket=` values, `/confirm/…`, customer-confirmation, IDS hand-over and calendar-feed tokens, in the URI and the Referer; Caddy also replaces `X-Access-Token` / `X-Mfa-Challenge`. docs/LOG_HYGIENE.md |
+
+## Personal start page — Startseite (2026-10-21, docs/DASHBOARD.md)
+
+The overview became a dashboard each user arranges per device class (Handy < 768 px ≤ Tablet < 1280 px ≤ Desktop). `docs/DASHBOARD.md` is the contract (catalog, sizes, storage, API, copy). No migration: user layouts live in `users.preferences["dashboard_layouts"][device]`, role defaults in 15 `app_settings` rows `dashboard_default:{role}:{device}`.
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/dashboard_catalog.py` | The 20 widgets (`CATALOG`, §1 order), `requires` as an AND of OR-groups, `SHORTCUT_VIEWS` (14, no `materials`), `available_ids_for_user` / `_for_role`, `default_sizes` |
+| `services/dashboard_defaults.py` | Built-in layouts per role × device (§5) and the four shortcut presets; an unknown role falls back to employee |
+| `services/dashboard_layouts.py` | Write rules 2–5 (`DashboardLayoutError` → 422 `{code, message, ids}`), tolerant `parse_stored`, `merge_hidden` (a widget the user may not see keeps its place through saves), resolution user → role → builtin with `role_changed`, storage. Every write takes `db.refresh(user, with_for_update=True)` and replaces the JSON dict, never edits it in place (verified on Postgres 16) |
+| `services/dashboard_absences.py`; `GET /dashboard/absent-today` | Who is absent today, from the planning board's helper, 403 before reading, one row per user with a generic label (`absent` hides sick, accident and free-text reasons) |
+| `schemas/dashboard.py`, `routers/dashboard.py` | The 7 routes; role-default writes are audited (`dashboard.role_default.update` / `.reset`, target `dashboard_default`) |
+| `schemas/user.py` → `HIDDEN_PREFERENCE_KEYS` | `UserOut.preferences` never shows `dashboard_layouts`; the generic preference PATCH ignores and keeps it |
+| `routers/workflow_werkstatt_desktop.py` → `GET /werkstatt/dashboard?preview_limit=1…10` | One shared request for the three Werkstatt widgets; without the parameter each preview keeps its old cap |
+| `core/permissions.py` | ceo, accountant and planning also hold `time:clock` and `time:view_own` (owner, 2026-10-21). `ROLE_PERMISSION_UPGRADES`: what a revision added to role defaults, granted once by `services/runtime_settings.load_role_permissions_from_db` to stored lists older than it (the stored map carries `_revision`) |
+| `apps/web/src/types/dashboard.ts`, `utils/dashboardApi.ts` | Types and id lists (a pytest keeps them equal to the catalog); every `/api/dashboard*` call, responses normalised (no `settings: null`) |
+| `utils/dashboardResourceStore.ts`, `hooks/useDashboardResource.ts`, `components/dashboard/dashboardPolling.ts` | Module-level store per user: one request and one visible-only poller per key, cached data between visits, 403 sticky; keys like `time:current`, `werkstatt:dashboard`. `reload` settles when the new answer is in; `reloadDashboardResources` refetches cached keys after a change elsewhere (App's `refreshTimeData` → `time:*`) |
+| `utils/dashboardSession.ts`, `hooks/useDashboardSessionEnd.ts` | `endDashboardSession()` clears widget data, layouts, drafts and the Schaltplan handoff; App runs it through `useDashboardSessionEnd(token)`, in an effect once the token is gone — never next to `setToken(null)`, or a render with the old token refills the caches |
+| `hooks/useDashboardLayouts.ts`, `hooks/useDashboardDevice.ts`, `utils/dashboardLayout.ts`, `utils/dashboardDrafts.ts` | Layout cache seeded from `localStorage["smpl_dashboard_layouts:{userId}"]` (ids, sizes, settings only), revalidated by `GET /api/dashboard`; device from two width queries, debounced 200 ms; pure layout operations; unsaved edit drafts in memory |
+| `components/dashboard/DashboardHost.tsx`, `DashboardGrid.tsx`, `DashboardWidgetFrame.tsx`, `DashboardWidgetBoundary.tsx`, `DashboardLoadBoundary.tsx`, `retryableLazy.ts`, `widgetRegistry.ts`, `widgetMeta.ts`, `widgetTypes.ts` | Live mode: grid columns from the device (1/2/3), lazy widget per id inside its own error boundary, card chrome (skeleton, error, „Nicht aktuell“, „Keine Berechtigung.“, empty, „+n weitere“), notices (role change, restored draft, saved for another device) |
+| `components/dashboard/DashboardEditMode.tsx`, `DashboardEditor.tsx`, `DashboardAddDialog.tsx` | Edit mode, lazy on „Anpassen“: placeholder tiles, `@dnd-kit` (only in this chunk), move buttons, sizes, „Kacheln wählen“, sticky toolbar, frozen device; reused by the admin panel |
+| `components/dashboard/widgets/{personal,planning,werkstatt,office,shortcuts}/` | One folder and CSS file per group, `index.ts` exports loaders only. Widget CSS sizes with `@container dashboard-widget`, never viewport `@media` (a test checks) |
+| `utils/dashboardTimeApi.ts`, `utils/dashboardPlanning.ts` | Time calls of „Mein Status“ / „Urlaub“; „Mein Einsatz“ filters the context tasks to the user's own |
+| `hooks/useDashboardNavigation.ts`, `utils/schaltplanHandoff.ts`, `hooks/usePendingPanelHandoff.ts` | Widget links follow `navViews` and the mode (`my_tasks` → `office_tasks` in Büro); a Verteiler row opens its panel on SchaltplanPage (30 s handoff, StrictMode-safe) |
+| `components/admin/AdminDashboardDefaultsPanel.tsx`; AdminPage tab `dashboards` „Startseiten“ | Role defaults per role and device in a fixed-width preview frame (390/820/1280 px) |
+| `utils/userUpdate.ts` → `mergeUserUpdate` | Every `setUser(updated)` from a `/auth/me*` answer keeps the permissions an older answer shape lacks |
+| `styles/dashboard.css` | Page, grid, frame, editor, sticky toolbar; hides `.mobile-bottom-nav` while editing |
+
+Tests: `apps/api/tests/test_dashboard_*.py`, `test_auth_me_responses.py`, `test_permissions_role_upgrade.py`, `test_werkstatt_dashboard_preview_limit.py`; web `src/test/dashboard*.test.ts(x)`, `adminDashboardDefaults.test.tsx`, `schaltplanHandoff.test.ts`, `userUpdate.test.ts`, `twoFactorDisableMerge.test.tsx`.
 
 ## Zugangsdaten and Kalender-Abo (2026-09-24)
 

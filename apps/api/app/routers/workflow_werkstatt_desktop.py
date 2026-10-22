@@ -36,7 +36,7 @@ All endpoints:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.core.db import get_db
 from app.core.deps import get_current_user
@@ -82,15 +82,22 @@ router.include_router(bedarfe_router)
 
 @router.get("/dashboard", response_model=WerkstattDashboardOut)
 def get_werkstatt_dashboard(
+    # The personal start page asks once for 10 rows so one shared request
+    # serves every widget size (docs/DASHBOARD.md D15). Without it each
+    # preview keeps its own default (5, on-site groups 3), so the Werkstatt
+    # page gets exactly the payload it always had.
+    preview_limit: int | None = Query(None, ge=1, le=10),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WerkstattDashboardOut:
     """Aggregate dashboard payload: KPIs + reorder preview + recent movements
-    + on-site groups + upcoming BG-Prüfung inspections. Small limits (≤5 each)."""
+    + on-site groups + upcoming BG-Prüfung inspections. Small limits (≤5 each
+    by default, ≤10 with ``preview_limit``)."""
+    limit = {} if preview_limit is None else {"limit": preview_limit}
     return WerkstattDashboardOut(
         kpis=compute_dashboard_kpis(db),
-        reorder_preview=compute_reorder_preview(db),
-        recent_movements=recent_movements(db),
-        on_site_groups=on_site_groups(db),
-        maintenance_entries=maintenance_entries(db),
+        reorder_preview=compute_reorder_preview(db, **limit),
+        recent_movements=recent_movements(db, **limit),
+        on_site_groups=on_site_groups(db, **limit),
+        maintenance_entries=maintenance_entries(db, **limit),
     )

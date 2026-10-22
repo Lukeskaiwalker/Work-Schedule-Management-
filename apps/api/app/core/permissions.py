@@ -326,6 +326,10 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tickets:manage",
         "time:manage",
         "time:view_all",
+        # The start page's „Mein Status“ and „Urlaub“ widgets ask for these
+        # two (owner decision 2026-10-21, docs/DASHBOARD.md Q1). Same below.
+        "time:clock",
+        "time:view_own",
         "time:approve_vacation",
         "time:manage_absences",
         "files:manage",
@@ -344,6 +348,8 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "projects:mark_critical",
         "tasks:view_all",
         "time:view_all",
+        "time:clock",
+        "time:view_own",
         "time:manage_absences",
         "files:view",
         "files:view_protected",
@@ -360,6 +366,8 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tasks:view_all",
         "planning:manage",
         "tickets:manage",
+        "time:clock",
+        "time:view_own",
         "files:view",
         "files:view_protected",
         "chat:manage",
@@ -384,6 +392,28 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
 TEMPLATES: dict[str, dict[str, set[str]]] = {
     "default": PERMISSIONS_BY_ROLE,
 }
+
+# ── Upgrades of stored role lists ─────────────────────────────────────────────
+# A role list saved in the Rechte matrix replaces that role's defaults, and the
+# matrix stores every role on any save, so a permission added to
+# PERMISSIONS_BY_ROLE above never reaches a role whose list was stored before
+# it. Each revision here names what it added to which role's defaults; the
+# load (services/runtime_settings.py) grants it once to stored lists older
+# than the revision. Every write stamps the current revision, so a box an
+# admin unticks afterwards stays unticked. Append only; never renumber.
+ROLE_PERMISSION_UPGRADES: tuple[tuple[int, dict[str, frozenset[str]]], ...] = (
+    # Owner decision 2026-10-21 (docs/DASHBOARD.md Q1): „Mein Status“ and
+    # „Urlaub“ on the office roles' start page.
+    (
+        1,
+        {
+            ROLE_CEO: frozenset({"time:clock", "time:view_own"}),
+            ROLE_ACCOUNTANT: frozenset({"time:clock", "time:view_own"}),
+            ROLE_PLANNING: frozenset({"time:clock", "time:view_own"}),
+        },
+    ),
+)
+ROLE_PERMISSIONS_REVISION: int = ROLE_PERMISSION_UPGRADES[-1][0]
 
 # ── Role-level runtime override ───────────────────────────────────────────────
 # Replaced atomically by set_permissions_override() whenever the admin saves

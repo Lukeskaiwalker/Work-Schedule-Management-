@@ -2,6 +2,7 @@ import { useState } from "react";
 import { apiFetch, ApiError } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import type { User } from "../../types";
+import { mergeUserUpdate } from "../../utils/userUpdate";
 
 type EnrollData = {
   secret: string;
@@ -92,7 +93,9 @@ export function TwoFactorSection() {
         method: "POST",
         body: JSON.stringify({ current_password: disablePassword, code: disableCode.trim() }),
       });
-      setUser(updated);
+      // Merged, not replaced: an answer without the /me-only fields would
+      // otherwise wipe the permissions on screen (utils/userUpdate).
+      setUser(mergeUserUpdate(user, updated));
       setDisablePassword("");
       setDisableCode("");
       setRecoveryCodes(null);

@@ -115,8 +115,11 @@ def test_load_self_heals_overrides_with_stale_entries(
         raw = get_runtime_setting(db, ROLE_PERMISSIONS_KEY)
 
     persisted = json.loads(raw)
-    assert persisted["ceo"] == ["projects:view"]
-    assert persisted["accountant"] == ["finance:view"]
+    # The planted lists carry no revision stamp, so the same write-back also
+    # grants what later revisions added to these roles' defaults
+    # (ROLE_PERMISSION_UPGRADES, test_permissions_role_upgrade.py).
+    assert persisted["ceo"] == ["projects:view", "time:clock", "time:view_own"]
+    assert persisted["accountant"] == ["finance:view", "time:clock", "time:view_own"]
 
 
 def test_normal_round_trip_still_works(client: TestClient, admin_token: str):

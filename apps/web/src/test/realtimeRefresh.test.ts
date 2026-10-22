@@ -103,16 +103,33 @@ describe("which refreshes an event asks for", () => {
   it("everywhere else asks for what it asked for before", () => {
     expect(realtimeRefreshesFor("task.updated", "project")).toEqual(["projectLists", "taskRevision", "activeView"]);
     expect(realtimeRefreshesFor("task.assigned", "project")).toEqual(["projectLists", "activeView"]);
-    expect(realtimeRefreshesFor("project.updated", "overview")).toEqual(["projectLists", "activeView"]);
+    expect(realtimeRefreshesFor("project.updated", "project")).toEqual(["projectLists", "activeView"]);
     expect(realtimeRefreshesFor("message.created", "messages")).toEqual(["threads", "activeView"]);
     expect(realtimeRefreshesFor("thread.updated", "my_tasks")).toEqual(["threads", "activeView"]);
-    // Planning and calendar answer task changes only, so a chat message does
-    // not flash their loading state.
-    for (const view of ["planning", "calendar"]) {
+    // Planning, calendar and the overview answer task changes only, so a chat
+    // message does not flash their loading state.
+    for (const view of ["planning", "calendar", "overview"]) {
       expect(realtimeRefreshesFor("task.deleted", view)).toEqual(["projectLists", "taskRevision", "activeView"]);
       expect(realtimeRefreshesFor("message.created", view)).toEqual(["threads"]);
       expect(realtimeRefreshesFor("project.updated", view)).toEqual(["projectLists"]);
     }
+  });
+
+  it("on the overview, only a task change reloads the open view: the start page's widgets poll or read context", () => {
+    // The open view there is „Meine Aufgaben“ (my tasks). Before the start
+    // page, every event an admin received — chat included — reloaded tasks and
+    // reports; the chat widgets read the thread list, which still refreshes.
+    for (const eventType of ["message.created", "thread.created", "thread.updated"]) {
+      expect(realtimeRefreshesFor(eventType, "overview"), eventType).toEqual(["threads"]);
+      expect(realtimeRefreshesFor(eventType, "overview"), eventType).not.toContain("activeView");
+    }
+    for (const eventType of ["task.created", "task.updated", "task.deleted"]) {
+      expect(realtimeRefreshesFor(eventType, "overview"), eventType).toContain("activeView");
+    }
+    expect(realtimeRefreshesFor("task.updated", "overview")).toEqual(["projectLists", "taskRevision", "activeView"]);
+    // Project widgets read the project lists, which keep their own refresh.
+    expect(realtimeRefreshesFor("project.critical_set", "overview")).toEqual(["projectLists"]);
+    expect(realtimeRefreshesFor("notification.created", "overview")).toEqual(["notifications"]);
   });
 
   it("answers a personal notification with the notifications and nothing else", () => {

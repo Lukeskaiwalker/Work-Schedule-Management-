@@ -14,6 +14,8 @@ const AUDIT_TARGET_LABELS: Record<string, { de: string; en: string }> = {
   clock_entry: { de: "Zeiteintrag", en: "Time entry" },
   company: { de: "Firmendaten", en: "Company" },
   customer_credential: { de: "Zugangsdaten", en: "Credential" },
+  // A role's default start page; the target id reads "{role}:{device}".
+  dashboard_default: { de: "Standard-Startseite", en: "Default start page" },
   employee_group: { de: "Mitarbeitergruppe", en: "Employee group" },
   file: { de: "Datei", en: "File" },
   material_catalog_item: { de: "Katalogartikel", en: "Catalog item" },

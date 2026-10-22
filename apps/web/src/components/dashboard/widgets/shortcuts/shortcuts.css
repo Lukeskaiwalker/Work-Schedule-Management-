@@ -1,0 +1,262 @@
+/* „Schnellzugriff“ and its tile editor on the start page (docs/DASHBOARD.md §9.6).
+ *
+ * Imported by the widget and by „Kacheln wählen“, so it loads with their lazy
+ * chunks. Size things by the card with `@container dashboard-widget (…)`, never
+ * by the viewport: a small widget on a desktop is as narrow as a phone.
+ */
+
+.dashboard-shortcuts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-shortcuts__cell {
+  min-width: 0;
+}
+
+/* ── Klein: one tile per line ─────────────────────────────────────────── */
+
+/* Bleeds into the body's side padding so each line's hover band spans the
+   card while icons stay aligned with the title. */
+.dashboard-shortcuts--list {
+  display: grid;
+  gap: 2px;
+  margin: -4px -8px;
+}
+
+.dashboard-shortcuts__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dashboard-shortcuts__item:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-shortcuts__item .dashboard-shortcuts__label {
+  flex: 1 1 auto;
+}
+
+/* ── Mittel and Groß: a tile grid that fills the card ─────────────────── */
+
+.dashboard-shortcuts--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+/* The old overview's tile, unchanged, so the start page still looks like the
+   one people know. */
+.dashboard-shortcuts__tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 88px;
+  padding: 14px 10px;
+  border: 1px solid #dbe8f5;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.14s, box-shadow 0.14s, border-color 0.14s;
+}
+
+.dashboard-shortcuts__tile:hover,
+.dashboard-shortcuts__tile:focus-visible {
+  transform: translateY(-1px);
+  border-color: #bfd4ea;
+  box-shadow: 0 7px 18px rgba(20, 41, 61, 0.08);
+}
+
+.dashboard-shortcuts__item:focus-visible,
+.dashboard-shortcuts__tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Tile parts ───────────────────────────────────────────────────────── */
+
+.dashboard-shortcuts__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--ink);
+}
+
+.dashboard-shortcuts__icon .nav-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.dashboard-shortcuts__label {
+  min-width: 0;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* Red, as on the old tiles: an open task and an unread message both ask for
+   attention, unlike the frame's neutral blue count. One shade darker than
+   the old #e74c3c, which white 11 px digits did not read on (AA 4.5:1). */
+.dashboard-shortcuts__badge {
+  flex: none;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #c0392b;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-shortcuts__tile .dashboard-shortcuts__badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-shortcuts__tile {
+    transition: none;
+  }
+
+  .dashboard-shortcuts__tile:hover,
+  .dashboard-shortcuts__tile:focus-visible {
+    transform: none;
+  }
+}
+
+/* ── „Kacheln wählen“ (edit mode) ─────────────────────────────────────── */
+
+.dashboard-shortcuts-editor {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.dashboard-shortcuts-editor__option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.dashboard-shortcuts-editor__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.dashboard-shortcuts-editor__count {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dashboard-shortcuts-editor__hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* At twelve the hint is the reason the other boxes stopped working. */
+.dashboard-shortcuts-editor__hint--limit {
+  color: #7a5a12;
+  font-weight: 600;
+}
+
+/* Two columns once the tile is wide enough, without asking the viewport. */
+.dashboard-shortcuts-editor__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-shortcuts-editor__option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dashboard-shortcuts-editor__option:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-shortcuts-editor__option input {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.dashboard-shortcuts-editor__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-shortcuts-editor__mode {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dashboard-shortcuts-editor__option.is-locked {
+  cursor: not-allowed;
+}
+
+.dashboard-shortcuts-editor__option.is-locked:hover {
+  background: none;
+}
+
+.dashboard-shortcuts-editor__option.is-locked input:not(:checked) ~ .dashboard-shortcuts-editor__name {
+  color: var(--muted);
+}

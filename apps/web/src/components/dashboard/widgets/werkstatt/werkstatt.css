@@ -1,0 +1,190 @@
+/* „Werkstatt“ widgets of the start page (docs/DASHBOARD.md §9.6).
+ *
+ * Imported by each widget of this group, so it loads with the widget's lazy
+ * chunk. Size things by the card with `@container dashboard-widget (…)`, never
+ * by the viewport: a small widget on a desktop is as narrow as a phone.
+ */
+
+/* ── Row list (every list widget of the group) ────────────────────────── */
+
+/* The rows run to the card's edges, like the frame's „+n weitere“ bar, so
+   the hover band and the separators line up with it. */
+.dashboard-ws-list {
+  margin: -4px -16px;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-ws-row + .dashboard-ws-row {
+  border-top: 1px solid #edf4ff;
+}
+
+.dashboard-ws-row__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.dashboard-ws-row__body {
+  cursor: pointer;
+}
+
+button.dashboard-ws-row__body:hover {
+  background: #f5f9ff;
+}
+
+button.dashboard-ws-row__body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.dashboard-ws-row__primary {
+  grid-column: 1;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-ws-row__details {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1;
+  gap: 0 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.dashboard-ws-row__detail {
+  overflow-wrap: anywhere;
+}
+
+.dashboard-ws-row__detail + .dashboard-ws-row__detail::before {
+  content: "·";
+  margin-right: 6px;
+}
+
+.dashboard-ws-row__meta {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-ws-row__meta--danger {
+  color: var(--danger);
+}
+
+/* The amber of the Werkstatt return deadlines („Heute zurück“). */
+.dashboard-ws-row__meta--warn {
+  color: #8a6110;
+}
+
+/* A narrow card („Klein“ on a desktop, any card on a phone) stacks the
+   status under the title instead of squeezing the title into a sliver. */
+@container dashboard-widget (max-width: 300px) {
+  .dashboard-ws-row__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-ws-row__meta {
+    grid-column: 1;
+    grid-row: auto;
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+/* ── Lager-Kennzahlen ─────────────────────────────────────────────────── */
+
+.dashboard-ws-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* Four figures side by side once the card has room for them. */
+@container dashboard-widget (min-width: 560px) {
+  .dashboard-ws-kpis--4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.dashboard-ws-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid #e6f0fb;
+  border-radius: 10px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.dashboard-ws-kpi {
+  cursor: pointer;
+}
+
+button.dashboard-ws-kpi:hover {
+  border-color: var(--line);
+  background: #f5f9ff;
+}
+
+button.dashboard-ws-kpi:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.dashboard-ws-kpi__label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-ws-kpi__value {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-ws-kpi__value--warn {
+  color: #8a6110;
+}
+
+.dashboard-ws-kpi__value--danger {
+  color: var(--danger);
+}
+
+.dashboard-ws-kpi__sub {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 15px;
+}

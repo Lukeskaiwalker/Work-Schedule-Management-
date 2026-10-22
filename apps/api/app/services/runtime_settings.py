@@ -353,6 +353,39 @@ def set_company_settings(
 
 # ── Role permissions ──────────────────────────────────────────────────────────
 
+# The stored JSON maps role → list, plus this key: the revision of
+# ROLE_PERMISSION_UPGRADES (core/permissions.py) the lists already include. It
+# lives in the same row so a write and its stamp can never disagree, and two
+# API workers upgrading at startup only ever update one existing row. Not a
+# role, so every loop over roles — and the code before it existed — skips it.
+ROLE_PERMISSIONS_REVISION_FIELD = "_revision"
+
+
+def _stamped(role_lists: dict[str, list[str]]) -> str:
+    from app.core.permissions import ROLE_PERMISSIONS_REVISION
+
+    return json.dumps({**role_lists, ROLE_PERMISSIONS_REVISION_FIELD: ROLE_PERMISSIONS_REVISION})
+
+
+def _upgraded_role_lists(
+    merged: dict[str, list[str]], stored_roles: set[str], stored_revision: object
+) -> dict[str, list[str]]:
+    """The lists with what later revisions added to the defaults of the roles
+    whose list is stored; an unstored role already follows the defaults."""
+    from app.core.permissions import ROLE_PERMISSION_UPGRADES
+
+    # A missing or garbled stamp means "written before any upgrade existed".
+    done = stored_revision if isinstance(stored_revision, int) and not isinstance(stored_revision, bool) else 0
+    upgraded = dict(merged)
+    for revision, grants in ROLE_PERMISSION_UPGRADES:
+        if revision <= done:
+            continue
+        for role, granted in grants.items():
+            if role in stored_roles and role in upgraded:
+                upgraded[role] = sorted(set(upgraded[role]) | granted)
+    return upgraded
+
+
 def load_role_permissions_from_db(db: Session) -> None:
     """Read the stored role-permissions override from the DB and push it into
     the in-process cache in permissions.py.  Call once at startup and after
@@ -366,6 +399,10 @@ def load_role_permissions_from_db(db: Session) -> None:
     the cleaned-up version is also persisted back to the DB so the
     self-heal is permanent — the next process restart starts from a
     valid override.
+
+    2026-10-21 — stored lists older than ROLE_PERMISSIONS_REVISION gain
+    what the newer revisions added to their role's defaults, and are
+    written back stamped, so this happens once per install.
     """
     from app.core.permissions import (
         ALL_PERMISSIONS,
@@ -383,10 +420,14 @@ def load_role_permissions_from_db(db: Session) -> None:
     except Exception:
         set_permissions_override(None)
         return
+    if not isinstance(data, dict):
+        set_permissions_override(None)
+        return
 
     # Build a full map — start from defaults so roles not in the stored JSON
     # are still populated correctly.
     merged: dict[str, list[str]] = {role: sorted(PERMISSIONS_BY_ROLE.get(role, set())) for role in ALL_ROLES}
+    stored_roles: set[str] = set()
     stale_total = 0
     for role, perms in data.items():
         if role not in merged or not isinstance(perms, list):
@@ -396,15 +437,18 @@ def load_role_permissions_from_db(db: Session) -> None:
         clean_perms = [p for p in perms if isinstance(p, str) and p in ALL_PERMISSIONS]
         stale_total += len(perms) - len(clean_perms)
         merged[role] = sorted(set(clean_perms))
+        stored_roles.add(role)
 
-    set_permissions_override(merged)
+    upgraded = _upgraded_role_lists(merged, stored_roles, data.get(ROLE_PERMISSIONS_REVISION_FIELD))
+    set_permissions_override(upgraded)
 
     # Self-heal: write the cleaned version back so a future PUT (which
     # validates against ALL_PERMISSIONS) won't trip on the stale entry
     # the caller never even knew about. Only writes when something was
-    # actually dropped so steady-state startups don't churn the DB.
-    if stale_total > 0:
-        set_runtime_setting(db, ROLE_PERMISSIONS_KEY, json.dumps(merged))
+    # actually dropped or granted, so steady-state startups don't churn
+    # the DB.
+    if stale_total > 0 or upgraded != merged:
+        set_runtime_setting(db, ROLE_PERMISSIONS_KEY, _stamped(upgraded))
         db.commit()
 
 
@@ -435,7 +479,9 @@ def save_role_permissions_to_db(
         valid = [p for p in raw_perms if isinstance(p, str) and p in ALL_PERMISSIONS]
         clean[role] = sorted(set(valid))
 
-    set_runtime_setting(db, ROLE_PERMISSIONS_KEY, json.dumps(clean))
+    # Stamped: these lists come from the in-process map, which the startup
+    # load has already upgraded, so no revision is pending for them.
+    set_runtime_setting(db, ROLE_PERMISSIONS_KEY, _stamped(clean))
     db.commit()
     set_permissions_override(clean)
     return clean
@@ -453,7 +499,8 @@ def reset_role_to_defaults(db: Session, role: str) -> dict[str, list[str]]:
 
     stored.pop(role, None)
 
-    if not stored:
+    # The revision stamp alone is not a customisation worth keeping a row for.
+    if not any(r in ALL_ROLES for r in stored):
         # All roles are back to defaults — remove the setting entirely.
         row = db.get(AppSetting, ROLE_PERMISSIONS_KEY)
         if row:
