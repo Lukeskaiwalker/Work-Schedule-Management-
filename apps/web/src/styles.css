@@ -1316,89 +1316,13 @@ body::before {
   gap: 0.5rem;
 }
 
-/* ── Overview / Dashboard Page ────────────────────── */
-
-.overview-layout {
-  display: grid;
-  gap: 14px;
-  align-content: start;
-}
-
-.overview-shortcuts {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.overview-shortcut-card {
-  min-height: 88px;
-  padding: 14px 10px;
-  background: #fff;
-  border: 1px solid #dbe8f5;
-  border-radius: 12px;
-  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  position: relative;
-  font-weight: 600;
-  font-size: 0.75rem;
-  color: #14293d;
-  text-align: center;
-  transition: transform 0.14s, box-shadow 0.14s, border-color 0.14s;
-}
-
-.overview-shortcut-card:hover,
-.overview-shortcut-card:focus-visible {
-  transform: translateY(-1px);
-  border-color: #bfd4ea;
-  box-shadow: 0 7px 18px rgba(20, 41, 61, 0.08);
-}
-
-.overview-shortcut-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  color: #14293d;
-}
-
-.overview-shortcut-icon .nav-icon {
-  width: 22px;
-  height: 22px;
-}
-
-.overview-shortcut-label {
-  line-height: 1.35;
-}
-
-.overview-shortcut-badge {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  min-width: 20px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: #e74c3c;
-  color: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.overview-main-grid {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  min-height: 0;
-}
-
-.overview-main-grid > * {
-  min-width: 0;
-}
+/* ── Overview card chrome ─────────────────────────── */
+/* The start page itself lives in styles/dashboard.css and the widget group
+   sheets (docs/DASHBOARD.md §9.6). What is left here is card chrome other
+   screens still wear: MyTasksOverviewCard (.overview-card,
+   .overview-projects-*, .overview-state-filter, .overview-open-full-btn),
+   the customer cards (.overview-card-head, .overview-report-*,
+   .overview-empty-state) and the project lists (.overview-list*). */
 
 .overview-card {
   border-radius: 14px;
@@ -1422,137 +1346,11 @@ body::before {
   line-height: 18px;
 }
 
-.overview-primary-column {
-  width: 280px;
-  flex: 0 0 280px;
-  display: grid;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.overview-side-card {
-  width: 240px;
-  flex: 0 0 240px;
-}
-
 .overview-projects-card {
   flex: 1 1 0%;
 }
 
-.overview-status-card {
-  padding-bottom: 18px;
-}
-
-.overview-status-line {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 14px 18px 0;
-  color: #4f657c;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.overview-status-line strong {
-  color: #14293d;
-  font-size: 13px;
-  line-height: 16px;
-}
-
-.overview-status-gauge-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 18px 14px;
-}
-
-.overview-status-gauge {
-  width: 64px;
-  height: 64px;
-  flex: 0 0 auto;
-}
-
-.overview-status-gauge-track {
-  fill: none;
-  stroke: #edf4ff;
-  stroke-width: 8;
-}
-
-.overview-status-gauge-fill {
-  fill: none;
-  stroke: #2f70b7;
-  stroke-width: 8;
-  stroke-linecap: round;
-}
-
-.overview-status-gauge-text {
-  fill: #14293d;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.overview-status-copy {
-  display: grid;
-  gap: 4px;
-  color: #4f657c;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.overview-status-copy small {
-  color: #4f657c;
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.overview-status-actions {
-  display: flex;
-  gap: 8px;
-  padding: 0 18px;
-}
-
-.overview-status-primary-btn,
-.overview-status-secondary-btn {
-  flex: 1 1 0%;
-  min-height: 36px;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.overview-status-primary-btn {
-  border: 1px solid #14293d;
-  background: #14293d;
-  color: #fff;
-}
-
-.overview-status-primary-btn:hover,
-.overview-status-primary-btn:focus-visible {
-  background: #1a3550;
-  border-color: #1a3550;
-}
-
-.overview-status-secondary-btn {
-  border: 1.5px solid #c9d9ea;
-  background: #fff;
-  color: #4f657c;
-}
-
-.overview-status-secondary-btn:hover:not(:disabled),
-.overview-status-secondary-btn:focus-visible:not(:disabled) {
-  border-color: #a9c1d8;
-  background: #f7fbff;
-}
-
-.overview-status-secondary-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.overview-report-list,
-.overview-side-list,
-.overview-projects-list {
+.overview-report-list {
   display: grid;
 }
 
@@ -2487,9 +2285,7 @@ body::before {
   text-align: left;
 }
 
-.overview-report-item:last-child,
-.overview-side-row:last-child,
-.overview-project-row:last-child {
+.overview-report-item:last-child {
   border-bottom: 0;
 }
 
@@ -2529,53 +2325,6 @@ body::before {
   color: #4f657c;
   font-size: 11px;
   line-height: 14px;
-}
-
-.overview-side-row,
-.overview-project-row {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 18px;
-  border: 0;
-  border-bottom: 1px solid #edf4ff;
-  background: transparent;
-  text-align: left;
-}
-
-.overview-side-row:hover,
-.overview-project-row:hover,
-.overview-side-row:focus-visible,
-.overview-project-row:focus-visible {
-  background: #f7fbff;
-}
-
-.overview-side-row {
-  display: block;
-}
-
-.overview-side-row strong,
-.overview-project-row-copy strong {
-  display: block;
-  color: #2f70b7;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 16px;
-  margin-bottom: 2px;
-}
-
-.overview-side-row small,
-.overview-project-row-copy small {
-  display: block;
-  color: #4f657c;
-  font-size: 11px;
-  line-height: 14px;
-}
-
-.overview-project-row-copy {
-  min-width: 0;
-  flex: 1 1 auto;
 }
 
 .overview-projects-head {
@@ -2642,52 +2391,6 @@ body::before {
   border-color: #a9c1d8;
 }
 
-.overview-status-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3px 10px;
-  border-radius: 20px;
-  flex-shrink: 0;
-  border: 1px solid #c9d9ea;
-  background: #edf4ff;
-  color: #4f657c;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 14px;
-  white-space: nowrap;
-}
-
-.overview-status-badge.status-active {
-  border-color: #b5e0c2;
-  background: #e9f7f0;
-  color: #065f46;
-}
-
-.overview-status-badge.status-on-hold {
-  border-color: #c9d9ea;
-  background: #edf4ff;
-  color: #4f657c;
-}
-
-.overview-status-badge.status-completed {
-  border-color: #c4e3ee;
-  background: #e9f8fd;
-  color: #1f667b;
-}
-
-.overview-status-badge.status-archived {
-  border-color: #d8e2ed;
-  background: #f4f7fb;
-  color: #70859a;
-}
-
-.overview-status-badge.status-planning {
-  border-color: #f0c040;
-  background: #fff3cd;
-  color: #856404;
-}
-
 .overview-empty-state {
   padding: 16px 18px;
   color: #4f657c;
@@ -2734,44 +2437,19 @@ body::before {
 }
 
 @media (max-width: 1280px) {
-  .overview-shortcuts {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .overview-main-grid {
-    flex-wrap: wrap;
-  }
-
   .overview-projects-card {
     min-width: min(100%, 560px);
   }
 }
 
 @media (max-width: 1024px) {
-  .overview-shortcuts {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .overview-primary-column,
-  .overview-side-card,
   .overview-projects-card {
     width: 100%;
     flex-basis: 100%;
   }
 }
 
-/* Tablet: without sidebar, 768px has room for 4 shortcut columns */
-@media (min-width: 768px) and (max-width: 899px) {
-  .overview-shortcuts {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .overview-shortcuts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .overview-projects-head {
     align-items: flex-start;
     flex-direction: column;
@@ -2785,15 +2463,6 @@ body::before {
   .overview-open-full-btn {
     width: 100%;
     justify-content: space-between;
-  }
-
-  .overview-status-gauge-row {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .overview-status-actions {
-    flex-direction: column;
   }
 }
 

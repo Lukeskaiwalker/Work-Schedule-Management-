@@ -1,0 +1,205 @@
+/* „Planung & Projekte“ widgets of the start page (docs/DASHBOARD.md §9.6).
+ *
+ * Imported by each widget of this group, so it loads with the widget's lazy
+ * chunk. Size things by the card with `@container dashboard-widget (…)`, never
+ * by the viewport: a small widget on a desktop is as narrow as a phone.
+ *
+ * The four widgets share one row (`.dw-plan-row`): a title, a muted line
+ * under it, an optional note on the right. Class prefix `dw-` keeps them
+ * apart from the planning page's own `.planning-*` rules.
+ */
+
+/* ── Shared rows ──────────────────────────────────────────────────────── */
+
+.dw-plan-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dw-plan-list__item + .dw-plan-list__item {
+  border-top: 1px solid #edf4ff;
+}
+
+.dw-plan-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 0;
+  border: none;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+button.dw-plan-row {
+  cursor: pointer;
+}
+
+button.dw-plan-row:hover {
+  background: #f5f9ff;
+}
+
+button.dw-plan-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.dw-plan-row__main {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dw-plan-row__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dw-plan-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.dw-plan-row__aside {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* „Tag 2/3“ on a multi-day job: which day of it this row is. */
+.dw-plan-row__chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e8f0fb;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+/* ── Mein Einsatz ─────────────────────────────────────────────────────── */
+
+.dw-einsatz {
+  display: grid;
+  gap: 10px;
+}
+
+.dw-einsatz__toggle {
+  display: inline-flex;
+  justify-self: start;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.dw-einsatz__toggle button {
+  min-width: 72px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dw-einsatz__toggle button[aria-pressed="true"] {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(20, 41, 61, 0.12);
+}
+
+.dw-einsatz__toggle button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.dw-einsatz__days {
+  display: grid;
+  gap: 8px;
+}
+
+.dw-einsatz__heading {
+  margin: 0;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.dw-einsatz__heading--today {
+  color: var(--accent);
+}
+
+/* The start time leads the row, in a fixed column so titles line up. */
+.dw-einsatz__time {
+  flex: none;
+  width: 84px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+@container dashboard-widget (max-width: 280px) {
+  .dw-einsatz__time {
+    width: 48px;
+    font-size: 12px;
+  }
+}
+
+/* ── Wer fehlt heute ──────────────────────────────────────────────────── */
+
+.dw-plan-row--static {
+  cursor: default;
+}
+
+.dw-absent__kind {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.dw-absent__kind--vacation {
+  background: var(--ok-bg);
+  color: #1e6b3a;
+}
+
+.dw-absent__kind--school,
+.dw-absent__kind--training {
+  background: #e8f0fb;
+  color: var(--accent);
+}

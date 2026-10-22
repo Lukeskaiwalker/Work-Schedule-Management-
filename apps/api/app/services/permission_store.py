@@ -9,7 +9,8 @@ a stale copy overwrote what another admin had saved.
 
 Storage, three ``app_settings`` rows:
 
-* ``role_permissions``      ``{role: [permission, …]}`` for every role
+* ``role_permissions``      ``{role: [permission, …]}`` for every role, plus
+  ``"_revision": n``, the ``ROLE_PERMISSION_UPGRADES`` the lists include
 * ``user_permissions``      ``{"<user id>": {"extra": […], "denied": […]}}``
 * ``permissions_revision``  a random token, replaced in the same transaction
   as every change to the two rows above. Its row is also the write lock.
@@ -30,6 +31,15 @@ saving at once queue on the lock, and the second builds on the first's commit.
 Whatever writes these rows by another route must replace the revision too, or
 running processes keep their copy. A restored backup brings its own revision
 row (or none), which differs from what the processes hold, so they reload.
+
+Upgrades (2026-10-21, docs/DASHBOARD.md Q1): a stored role list replaces that
+role's defaults, so a permission later added to ``PERMISSIONS_BY_ROLE`` never
+reached it. ``ROLE_PERMISSION_UPGRADES`` (app.core.permissions) names what each
+upgrade added; every read grants the upgrades newer than the map's
+``"_revision"`` stamp to the roles the map stores, the startup load writes that
+back once, and every write stamps the map, so a box an admin unticks later
+stays unticked. Not a role, so every loop over roles -- and every release
+before the stamp -- skips the key.
 """
 
 from __future__ import annotations
@@ -49,6 +59,8 @@ from app.core.permissions import (
     ALL_ROLES,
     PERMISSIONS_BY_ROLE,
     ROLE_ADMIN,
+    ROLE_PERMISSION_UPGRADES,
+    ROLE_PERMISSIONS_REVISION,
     get_effective_permissions,
     install_permission_snapshot,
     make_permission_snapshot,
@@ -61,6 +73,9 @@ logger = logging.getLogger("smpl.permissions")
 ROLE_PERMISSIONS_KEY = "role_permissions"
 USER_PERMISSIONS_KEY = "user_permissions"
 PERMISSIONS_REVISION_KEY = "permissions_revision"
+# Inside the role_permissions JSON: which ROLE_PERMISSION_UPGRADES its lists
+# already include (see the module docstring). Not PERMISSIONS_REVISION_KEY.
+ROLE_PERMISSIONS_REVISION_FIELD = "_revision"
 _STATE_KEYS = (PERMISSIONS_REVISION_KEY, ROLE_PERMISSIONS_KEY, USER_PERMISSIONS_KEY)
 
 _INSERTS = {"postgresql": postgresql.insert, "sqlite": sqlite.insert}
@@ -93,13 +108,22 @@ def load_permissions_from_db(db: Session) -> None:
     (renamed or removed by a later release) are dropped from the stored role
     map, and the cleaned map is written back, so the next PUT, which validates
     against ``ALL_PERMISSIONS``, cannot trip over an entry the admin never saw.
-    Steady-state startups find nothing to drop and write nothing."""
-    if _role_map_has_unknown_entries(_read_json(db, ROLE_PERMISSIONS_KEY)):
+
+    2026-10-21 -- a map stamped before the newest ``ROLE_PERMISSION_UPGRADES``
+    is written back with what the newer upgrades grant (every read applies
+    them already) and stamped, so the grant is stored once per install.
+
+    Steady-state startups find nothing to heal and write nothing."""
+    if _role_map_needs_healing(_read_json(db, ROLE_PERMISSIONS_KEY)):
         _lock(db)
-        stored = _clean_role_map(_read_json(db, ROLE_PERMISSIONS_KEY))
-        if stored is not None:
-            _write_json(db, ROLE_PERMISSIONS_KEY, _full_role_map(stored))
-        _commit_new_revision(db)
+        # Again under the lock: a process starting alongside may have healed it.
+        stored = _read_json(db, ROLE_PERMISSIONS_KEY)
+        if _role_map_needs_healing(stored):
+            healed = _current_role_map(stored) or {}
+            _write_json(db, ROLE_PERMISSIONS_KEY, _stamped(_full_role_map(healed)))
+            _commit_new_revision(db)
+        else:
+            db.commit()  # releases the lock; nothing to write
     _reload(db, force=True)
 
 
@@ -114,7 +138,7 @@ def _reload(db: Session, *, force: bool = False) -> None:
         revision = rows.get(PERMISSIONS_REVISION_KEY) or ""
         if not force and revision == permission_snapshot().revision:
             return  # another thread got there first
-        stored_roles = _clean_role_map(_parse(rows.get(ROLE_PERMISSIONS_KEY), ROLE_PERMISSIONS_KEY))
+        stored_roles = _current_role_map(_parse(rows.get(ROLE_PERMISSIONS_KEY), ROLE_PERMISSIONS_KEY))
         install_permission_snapshot(
             make_permission_snapshot(
                 revision,
@@ -132,9 +156,11 @@ def save_role_permissions(db: Session, role: str, permissions: list[str]) -> Rol
     if role not in ALL_ROLES:
         raise ValueError(f"Unknown role: {role}")
     _lock(db)
-    stored = _clean_role_map(_read_json(db, ROLE_PERMISSIONS_KEY)) or {}
+    # Upgraded before the stamp goes on: the other roles' stored lists may
+    # predate an upgrade (a restored backup) and must not be stamped without it.
+    stored = _current_role_map(_read_json(db, ROLE_PERMISSIONS_KEY)) or {}
     updated = {**_full_role_map(stored), role: _known_permissions(permissions)}
-    _write_json(db, ROLE_PERMISSIONS_KEY, updated)
+    _write_json(db, ROLE_PERMISSIONS_KEY, _stamped(updated))
     _commit_new_revision(db)
     return get_effective_permissions()
 
@@ -142,10 +168,11 @@ def save_role_permissions(db: Session, role: str, permissions: list[str]) -> Rol
 def reset_role_to_defaults(db: Session, role: str) -> RoleMap:
     """Put one role back on its hard-coded defaults; return the effective map."""
     _lock(db)
-    stored = _clean_role_map(_read_json(db, ROLE_PERMISSIONS_KEY)) or {}
+    stored = _current_role_map(_read_json(db, ROLE_PERMISSIONS_KEY)) or {}
     remaining = {name: perms for name, perms in stored.items() if name != role}
-    # Every role back on its defaults: no stored map at all.
-    _write_json(db, ROLE_PERMISSIONS_KEY, remaining or None)
+    # Every role back on its defaults: no stored map at all -- the stamp alone
+    # is no customisation worth a row.
+    _write_json(db, ROLE_PERMISSIONS_KEY, _stamped(remaining) if remaining else None)
     _commit_new_revision(db)
     return get_effective_permissions()
 
@@ -261,6 +288,40 @@ def _clean_role_map(data: Any) -> RoleMap | None:
         for role, perms in data.items()
         if role in ALL_ROLES and isinstance(perms, list)
     }
+
+
+def _upgrade_level(data: Any) -> int:
+    """The newest ROLE_PERMISSION_UPGRADES the stored lists include. A missing
+    or garbled stamp means "written before any upgrade existed"."""
+    level = data.get(ROLE_PERMISSIONS_REVISION_FIELD) if isinstance(data, dict) else None
+    return level if isinstance(level, int) and not isinstance(level, bool) else 0
+
+
+def _current_role_map(data: Any) -> RoleMap | None:
+    """The stored role map, cleaned, with what the upgrades newer than its
+    stamp added to the defaults of the roles it stores; a role it does not
+    store follows the defaults anyway. None when nothing (readable) is stored."""
+    stored = _clean_role_map(data)
+    if stored is None:
+        return None
+    level = _upgrade_level(data)
+    upgraded = dict(stored)
+    for revision, grants in ROLE_PERMISSION_UPGRADES:
+        if revision <= level:
+            continue
+        for role, granted in grants.items():
+            if role in upgraded:
+                upgraded[role] = sorted(set(upgraded[role]) | granted)
+    return upgraded
+
+
+def _role_map_needs_healing(data: Any) -> bool:
+    """Unknown entries to drop, or an upgrade that changes a stored list."""
+    return _role_map_has_unknown_entries(data) or _current_role_map(data) != _clean_role_map(data)
+
+
+def _stamped(role_map: RoleMap) -> dict[str, Any]:
+    return {**role_map, ROLE_PERMISSIONS_REVISION_FIELD: ROLE_PERMISSIONS_REVISION}
 
 
 def _full_role_map(stored: RoleMap) -> RoleMap:

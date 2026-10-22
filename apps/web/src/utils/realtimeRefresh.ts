@@ -32,8 +32,12 @@ export type PacedRealtimeRefresh = Exclude<RealtimeRefresh, "notifications">;
 export const REALTIME_REFRESH_MIN_INTERVAL_MS = 5000;
 
 /** Views that refresh on task changes only, so a chat message or a project
- * edit does not flash their loading state. */
-const TASK_EVENTS_ONLY_VIEWS = new Set(["planning", "calendar"]);
+ * edit does not flash their loading state. The overview's open view is the
+ * user's own tasks; its start-page widgets read the thread and project lists
+ * (refreshed by their own kinds) or poll for themselves. Before, every event
+ * an admin received, chat included, reloaded the overview's tasks and
+ * reports. */
+const TASK_EVENTS_ONLY_VIEWS = new Set(["planning", "calendar", "overview"]);
 
 /** Views that no event feeds. The Zeiterfassung shows clock state, entries,
  * timesheets, vacation and school absences; no event carries any of that, and

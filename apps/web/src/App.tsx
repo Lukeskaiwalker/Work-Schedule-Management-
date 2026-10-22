@@ -241,6 +241,9 @@ import {
   clearDeepLinkParams,
 } from "./utils/auth";
 import { isSessionExpired, millisUntilSessionExpiry } from "./utils/session";
+import { useDashboardSessionEnd } from "./hooks/useDashboardSessionEnd";
+import { refreshDashboardTimeResources } from "./utils/dashboardTimeApi";
+import { mergeUserUpdate } from "./utils/userUpdate";
 import { toIcsUtcDateTime, toIcsDate, escapeIcs } from "./utils/ics";
 import {
   clamp,
@@ -526,10 +529,9 @@ export function App() {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   // v2.5.36 — explicit project members for the Team tab.
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
-  const [recentConstructionReports, setRecentConstructionReports] = useState<RecentConstructionReport[]>([]);
-  // Windowed report history (last N days) for the dedicated "Berichte" view —
-  // kept separate from the Overview card's latest-few list so they don't clobber
-  // each other.
+  // Windowed report history (last N days) for the dedicated "Berichte" view.
+  // The start page's „Neueste Berichte“ widget loads its own latest few
+  // (docs/DASHBOARD.md §9.4), so the two never clobber each other.
   const [reportsWindow, setReportsWindow] = useState<RecentConstructionReport[]>([]);
   const [reportsWindowLoading, setReportsWindowLoading] = useState(false);
   const [projectFolders, setProjectFolders] = useState<ProjectFolder[]>([]);
@@ -1262,24 +1264,6 @@ export function App() {
       .slice(0, 10);
   }, [projectsById, tasks, workspaceMode]);
   const sortedTasks = useMemo(() => sortTasksByDueTime(tasks), [tasks]);
-  const overviewActionCards = useMemo(
-    () =>
-      [
-        { view: "construction", label: mainLabels.construction },
-        { view: "time", label: mainLabels.time },
-        { view: "wiki", label: mainLabels.wiki },
-      ] as const,
-    [mainLabels],
-  );
-  const overviewActionCardWidth = useMemo(() => {
-    const longestWordLength = overviewActionCards.reduce((maxValue, action) => {
-      const longestWord = action.label
-        .split(/\s+/)
-        .reduce((longest, word) => (word.length > longest.length ? word : longest), "");
-      return Math.max(maxValue, longestWord.length);
-    }, 10);
-    return `${Math.max(12, longestWordLength + 4)}ch`;
-  }, [overviewActionCards]);
   const projectTaskAssigneeSuggestions = useMemo(() => {
     const query = projectTaskForm.assignee_query.trim().toLowerCase();
     if (!query) return [];
@@ -2383,6 +2367,11 @@ export function App() {
         localStorage.removeItem("smpl_token");
       });
   }, [token]);
+  // Start-page caches (widget data, layouts, drafts) are module state and
+  // outlive the session; a shared workshop tablet must not show them to the
+  // next person. Cleared once the token is gone from the tree, never next to
+  // setToken(null) — see the hook for why.
+  useDashboardSessionEnd(token);
 
   /* ── Session expiry ───────────────────────────────────────────────────
    * The API mints one 8-hour token at login and offers no refresh endpoint,
@@ -2422,6 +2411,8 @@ export function App() {
     } catch {
       /* private mode / storage disabled — React state still clears below */
     }
+    // The start page forgets this session once the token is gone
+    // (useDashboardSessionEnd above).
     setToken(null);
     setSessionExpired(true);
   }, []);
@@ -3034,23 +3025,16 @@ export function App() {
   // No SSE event carries time data, so this stays a poll — but only while the
   // tab is visible, and a tick never stacks on a refresh still in flight. A
   // visible Zeiterfassung tab is ~120 requests a minute (see utils/timeData).
+  // Not on the overview: its „Mein Status“ widget polls /time/current alone,
+  // every 30 s (docs/DASHBOARD.md §9.4).
   useEffect(() => {
-    if (!token || (mainView !== "time" && mainView !== "overview")) return;
+    if (!token || mainView !== "time") return;
     return startVisiblePolling({
       intervalMs: TIME_DATA_POLL_INTERVAL_MS,
       refreshNow: () => timeDataFlight.run(),
       refreshIfIdle: () => timeDataFlight.runIfIdle(),
     });
   }, [token, mainView, timeTargetUserId, isTimeManager, monthWeekDefs, timeEntriesStartDate, timeEntriesEndDate]);
-
-  useEffect(() => {
-    if (!token || mainView !== "overview") return;
-    void loadRecentConstructionReports(10);
-    const poll = window.setInterval(() => {
-      void loadRecentConstructionReports(10);
-    }, 15000);
-    return () => window.clearInterval(poll);
-  }, [token, mainView]);
 
   async function refreshRealtimeProjectLists() {
     if (!token) return;
@@ -3081,11 +3065,10 @@ export function App() {
         return;
       }
 
+      // The overview's widgets poll for themselves or read context; its own
+      // tasks are all an event changes there (utils/realtimeRefresh).
       if (mainView === "overview" || mainView === "my_tasks") {
         await loadMyTasks();
-        if (mainView === "overview") {
-          await loadRecentConstructionReports(10);
-        }
         return;
       }
 
@@ -3211,19 +3194,28 @@ export function App() {
     },
   });
 
+  /** Saves one preference; `false` when it did not reach the server. The
+   * planning and map callers do not wait for it: their view already changed
+   * and a lost preference only means the old one next time. */
   async function saveUserPreference<K extends keyof import("./types").UserPreferences>(
     key: K,
     value: import("./types").UserPreferences[K],
-  ): Promise<void> {
-    if (!token) return;
+  ): Promise<boolean> {
+    if (!token) return false;
     try {
       const updated = await apiFetch<User>("/auth/me/preferences", token, {
         method: "PATCH",
         body: JSON.stringify({ [key]: value }),
       });
-      setUser(updated);
+      // Merged: an answer without the /me-only fields would otherwise wipe the
+      // permissions on screen (utils/userUpdate).
+      setUser((prev) => mergeUserUpdate(prev, updated));
+      return true;
     } catch {
-      // Preference save failure is non-critical — silently ignore.
+      // The key only, never the value or the error: either can carry what the
+      // user stored (LOG_HYGIENE).
+      console.warn("preference save failed", String(key));
+      return false;
     }
   }
 
@@ -3235,7 +3227,6 @@ export function App() {
       ]);
       setProjects(projectData);
       setOverview(projectOverview);
-      await loadRecentConstructionReports(10);
       if (projectData.length > 0) {
         const visibleProjects = projectData.filter((project) => !isArchivedProjectStatus(project.status));
         const hasVisibleActive = activeProjectId
@@ -4643,21 +4634,9 @@ export function App() {
     }
   }
 
-  async function loadRecentConstructionReports(limit = 10) {
-    try {
-      const rows = await apiFetch<RecentConstructionReport[]>(`/construction-reports/recent?limit=${Number(limit)}`, token);
-      setRecentConstructionReports(rows);
-    } catch (err: any) {
-      setRecentConstructionReports([]);
-      if (err?.status !== 403) {
-        setError(err.message ?? uiText("Letzte Baustellenberichte konnten nicht geladen werden", "Failed to load recent construction reports"));
-      }
-    }
-  }
-
   // Load all reports within the last `days` (the dedicated Berichte history
   // view). Passing `since` puts the backend on the date-range path (sorted by
-  // report_date). 403 is swallowed to an empty list, matching the pattern above.
+  // report_date). 403 is swallowed to an empty list: no report rights, no list.
   async function loadReportsWindow(days = 28) {
     const since = addDaysISO(formatDateISOLocal(new Date()), -Math.max(1, Number(days)));
     setReportsWindowLoading(true);
@@ -4802,6 +4781,10 @@ export function App() {
    * more right after it and resolve with that, so a caller that just saved
    * always gets data fetched after its save. Never rejects. */
   function refreshTimeData(): Promise<void> {
+    // Every caller has just changed the time state. The start page keeps its
+    // own copy of it (Mein Status, Urlaub, the office time widgets) and would
+    // show the old one when the user comes back within its poll interval.
+    if (user) refreshDashboardTimeResources(user.id);
     return timeDataFlight.run();
   }
 
@@ -8156,7 +8139,6 @@ export function App() {
           await loadProjectOverview(targetProjectId);
         }
         setOverview(await apiFetch<any[]>("/projects-overview", token));
-        await loadRecentConstructionReports(10);
       } catch {
         setNotice(
           language === "de"
@@ -8470,7 +8452,9 @@ export function App() {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
-      setUser(updated);
+      // Merged: an answer without the /me-only fields would otherwise wipe the
+      // permissions on screen (utils/userUpdate).
+      setUser((prev) => mergeUserUpdate(prev, updated));
       setProfileSettingsForm({
         full_name: updated.full_name,
         email: updated.email,
@@ -9885,10 +9869,8 @@ export function App() {
     requestFileUploadWithFiles,
 
     // ── Construction reports ──────────────────────────────────────────────────
-    recentConstructionReports,
     reportsWindow,
     reportsWindowLoading,
-    setRecentConstructionReports,
     reportProjectId,
     setReportProjectId,
     reportDraft,
@@ -10228,8 +10210,6 @@ export function App() {
     filteredProjectsAll,
     recentAssignedProjects,
     sortedTasks,
-    overviewActionCards,
-    overviewActionCardWidth,
     projectTaskAssigneeSuggestions,
     taskModalAssigneeSuggestions,
     taskEditAssigneeSuggestions,
@@ -10468,7 +10448,6 @@ export function App() {
     loadFiles,
     loadProjectFolders,
     loadConstructionReportFiles,
-    loadRecentConstructionReports,
     loadReportsWindow,
     loadWikiLibraryFiles,
     loadThreads,

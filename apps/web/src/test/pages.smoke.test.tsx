@@ -21,6 +21,7 @@
 import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { AppContext } from "../context/AppContext";
+import { endDashboardSession } from "../utils/dashboardSession";
 import { makeAppContextStub } from "./appContextStub";
 
 import { WerkstattPage } from "../pages/WerkstattPage";
@@ -48,7 +49,37 @@ type PageCase = {
    * the view: that is also what a user does.
    */
   hidden: Record<string, unknown>;
+  /** Runs before the first render; returns the teardown, which runs even when the case fails. */
+  setup?: () => () => void;
 };
+
+/**
+ * The start page asks `GET /api/dashboard` on mount, and the global stub's
+ * `[]` is not a dashboard. Answered for real, so the case exercises the page's
+ * normal path rather than its load error; the module-level caches it fills
+ * are dropped afterwards.
+ */
+function stubDashboardFetch(): () => void {
+  const layout = (device: string) => ({ device, version: 1, source: "builtin", updated_at: null, role_changed: false, widgets: [] });
+  // Swapped by hand and put back exactly: the global stub is itself a mock
+  // (setup.ts), and spying on a mock would rewrite it for every later case.
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/dashboard") {
+      const body = {
+        layouts: { mobile: layout("mobile"), tablet: layout("tablet"), desktop: layout("desktop") },
+        available_widgets: [],
+        default_sizes: {},
+      };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return original(input, init);
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = original;
+    endDashboardSession();
+  };
+}
 
 const PAGES: PageCase[] = [
   // Werkstatt mounts every sub-page at once and each self-gates on its tab,
@@ -76,14 +107,14 @@ const PAGES: PageCase[] = [
   // stays mounted while mainView changes and its own guard is what flips.
   { name: "Zeiterfassung", Component: TimePage, visible: { mainView: "time" }, hidden: { mainView: "overview" } },
   { name: "Kunden", Component: CustomersPage, visible: { mainView: "customers" }, hidden: { mainView: "overview" } },
-  // The overview now carries the "Meine Aufgaben" card, which calls
-  // taskProjectTitleParts as a function; the stub's plural-name guess would
-  // hand it an array, so the entry supplies a real one.
+  // The overview is the personal start page (DashboardHost), which loads its
+  // layouts on mount; see stubDashboardFetch.
   {
     name: "Übersicht",
     Component: OverviewPage,
-    visible: { mainView: "overview", taskProjectTitleParts: () => ({ title: "", subtitle: "" }) },
+    visible: { mainView: "overview" },
     hidden: { mainView: "my_tasks" },
+    setup: stubDashboardFetch,
   },
   { name: "Meine Aufgaben", Component: MyTasksPage, visible: { mainView: "my_tasks" }, hidden: { mainView: "overview" } },
   { name: "Aufgaben (Büro)", Component: OfficeTasksPage, visible: { mainView: "office_tasks" }, hidden: { mainView: "overview" } },
@@ -102,19 +133,24 @@ function providerFor(Component: PageCase["Component"], context: Record<string, u
 }
 
 describe("pages mount without crashing", () => {
-  for (const { name, Component, visible, hidden } of PAGES) {
+  for (const { name, Component, visible, hidden, setup } of PAGES) {
     it(`${name} survives being shown, hidden and shown again`, () => {
-      const { rerender } = render(providerFor(Component, visible));
+      const teardown = setup?.();
+      try {
+        const { rerender } = render(providerFor(Component, visible));
 
-      // Same instance throughout. A hook below the early return changes the
-      // hook count on these transitions and React throws — which is exactly
-      // how it reaches a user: mid-session, on navigation, not on first load.
-      expect(() => {
-        rerender(providerFor(Component, hidden));
-        rerender(providerFor(Component, visible));
-        rerender(providerFor(Component, hidden));
-        rerender(providerFor(Component, visible));
-      }).not.toThrow();
+        // Same instance throughout. A hook below the early return changes the
+        // hook count on these transitions and React throws — which is exactly
+        // how it reaches a user: mid-session, on navigation, not on first load.
+        expect(() => {
+          rerender(providerFor(Component, hidden));
+          rerender(providerFor(Component, visible));
+          rerender(providerFor(Component, hidden));
+          rerender(providerFor(Component, visible));
+        }).not.toThrow();
+      } finally {
+        teardown?.();
+      }
     });
   }
 });

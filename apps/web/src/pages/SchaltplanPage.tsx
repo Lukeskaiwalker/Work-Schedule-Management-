@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAppContext } from "../context/AppContext";
+import { usePendingPanelHandoff } from "../hooks/usePendingPanelHandoff";
 import { DeviceInspector } from "../components/schaltplan/DeviceInspector";
 import { DevicePalette } from "../components/schaltplan/DevicePalette";
 import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
@@ -295,6 +296,8 @@ export function SchaltplanPage() {
     },
     [openPanel],
   );
+  // A „Zuletzt bearbeitete Verteiler“ row on the start page opens its panel here.
+  usePendingPanelHandoff(pickRecent, panel?.id ?? null);
 
   // ── Device operations (selection and sheets; the edits live in the hook) ─
 

@@ -140,10 +140,12 @@ export interface AppContextValue {
   // ── Current user ───────────────────────────────────────────────────────────
   user: User | null;
   setUser: (user: User | null) => void;
+  /** `false` when the preference did not reach the server (it warns with the
+   *  key only). Callers need not wait: the view has already changed. */
   saveUserPreference: <K extends keyof import("../types").UserPreferences>(
     key: K,
     value: import("../types").UserPreferences[K],
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   mainView: MainView;
@@ -476,10 +478,8 @@ export interface AppContextValue {
   requestFileUploadWithFiles: (files: File[]) => void;
 
   // ── Construction reports ──────────────────────────────────────────────────────
-  recentConstructionReports: RecentConstructionReport[];
   reportsWindow: RecentConstructionReport[];
   reportsWindowLoading: boolean;
-  setRecentConstructionReports: (reports: RecentConstructionReport[]) => void;
   reportProjectId: string;
   setReportProjectId: (id: string | ((current: string) => string)) => void;
   reportDraft: ReportDraft;
@@ -931,8 +931,6 @@ export interface AppContextValue {
   filteredProjectsAll: any[];
   recentAssignedProjects: Project[];
   sortedTasks: Task[];
-  overviewActionCards: ReadonlyArray<{ view: string; label: string }>;
-  overviewActionCardWidth: string;
   projectTaskAssigneeSuggestions: AssignableUser[];
   taskModalAssigneeSuggestions: AssignableUser[];
   taskEditAssigneeSuggestions: AssignableUser[];
@@ -1210,7 +1208,6 @@ export interface AppContextValue {
   loadFiles: (projectId: number) => Promise<void>;
   loadProjectFolders: (projectId: number) => Promise<void>;
   loadConstructionReportFiles: (projectId: number | null) => Promise<void>;
-  loadRecentConstructionReports: (limit?: number) => Promise<void>;
   loadReportsWindow: (days?: number) => Promise<void>;
   loadWikiLibraryFiles: (search?: string) => Promise<void>;
   loadThreads: () => Promise<void>;

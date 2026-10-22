@@ -1,0 +1,180 @@
+/* „Büro“ widgets of the start page (docs/DASHBOARD.md §9.6).
+ *
+ * Imported by each widget of this group, so it loads with the widget's lazy
+ * chunk. Size things by the card with `@container dashboard-widget (…)`, never
+ * by the viewport: a small widget on a desktop is as narrow as a phone.
+ */
+
+/* ── Lists ─────────────────────────────────────────────────────────────── */
+
+.dashboard-office__list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-office__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  border-top: 1px solid #edf4ff;
+}
+
+.dashboard-office__row:first-child {
+  border-top: none;
+}
+
+/* Rows that only inform: same rhythm as the tappable ones. */
+.dashboard-office__row--static {
+  min-height: 44px;
+  padding: 8px 0;
+}
+
+/* The whole row is the tap target (a phone card has no room for a separate
+   link). It bleeds into the body's side padding so the hover band spans the
+   card, while the text stays aligned with the title. */
+.dashboard-office__row-button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: calc(100% + 16px);
+  min-width: 0;
+  min-height: 44px;
+  margin: 0 -8px;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dashboard-office__row-button:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-office__row-button:focus-visible,
+.dashboard-office__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.dashboard-office__row-button:disabled {
+  cursor: default;
+}
+
+.dashboard-office__row-button:disabled:hover {
+  background: none;
+}
+
+.dashboard-office__main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dashboard-office__primary {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-office__secondary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+/* A chat preview is a sentence cut anywhere; one line of it is enough. */
+.dashboard-office__clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Hours on the right, digits under digits. */
+.dashboard-office__figure {
+  flex: none;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A chat's unread count: the frame badge's shape, one size down. */
+.dashboard-office__count {
+  flex: none;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Report links ─────────────────────────────────────────────────────── */
+
+.dashboard-office__links {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.dashboard-office__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dashboard-office__link:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-office__pending {
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* A narrow card (Klein on a desktop, any card on a phone): the links go
+   under the text instead of squeezing it to a word per line. */
+@container dashboard-widget (max-width: 359px) {
+  .dashboard-office__row--report {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding-bottom: 0;
+  }
+
+  .dashboard-office__row--report .dashboard-office__links {
+    margin-left: -8px;
+  }
+}

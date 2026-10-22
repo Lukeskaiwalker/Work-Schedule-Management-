@@ -1,0 +1,744 @@
+/* ── Personal start page (Übersicht) ─────────────────────────────────────
+ *
+ * Contract: docs/DASHBOARD.md. This sheet holds the widget frame, the page
+ * (host, notices, grid), the editor with its sticky toolbar and dialogs, and
+ * the rule that hides the mobile bottom bar while editing.
+ *
+ * No viewport width decides anything here. Columns and the toolbar's place
+ * follow `data-device`, the device the layout belongs to: the admin previews
+ * a phone layout on a desktop, and edit mode keeps its device while the
+ * window changes (D10).
+ *
+ * Widget internals do not belong here. Each widget group has its own sheet
+ * under components/dashboard/widgets/, which rides in that group's lazy chunk
+ * and sizes things with `@container dashboard-widget (…)` only — a small
+ * widget on a desktop is as narrow as a phone, so the viewport says nothing
+ * about the room a widget has (§9.6).
+ *
+ * Page-local sheet rather than an addition to src/styles.css, which is shared
+ * by every area of the app.
+ */
+
+/* ── Frame ─────────────────────────────────────────────────────────────── */
+
+.dashboard-widget {
+  container: dashboard-widget / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid #e6f0fb;
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  overflow: hidden;
+}
+
+.dashboard-widget__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 4px 8px 4px 16px;
+  border-bottom: 1px solid #edf4ff;
+}
+
+/* Title and count read as one phrase („Meine Ausleihen 2“); the stale flag
+   and the header link sit apart on the right. */
+.dashboard-widget__heading {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dashboard-widget__title {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-widget__badge {
+  flex: none;
+  min-width: 22px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Data from before a failed refresh: still readable, but not presented as
+   current. The amber of the Werkstatt stale strip, for the same meaning. */
+.dashboard-widget__stale {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fff8e8;
+  color: #7a5a12;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.dashboard-widget__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px 16px 14px;
+}
+
+.dashboard-widget__note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* ── Load states ──────────────────────────────────────────────────────── */
+
+.dashboard-widget__error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.dashboard-widget__error p {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-widget__skeleton {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.dashboard-widget__skeleton-row {
+  display: block;
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #e3ecf6 0%, #f1f6fc 50%, #e3ecf6 100%);
+  background-size: 200% 100%;
+  animation: dashboard-widget-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Uneven lengths, so the placeholder reads as rows of text, not as bars.
+   Child 1 is the screen-reader text, so the rows are children 2–4. */
+.dashboard-widget__skeleton-row:nth-child(3) { width: 84%; }
+.dashboard-widget__skeleton-row:nth-child(4) { width: 68%; }
+
+@keyframes dashboard-widget-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* ── Controls (each at least 44 px tall: these cards are used on phones) ─ */
+
+.dashboard-widget__action,
+.dashboard-widget__more {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dashboard-widget__action {
+  flex: none;
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 8px;
+}
+
+.dashboard-widget__more {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  border-top: 1px solid #edf4ff;
+  text-align: left;
+}
+
+.dashboard-widget__retry {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dashboard-widget__action:hover,
+.dashboard-widget__more:hover {
+  background: #f5f9ff;
+}
+
+.dashboard-widget__retry:hover {
+  background: var(--surface-2);
+}
+
+.dashboard-widget__action:focus-visible,
+.dashboard-widget__more:focus-visible,
+.dashboard-widget__retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-widget__skeleton-row {
+    animation: none;
+  }
+}
+
+/* ── Page ──────────────────────────────────────────────────────────────── */
+
+.dashboard-host {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  min-width: 0;
+}
+
+.dashboard-host__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-host__status,
+.dashboard-host__empty,
+.dashboard-editor__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dashboard-host__empty,
+.dashboard-editor__empty {
+  padding: 28px 20px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: center;
+}
+
+/* Before the first answer: one calm block, not a fake grid of cards whose
+   number would be a guess. */
+.dashboard-host__placeholder {
+  height: 180px;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, #e3ecf6 0%, #f1f6fc 50%, #e3ecf6 100%);
+  background-size: 200% 100%;
+  animation: dashboard-widget-shimmer 1.4s ease-in-out infinite;
+}
+
+/* ── Buttons (at least 44 × 44 px: the start page is used on phones) ──── */
+
+.dashboard-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.dashboard-button:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.dashboard-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dashboard-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dashboard-button--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.dashboard-button--primary:hover:not(:disabled) {
+  background: #275f9c;
+}
+
+.dashboard-button--danger {
+  color: var(--danger);
+}
+
+/* ── Notices ───────────────────────────────────────────────────────────── */
+
+.dashboard-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid #cfe0f3;
+  border-radius: 12px;
+  background: #f3f8fe;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-notice--error {
+  border-color: #efc7c7;
+  background: #fdf4f4;
+  color: var(--danger);
+}
+
+.dashboard-notice--success {
+  border-color: var(--ok-line);
+  background: var(--ok-bg);
+}
+
+.dashboard-notice__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.dashboard-notice__error {
+  flex-basis: 100%;
+  color: var(--danger);
+}
+
+/* ── Grid (D10: columns from the device, never from the viewport) ─────── */
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  align-items: start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.dashboard-grid[data-device="tablet"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dashboard-grid[data-device="desktop"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.dashboard-grid__item {
+  grid-column: span 1;
+  min-width: 0;
+}
+
+.dashboard-grid__item[data-span="2"] {
+  grid-column: span 2;
+}
+
+.dashboard-grid__item[data-span="3"] {
+  grid-column: span 3;
+}
+
+/* ── Edit mode ─────────────────────────────────────────────────────────── */
+
+/* The bottom bar would cover the phone toolbar and invite leaving mid-edit;
+   the same pattern the app uses while a modal is open. */
+.app-shell:has(.dashboard-host--editing) .mobile-bottom-nav {
+  display: none !important;
+}
+
+.dashboard-edit {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dashboard-edit__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.dashboard-edit__heading {
+  min-width: 0;
+}
+
+.dashboard-edit__title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.dashboard-edit__hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-badge {
+  flex: none;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.dashboard-badge--personal {
+  background: var(--ok-bg);
+  color: #256b45;
+}
+
+.dashboard-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Opaque, never frosted, like the Berichte toolbar. Sticky at the top on
+   tablet and desktop; on phones it follows the tiles in the DOM and sticks
+   to the bottom, under the thumb and above the home indicator. */
+.dashboard-editor__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 10px rgba(20, 41, 61, 0.08);
+}
+
+/* Two rows of two on phones — add and reset, then cancel and done — so the
+   bar costs about a seventh of the screen, not a quarter. */
+.dashboard-editor[data-device="mobile"] .dashboard-editor__toolbar {
+  top: auto;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+}
+
+.dashboard-editor[data-device="mobile"] .dashboard-editor__spacer {
+  display: none;
+}
+
+.dashboard-editor__toolbar .dashboard-button {
+  text-align: center;
+}
+
+/* Pushes „Abbrechen“ and „Fertig“ to the end of the bar. */
+.dashboard-editor__spacer {
+  flex: 1 1 0;
+}
+
+.dashboard-edit-tile {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px;
+  border: 1px dashed #9dbbe0;
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.dashboard-edit-tile--dragging {
+  position: relative;
+  z-index: var(--z-sticky);
+  border-style: solid;
+  border-color: var(--accent);
+  box-shadow: 0 14px 32px rgba(20, 41, 61, 0.18);
+}
+
+.dashboard-edit-tile__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The only drag activator. `touch-action: none` here and nowhere else on
+   the tile, so a finger anywhere else still scrolls the page (§8.3). */
+.dashboard-edit-tile__handle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.dashboard-edit-tile__handle svg {
+  fill: currentColor;
+}
+
+.dashboard-edit-tile__handle:active {
+  cursor: grabbing;
+}
+
+.dashboard-edit-tile__handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dashboard-edit-tile__text {
+  min-width: 0;
+}
+
+.dashboard-edit-tile__title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-edit-tile__desc {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.dashboard-edit-tile__hidden {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #7a5a12;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.dashboard-edit-tile__controls,
+.dashboard-edit-tile__move,
+.dashboard-edit-tile__sizes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.dashboard-edit-tile__controls {
+  gap: 8px 12px;
+}
+
+/* Removing sits apart from moving, at the far end of the row. */
+.dashboard-edit-tile__remove {
+  margin-left: auto;
+}
+
+.dashboard-edit-tile__label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dashboard-edit-tile__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* A native radio under a 44 px pill: keyboard and screen readers get the
+   radiogroup, fingers get a target they can hit. */
+.dashboard-size-option {
+  position: relative;
+  display: inline-flex;
+}
+
+.dashboard-size-option input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.dashboard-size-option span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dashboard-size-option input:checked + span {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.dashboard-size-option input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dashboard-edit-tile__settings {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.dashboard-edit-tile__settings-body {
+  width: 100%;
+}
+
+/* The tile chooser's chunk failed to download: the copy and its retry. */
+.dashboard-edit-tile__load-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Dialogs (on the app's .modal-backdrop / .modal-card) ──────────────── */
+
+.dashboard-add-dialog,
+.dashboard-confirm {
+  gap: 14px;
+  padding: 18px;
+}
+
+.dashboard-add-dialog:focus {
+  outline: none;
+}
+
+.dashboard-add-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-add-dialog__head h3,
+.dashboard-confirm h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.dashboard-add-dialog__group h4 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashboard-add-dialog__list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-add-dialog__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e6f0fb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.dashboard-add-dialog__text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dashboard-add-dialog__text span,
+.dashboard-add-dialog__empty,
+.dashboard-confirm p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dashboard-confirm__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-host__placeholder {
+    animation: none;
+  }
+
+  /* dnd-kit sets the transition inline; only !important outranks it. */
+  .dashboard-edit-tile {
+    transition: none !important;
+  }
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -30,6 +30,13 @@ class UserUpdate(BaseModel):
     workspace_lock: str | None = None  # "construction" | "office" | null (null clears the lock)
     # v2.5.23 — admin-only toggle for per-user programmatic API access.
     api_access_enabled: bool | None = None
+
+
+# Preference keys that only their own API reads (docs/DASHBOARD.md, D19). The
+# dashboard layouts are stored unfiltered (hidden widgets survive saves), so
+# echoing them in /auth/me and the admin user list would both bloat every
+# user payload and show widgets the user is no longer allowed to see.
+HIDDEN_PREFERENCE_KEYS: frozenset[str] = frozenset({"dashboard_layouts"})
 
 
 class UserOut(BaseModel):
@@ -65,6 +72,15 @@ class UserOut(BaseModel):
     mfa_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("preferences", mode="before")
+    @classmethod
+    def _drop_hidden_preferences(cls, value: Any) -> dict[str, Any]:
+        # A new dict, never the ORM row's own: removing the key from that in
+        # place would drop the layouts from the next save that copies it.
+        if not isinstance(value, dict):
+            return {}
+        return {key: item for key, item in value.items() if key not in HIDDEN_PREFERENCE_KEYS}
 
 
 class UserMeOut(UserOut):

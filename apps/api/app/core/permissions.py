@@ -328,6 +328,10 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tickets:manage",
         "time:manage",
         "time:view_all",
+        # The start page's „Mein Status“ and „Urlaub“ widgets ask for these
+        # two (owner decision 2026-10-21, docs/DASHBOARD.md Q1). Same below.
+        "time:clock",
+        "time:view_own",
         "time:approve_vacation",
         "time:manage_absences",
         "files:manage",
@@ -346,6 +350,8 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "projects:mark_critical",
         "tasks:view_all",
         "time:view_all",
+        "time:clock",
+        "time:view_own",
         "time:manage_absences",
         "files:view",
         "files:view_protected",
@@ -362,6 +368,8 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tasks:view_all",
         "planning:manage",
         "tickets:manage",
+        "time:clock",
+        "time:view_own",
         "files:view",
         "files:view_protected",
         "chat:manage",
@@ -386,6 +394,34 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
 TEMPLATES: dict[str, dict[str, set[str]]] = {
     "default": PERMISSIONS_BY_ROLE,
 }
+
+# ── Upgrades of stored role lists ─────────────────────────────────────────────
+# A role list saved in the Rechte matrix replaces that role's defaults, and the
+# matrix stores every role on any save, so a permission added to
+# PERMISSIONS_BY_ROLE above never reaches a role whose list was stored before
+# it. Each revision here names what it added to which role's defaults;
+# app.services.permission_store grants it to stored lists older than the
+# revision -- on every read, and written back once at startup. Every write
+# stamps the current revision, so a box an admin unticks afterwards stays
+# unticked. Append only; never renumber.
+#
+# Not the store's `permissions_revision` row: that is a random token that
+# changes with every save so other processes reload; this is a number inside
+# the role_permissions JSON ("_revision") that says which upgrades the stored
+# lists already include.
+ROLE_PERMISSION_UPGRADES: tuple[tuple[int, dict[str, frozenset[str]]], ...] = (
+    # Owner decision 2026-10-21 (docs/DASHBOARD.md Q1): „Mein Status“ and
+    # „Urlaub“ on the office roles' start page.
+    (
+        1,
+        {
+            ROLE_CEO: frozenset({"time:clock", "time:view_own"}),
+            ROLE_ACCOUNTANT: frozenset({"time:clock", "time:view_own"}),
+            ROLE_PLANNING: frozenset({"time:clock", "time:view_own"}),
+        },
+    ),
+)
+ROLE_PERMISSIONS_REVISION: int = ROLE_PERMISSION_UPGRADES[-1][0]
 
 # ── Runtime overrides: this process's copy ────────────────────────────────────
 # Role- and user-level overrides are stored in the database

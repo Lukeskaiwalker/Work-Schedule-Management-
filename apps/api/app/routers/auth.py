@@ -75,6 +75,28 @@ def _can_update_recent_own_time_entries(db: Session, user_id: int) -> bool:
     ).first() is not None
 
 
+def _me_out(db: Session, user: User) -> UserMeOut:
+    """The one answer of every /auth/me* route that returns the current user.
+
+    The SPA replaces its user object with these responses. When one of them
+    answered the slimmer UserOut, the client lost its permissions (and every
+    control gated on them) until the next reload (docs/DASHBOARD.md §4.4).
+    The balance is computed fresh, not read off the row, as TimePage shows it.
+    """
+    from app.routers.time_tracking import _vacation_balance_out
+
+    vacation_balance = _vacation_balance_out(db, user)
+    return UserMeOut.model_validate(user).model_copy(
+        update={
+            "vacation_days_available": vacation_balance.vacation_days_available,
+            "vacation_days_carryover": vacation_balance.vacation_days_carryover,
+            "vacation_days_total_remaining": vacation_balance.vacation_days_total_remaining,
+            "effective_permissions": get_user_effective_permissions(user.id, user.role),
+            "can_update_recent_own_time_entries": _can_update_recent_own_time_entries(db, user.id),
+        }
+    )
+
+
 def _normalize_nickname(value: str | None) -> str:
     return (value or "").strip()
 
@@ -343,16 +365,7 @@ def logout(
 
 @router.get("/me", response_model=UserMeOut)
 def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    from app.routers.time_tracking import _vacation_balance_out
-
-    out = UserMeOut.model_validate(current_user)
-    vacation_balance = _vacation_balance_out(db, current_user)
-    out.vacation_days_available = vacation_balance.vacation_days_available
-    out.vacation_days_carryover = vacation_balance.vacation_days_carryover
-    out.vacation_days_total_remaining = vacation_balance.vacation_days_total_remaining
-    out.effective_permissions = get_user_effective_permissions(current_user.id, current_user.role)
-    out.can_update_recent_own_time_entries = _can_update_recent_own_time_entries(db, current_user.id)
-    return out
+    return _me_out(db, current_user)
 
 
 @router.get("/nickname-availability", response_model=NicknameAvailabilityOut)
@@ -409,7 +422,7 @@ def _consume_action_token(db: Session, *, raw_token: str, purpose: str) -> tuple
     return user, token_row
 
 
-@router.patch("/me", response_model=UserOut)
+@router.patch("/me", response_model=UserMeOut)
 def update_profile(
     payload: ProfileUpdate,
     current_user: User = Depends(get_current_user),
@@ -474,7 +487,7 @@ def update_profile(
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _me_out(db, current_user)
 
 
 # Allowed preference keys and their valid values (None means any string is accepted)
@@ -493,18 +506,15 @@ _ALLOWED_LIST_PREFERENCES: dict[str, set[str]] = {
 }
 
 
-@router.patch("/me/preferences", response_model=UserOut)
-def update_preferences(
-    payload: dict,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Merge-patch the current user's UI preferences.
+def _merged_preferences(stored: dict, payload: dict) -> dict:
+    """Apply a preference merge-patch to a copy of the stored preferences.
 
-    Only known keys are accepted; unknown keys are silently ignored.
-    Each key may also have a restricted set of valid values.
+    Only known keys are accepted; unknown keys are silently ignored, so keys
+    other writers own (the dashboard layouts) pass through untouched and can
+    never be set from here. Each key may also have a restricted set of valid
+    values.
     """
-    current: dict = dict(current_user.preferences or {})
+    current: dict = dict(stored)
     for key, value in payload.items():
         if key in _ALLOWED_LIST_PREFERENCES:
             if value is None:
@@ -538,12 +548,26 @@ def update_preferences(
                 detail=f"Invalid value {value!r} for preference '{key}'",
             )
         current[key] = value
+    return current
 
-    current_user.preferences = current
+
+@router.patch("/me/preferences", response_model=UserMeOut)
+def update_preferences(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Merge-patch the current user's UI preferences."""
+    # Lock the row and re-read it before merging. The dashboard service writes
+    # the same JSON column; merging into the copy loaded at authentication
+    # time would write a concurrent layout save away. No-op on SQLite.
+    db.refresh(current_user, with_for_update=True)
+    stored = current_user.preferences if isinstance(current_user.preferences, dict) else {}
+    current_user.preferences = _merged_preferences(stored, payload)
     db.add(current_user)
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _me_out(db, current_user)
 
 
 @router.post("/invites/accept", response_model=UserOut)
@@ -648,7 +672,7 @@ def mfa_verify(
     return MfaVerifyOut(ok=True, mfa_enabled=True, recovery_codes=plaintext)
 
 
-@router.post("/me/mfa/disable", response_model=UserOut)
+@router.post("/me/mfa/disable", response_model=UserMeOut)
 def mfa_disable(
     payload: MfaDisableIn,
     current_user: User = Depends(get_current_user),
@@ -678,7 +702,7 @@ def mfa_disable(
         db, current_user, "auth.mfa_disabled", "user", str(current_user.id),
         details={"email": current_user.email}, category="auth",
     )
-    return UserOut.model_validate(current_user)
+    return _me_out(db, current_user)
 
 
 @router.get("/roles")
