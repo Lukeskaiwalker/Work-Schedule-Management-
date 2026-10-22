@@ -40,8 +40,13 @@ pyotp==2.9.0
 qrcode==7.4.2
 reportlab==4.2.5
 openpyxl==3.1.5
-Pillow==12.3.0
-pillow-heif==1.8.0
+# Pillow 13.0.0 (2026-10-22): 12.3.0 had 30+ advisories fixed only in 13 --
+# two critical JPEG decoder overflows, TIFF/PDF/WMF out-of-bounds reads and
+# decompression-bomb bypasses, all reachable through uploaded images. 13
+# needs Python >= 3.11 (the image is 3.12). pillow-heif 1.8.1 brings libheif
+# 1.23.6 and supports Pillow 11-13; 1.9 will require 13.
+Pillow==13.0.0
+pillow-heif==1.8.1
 
 # v2.4.0: OpenAI Structured Outputs for line-item extraction.
 # 1.55+ has native Structured Outputs support via the chat.completions
