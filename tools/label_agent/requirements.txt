@@ -12,4 +12,6 @@
 #   Debian/Rasp Pi: sudo apt install libusb-1.0-0
 
 pyusb==1.3.1
-pillow==12.3.0
+# Same version as apps/api: 12.3.0 carries 24 advisories, fixed in 13.0.0 (needs
+# Python >= 3.11, which Bookworm has).
+pillow==13.0.0
