@@ -67,6 +67,12 @@ from app.services.audit import log_admin_action
 from app.routers.workflow_helpers import _content_disposition
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
+from app.services.permission_store import (
+    reset_role_to_defaults,
+    reset_user_permissions_from_db,
+    save_role_permissions,
+    save_user_permissions_to_db,
+)
 from app.services.project_membership import add_user_to_all_projects
 from app.services.runtime_settings import (
     OPENAI_DEFAULT_EXTRACTION_MODEL,
@@ -76,10 +82,6 @@ from app.services.runtime_settings import (
     get_openai_settings,
     get_smtp_settings,
     get_openweather_api_key,
-    reset_role_to_defaults,
-    reset_user_permissions_from_db,
-    save_role_permissions_to_db,
-    save_user_permissions_to_db,
     set_active_update_job,
     set_company_settings,
     set_openai_settings,
@@ -3189,10 +3191,9 @@ def update_role_permissions(
     valid = [p for p in permissions if p in ALL_PERMISSIONS]
     dropped = sorted({p for p in permissions if p not in ALL_PERMISSIONS})
 
-    # Load current map, apply update for this role, save.
-    current = get_effective_permissions()  # returns dict[str, list[str]]
-    current[role] = sorted(set(valid))
-    updated = save_role_permissions_to_db(db, current)
+    # Applied to the STORED map under the permission lock, not to this
+    # worker's copy: another worker may have saved a different role since.
+    updated = save_role_permissions(db, role, valid)
 
     log_admin_action(
         db,

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
 
 from app.core.db import SessionLocal
-from app.core.permissions import set_user_permissions_override
+from app.services.permission_store import save_user_permissions_to_db
 from app.core.time import utcnow
 from app.models.entities import (
     User,
@@ -57,7 +57,7 @@ def _grant_werkstatt_to_admin(db) -> int:
         __import__("sqlalchemy").select(User).where(User.email == "admin@example.com")
     )
     assert admin is not None
-    set_user_permissions_override({admin.id: {"extra": ["werkstatt:manage"], "denied": []}})
+    save_user_permissions_to_db(db, admin.id, ["werkstatt:manage"], [])
     return admin.id
 
 

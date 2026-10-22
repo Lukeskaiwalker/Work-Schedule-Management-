@@ -12,6 +12,7 @@ from app.core.permissions import ROLE_ADMIN, has_global_project_access, has_perm
 from app.core.security import MFA_CHALLENGE_PURPOSE, decode_token
 from app.core.time import utcnow
 from app.models.entities import ApiToken, ProjectMember, Task, TaskAssignment, User
+from app.services.permission_store import refresh_permissions_if_changed
 
 # Personal Access Tokens are emitted with this prefix so we can route
 # the auth path cheaply (skip JWT decode, do DB lookup instead) without
@@ -138,6 +139,7 @@ def get_current_user(
     if bearer_token and bearer_token.startswith(API_TOKEN_PREFIX):
         user = _resolve_api_token_user(db, bearer_token)
         _enforce_portal_fence(request, user)
+        refresh_permissions_if_changed(db)
         request.state.auth_type = "api_token"
         return user
 
@@ -168,6 +170,9 @@ def get_current_user(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
     _enforce_portal_fence(request, user)
+    # Every permission check of this request then sees the overrides as
+    # committed, whichever process saved them.
+    refresh_permissions_if_changed(db)
     request.state.auth_type = "session"
     return user
 
@@ -367,4 +372,5 @@ def get_active_user_by_id(user_id: int, db: Session, *, allow_external: bool = F
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
     if is_external_role(user.role) and not allow_external:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PORTAL_ONLY_DETAIL)
+    refresh_permissions_if_changed(db)
     return user

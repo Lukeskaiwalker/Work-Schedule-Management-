@@ -30,6 +30,7 @@ os.environ["MATERIAL_CATALOG_DIR"] = material_catalog_tmp
 os.environ["MATERIAL_CATALOG_IMAGE_LOOKUP_ENABLED"] = "false"
 
 from app.core.db import Base, engine  # noqa: E402
+from app.core.permissions import clear_permission_cache  # noqa: E402
 from app.main import _initialize_runtime_data, app  # noqa: E402
 
 
@@ -86,6 +87,9 @@ def migrate_schema() -> Generator[None, None, None]:
 def reset_db() -> Generator[None, None, None]:
     _reset_database_rows()
     _initialize_runtime_data()
+    # The process's permission copy outlives the rows; drop it too, so a test
+    # that never makes a request cannot inherit the last test's overrides.
+    clear_permission_cache()
     yield
 
 

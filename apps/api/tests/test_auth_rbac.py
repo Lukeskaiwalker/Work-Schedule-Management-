@@ -1,10 +1,13 @@
 from __future__ import annotations
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app.main import _initialize_runtime_data
-from app.core.permissions import set_permissions_override
+from app.core.db import SessionLocal
+from app.services.permission_store import ROLE_PERMISSIONS_KEY, load_permissions_from_db
+from app.services.runtime_settings import set_runtime_setting
 from app.routers import admin as admin_router
 from app.services import update_runner_client
 
@@ -230,33 +233,34 @@ def test_user_override_can_grant_weather_settings_access(client: TestClient, adm
 
 
 def test_admin_role_keeps_full_builtin_permissions_even_with_stale_override_map(client: TestClient, admin_token: str):
-    set_permissions_override(
-        {
-            "admin": ["users:manage"],
-            "employee": ["projects:view"],
-        }
-    )
-    try:
-        role_permissions = client.get("/api/admin/role-permissions", headers=auth_headers(admin_token))
-        assert role_permissions.status_code == 200
-        admin_permissions = set(role_permissions.json()["permissions"]["admin"])
-        assert "permissions:manage" in admin_permissions
-        assert "settings:manage" in admin_permissions
-        assert "system:manage" in admin_permissions
-        assert "backups:export" in admin_permissions
+    # A role map stored by an older release, before the admin role gained its
+    # newer permissions.
+    with SessionLocal() as db:
+        set_runtime_setting(
+            db,
+            ROLE_PERMISSIONS_KEY,
+            json.dumps({"admin": ["users:manage"], "employee": ["projects:view"]}),
+        )
+        db.commit()
+        load_permissions_from_db(db)
+    role_permissions = client.get("/api/admin/role-permissions", headers=auth_headers(admin_token))
+    assert role_permissions.status_code == 200
+    admin_permissions = set(role_permissions.json()["permissions"]["admin"])
+    assert "permissions:manage" in admin_permissions
+    assert "settings:manage" in admin_permissions
+    assert "system:manage" in admin_permissions
+    assert "backups:export" in admin_permissions
 
-        weather_settings = client.get("/api/admin/settings/weather", headers=auth_headers(admin_token))
-        assert weather_settings.status_code == 200
+    weather_settings = client.get("/api/admin/settings/weather", headers=auth_headers(admin_token))
+    assert weather_settings.status_code == 200
 
-        auth_me = client.get("/api/auth/me", headers=auth_headers(admin_token))
-        assert auth_me.status_code == 200
-        effective_permissions = set(auth_me.json()["effective_permissions"])
-        assert "permissions:manage" in effective_permissions
-        assert "settings:manage" in effective_permissions
-        assert "system:manage" in effective_permissions
-        assert "backups:export" in effective_permissions
-    finally:
-        set_permissions_override(None)
+    auth_me = client.get("/api/auth/me", headers=auth_headers(admin_token))
+    assert auth_me.status_code == 200
+    effective_permissions = set(auth_me.json()["effective_permissions"])
+    assert "permissions:manage" in effective_permissions
+    assert "settings:manage" in effective_permissions
+    assert "system:manage" in effective_permissions
+    assert "backups:export" in effective_permissions
 
 
 def test_users_manage_without_permissions_manage_cannot_assign_roles(client: TestClient, admin_token: str):

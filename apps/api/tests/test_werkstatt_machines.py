@@ -524,9 +524,9 @@ def test_reads_and_bookings_do_not_require_the_manage_permission(
 def _employee_with(permissions: list[str], email: str) -> tuple[int, str]:
     """An employee carrying exactly `permissions` as a user-level grant."""
     from app.core.db import SessionLocal
-    from app.core.permissions import get_all_user_overrides, set_user_permissions_override
     from app.core.security import create_access_token, get_password_hash
     from app.models.entities import User
+    from app.services.permission_store import save_user_permissions_to_db
 
     with SessionLocal() as db:
         user = User(
@@ -538,10 +538,7 @@ def _employee_with(permissions: list[str], email: str) -> tuple[int, str]:
         db.add(user)
         db.commit()
         user_id = user.id
-
-    overrides = get_all_user_overrides()
-    overrides[user_id] = {"extra": permissions, "denied": []}
-    set_user_permissions_override(overrides)
+        save_user_permissions_to_db(db, user_id, permissions, [])
     return user_id, create_access_token(str(user_id), {"role": "employee"})
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 
 ROLE_ADMIN = "admin"
 ROLE_CEO = "ceo"
@@ -385,58 +387,115 @@ TEMPLATES: dict[str, dict[str, set[str]]] = {
     "default": PERMISSIONS_BY_ROLE,
 }
 
-# ── Role-level runtime override ───────────────────────────────────────────────
-# Replaced atomically by set_permissions_override() whenever the admin saves
-# custom permissions to the database.  None means "use PERMISSIONS_BY_ROLE".
-_override_map: dict[str, set[str]] | None = None
-_override_lock = threading.Lock()
-
-# ── User-level permission overrides ──────────────────────────────────────────
-# Format: {user_id: {"extra": set[str], "denied": set[str]}}
-# "extra"  → granted regardless of role
-# "denied" → blocked regardless of role (takes precedence over extra)
-_user_override_map: dict[int, dict[str, set[str]]] = {}
-_user_override_lock = threading.Lock()
+# ── Runtime overrides: this process's copy ────────────────────────────────────
+# Role- and user-level overrides are stored in the database
+# (app.services.permission_store). Every process -- each uvicorn worker, the
+# api_worker -- keeps its own copy here: ONE immutable snapshot, replaced
+# whole, tagged with the stored revision it was read at. The auth resolvers
+# call permission_store.refresh_permissions_if_changed(db) on every request,
+# which compares that tag with the database and reloads on any difference, so
+# a deny saved by another process is enforced from this process's next
+# request on. Readers take `_snapshot` once per check, so a check never mixes
+# one reload's role map with another's user overrides.
 
 
-def _effective_role_permissions_map() -> dict[str, set[str]]:
-    with _override_lock:
-        effective = _override_map if _override_map is not None else PERMISSIONS_BY_ROLE
-        merged = {role: set(PERMISSIONS_BY_ROLE.get(role, set())) for role in ALL_ROLES}
-        for role, perms in effective.items():
-            if role in merged:
-                merged[role] = set(perms)
-    # Admin always keeps the full built-in permission set, even if older
-    # stored role overrides predate newer permissions.
-    merged[ROLE_ADMIN] = set(PERMISSIONS_BY_ROLE[ROLE_ADMIN])
-    return merged
+@dataclass(frozen=True)
+class PermissionSnapshot:
+    # The stored revision this copy was read at. None: not read from the
+    # database (a fresh process, or a copy set by hand), so the next freshness
+    # check reloads whatever the database holds.
+    revision: str | None = None
+    # role → permissions. None means "use PERMISSIONS_BY_ROLE".
+    roles: Mapping[str, frozenset[str]] | None = None
+    # user id → {"extra": …, "denied": …}
+    # "extra"  → granted regardless of role
+    # "denied" → blocked regardless of role (takes precedence over extra)
+    users: Mapping[int, Mapping[str, frozenset[str]]] = field(default_factory=dict)
+
+
+_snapshot = PermissionSnapshot()
+_snapshot_lock = threading.Lock()  # serialises replacements; readers need none
+
+
+def make_permission_snapshot(
+    revision: str | None,
+    roles: Mapping[str, Iterable[str]] | None,
+    users: Mapping[int, Mapping[str, Iterable[str]]],
+) -> PermissionSnapshot:
+    return PermissionSnapshot(
+        revision=revision,
+        roles=None if roles is None else {
+            role: frozenset(perms) for role, perms in roles.items() if role in ALL_ROLES
+        },
+        users={
+            int(uid): {
+                "extra": frozenset(data.get("extra", [])),
+                "denied": frozenset(data.get("denied", [])),
+            }
+            for uid, data in users.items()
+        },
+    )
+
+
+def permission_snapshot() -> PermissionSnapshot:
+    """This process's current copy (immutable)."""
+    return _snapshot
+
+
+def install_permission_snapshot(snapshot: PermissionSnapshot) -> None:
+    """Replace this process's copy. Only permission_store's reload installs
+    what it read from the database; tests use it to stand in for a process
+    that still holds an older copy."""
+    global _snapshot
+    with _snapshot_lock:
+        _snapshot = snapshot
+
+
+def clear_permission_cache() -> None:
+    """Forget every override; the next freshness check reloads from the DB."""
+    install_permission_snapshot(PermissionSnapshot())
+
+
+def _effective_role_permissions_map(snapshot: PermissionSnapshot) -> dict[str, set[str]]:
+    effective = snapshot.roles if snapshot.roles is not None else PERMISSIONS_BY_ROLE
+    return {
+        # Admin always keeps the full built-in permission set, even if older
+        # stored role overrides predate newer permissions.
+        role: set(PERMISSIONS_BY_ROLE[ROLE_ADMIN]) if role == ROLE_ADMIN
+        else set(effective.get(role, PERMISSIONS_BY_ROLE.get(role, set())))
+        for role in ALL_ROLES
+    }
 
 
 def set_permissions_override(override: dict[str, list[str]] | None) -> None:
-    """Replace the in-process permission map.  Thread-safe.
-    Pass None to revert to the hard-coded defaults."""
-    global _override_map
-    with _override_lock:
-        if override is None:
-            _override_map = None
-        else:
-            _override_map = {
-                role: set(perms)
-                for role, perms in override.items()
-                if role in ALL_ROLES
-            }
+    """Replace the role overrides in this process's copy by hand. Thread-safe.
+    Pass None to revert to the hard-coded defaults.
+
+    The copy then matches no stored revision, so the next request's freshness
+    check replaces it with what the database holds: persist through
+    app.services.permission_store instead."""
+    global _snapshot
+    with _snapshot_lock:
+        _snapshot = replace(
+            _snapshot,
+            revision=None,
+            roles=make_permission_snapshot(None, override, {}).roles,
+        )
 
 
 def has_permission(role: str, permission: str) -> bool:
+    return _role_has_permission(_snapshot, role, permission)
+
+
+def _role_has_permission(snapshot: PermissionSnapshot, role: str, permission: str) -> bool:
     if is_external_role(role):
         return False
-    effective = _effective_role_permissions_map()
-    return permission in effective.get(role, set())
+    return permission in _effective_role_permissions_map(snapshot).get(role, set())
 
 
 def get_effective_permissions() -> dict[str, list[str]]:
     """Return the current effective permission map as role → sorted list."""
-    effective = _effective_role_permissions_map()
+    effective = _effective_role_permissions_map(_snapshot)
     return {role: sorted(effective.get(role, set())) for role in ALL_ROLES}
 
 
@@ -445,16 +504,16 @@ def get_effective_permissions() -> dict[str, list[str]]:
 def set_user_permissions_override(
     overrides: dict[int, dict[str, list[str]]],
 ) -> None:
-    """Replace the full user-level permission override map.  Thread-safe."""
-    global _user_override_map
-    with _user_override_lock:
-        _user_override_map = {
-            int(uid): {
-                "extra": set(data.get("extra", [])),
-                "denied": set(data.get("denied", [])),
-            }
-            for uid, data in overrides.items()
-        }
+    """Replace the user-level overrides in this process's copy by hand.
+    Thread-safe. Like set_permissions_override, the next request's freshness
+    check replaces it with what the database holds."""
+    global _snapshot
+    with _snapshot_lock:
+        _snapshot = replace(
+            _snapshot,
+            revision=None,
+            users=make_permission_snapshot(None, None, overrides).users,
+        )
 
 
 def has_permission_for_user(user_id: int, role: str, permission: str) -> bool:
@@ -471,14 +530,14 @@ def has_permission_for_user(user_id: int, role: str, permission: str) -> bool:
     """
     if is_external_role(role):
         return False
-    with _user_override_lock:
-        override = _user_override_map.get(user_id)
+    snapshot = _snapshot
+    override = snapshot.users.get(user_id)
     if override:
-        if permission in override.get("denied", set()):
+        if permission in override.get("denied", frozenset()):
             return False
-        if permission in override.get("extra", set()):
+        if permission in override.get("extra", frozenset()):
             return True
-    return has_permission(role, permission)
+    return _role_has_permission(snapshot, role, permission)
 
 
 def has_global_project_access(user_id: int, role: str, *, manage_required: bool = False) -> bool:
@@ -499,8 +558,7 @@ def has_global_project_access(user_id: int, role: str, *, manage_required: bool 
 
 def get_user_override(user_id: int) -> dict[str, list[str]]:
     """Return the stored extra/denied lists for one user (empty if none)."""
-    with _user_override_lock:
-        data = _user_override_map.get(user_id, {})
+    data = _snapshot.users.get(user_id, {})
     return {
         "extra": sorted(data.get("extra", set())),
         "denied": sorted(data.get("denied", set())),
@@ -514,24 +572,21 @@ def get_user_effective_permissions(user_id: int, role: str) -> list[str]:
     """
     if is_external_role(role):
         return []
-    effective = _effective_role_permissions_map()
-    role_perms = set(effective.get(role, set()))
+    snapshot = _snapshot
+    role_perms = _effective_role_permissions_map(snapshot).get(role, set())
+    override = snapshot.users.get(user_id, {})
 
-    with _user_override_lock:
-        override = _user_override_map.get(user_id, {})
-
-    extra = override.get("extra", set())
-    denied = override.get("denied", set())
+    extra = override.get("extra", frozenset())
+    denied = override.get("denied", frozenset())
     return sorted((role_perms | extra) - denied)
 
 
 def get_all_user_overrides() -> dict[int, dict[str, list[str]]]:
     """Return all user-level overrides as {user_id: {extra, denied}}."""
-    with _user_override_lock:
-        return {
-            uid: {
-                "extra": sorted(data.get("extra", set())),
-                "denied": sorted(data.get("denied", set())),
-            }
-            for uid, data in _user_override_map.items()
+    return {
+        uid: {
+            "extra": sorted(data.get("extra", frozenset())),
+            "denied": sorted(data.get("denied", frozenset())),
         }
+        for uid, data in _snapshot.users.items()
+    }

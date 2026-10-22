@@ -11,9 +11,9 @@ handler reloaded the stale state — producing a checkmark that
 The fix:
   • PUT /admin/role-permissions/<role> silently drops unknown
     entries instead of 400-ing.
-  • load_role_permissions_from_db filters at boot, and persists the
+  • load_permissions_from_db filters at boot, and persists the
     cleaned version back to the DB so the heal is permanent.
-  • save_role_permissions_to_db also filters as defence in depth.
+  • save_role_permissions also filters as defence in depth.
 """
 from __future__ import annotations
 import json
@@ -21,12 +21,8 @@ import json
 from fastapi.testclient import TestClient
 
 from app.core.db import SessionLocal
-from app.services.runtime_settings import (
-    ROLE_PERMISSIONS_KEY,
-    load_role_permissions_from_db,
-    set_runtime_setting,
-    get_runtime_setting,
-)
+from app.services.permission_store import ROLE_PERMISSIONS_KEY, load_permissions_from_db
+from app.services.runtime_settings import get_runtime_setting, set_runtime_setting
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -37,7 +33,7 @@ def _plant_override(stored: dict[str, list[str]]) -> None:
     with SessionLocal() as db:
         set_runtime_setting(db, ROLE_PERMISSIONS_KEY, json.dumps(stored))
         db.commit()
-        load_role_permissions_from_db(db)
+        load_permissions_from_db(db)
 
 
 def test_admin_can_grant_permission_when_override_contains_stale_entry(
@@ -111,7 +107,7 @@ def test_load_self_heals_overrides_with_stale_entries(
 
     # Re-load triggers the self-heal write-back.
     with SessionLocal() as db:
-        load_role_permissions_from_db(db)
+        load_permissions_from_db(db)
         raw = get_runtime_setting(db, ROLE_PERMISSIONS_KEY)
 
     persisted = json.loads(raw)
