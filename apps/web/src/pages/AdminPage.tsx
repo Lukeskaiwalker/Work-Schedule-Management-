@@ -6,26 +6,26 @@ import { AdminBackupsPanel } from "../components/admin/AdminBackupsPanel";
 import { AdminLabelPrinterCard } from "../components/admin/AdminLabelPrinterCard";
 import { AdminIdsConnectCard } from "../components/admin/AdminIdsConnectCard";
 import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
-import { schoolWeekdayLabel } from "../utils/dates";
+import { parseServerDateTime, schoolWeekdayLabel } from "../utils/dates";
 import { permissionDescription, permissionGroupLabel, permissionLabel } from "../utils/permissionLabels";
 import { roleLabel } from "../utils/roles";
 import { auditTargetLabel } from "../components/admin/auditLabels";
+import { auditPeriodBounds, type AuditPeriodFilter } from "../components/admin/auditLogQuery";
+import { useAuditLogFeed } from "../components/admin/useAuditLogFeed";
 import type { User, EmployeeGroup } from "../types";
 import { UserStationBadge } from "../components/admin/UserStationBadge";
 import { AdminTabBar, adminTabId, adminTabPanelId } from "../components/admin/AdminTabBar";
 import "../styles/admin-mobile.css";
 
 type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system" | "backups";
-type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
 
+/** A server timestamp (naive UTC) in local time. `new Date()` alone would read it as local. */
 function fmtTs(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
-  } catch {
-    return iso;
-  }
+  const parsed = parseServerDateTime(iso);
+  if (!parsed) return iso;
+  return parsed.toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" });
 }
 
 function formatAuditCategory(category: string, de: boolean): string {
@@ -166,9 +166,6 @@ export function AdminPage() {
     setUserPermissionOverride,
     resetUserPermissions,
     // Audit tab
-    auditLogs,
-    auditLogsLoading,
-    loadAuditLogs,
     exportAuditLogsCsv,
     // Settings tab
     weatherSettings,
@@ -249,6 +246,17 @@ export function AdminPage() {
   const [auditPeriodFilter, setAuditPeriodFilter] = useState<AuditPeriodFilter>("all");
   const [auditDateFrom, setAuditDateFrom] = useState("");
   const [auditDateTo, setAuditDateTo] = useState("");
+  const auditFeed = useAuditLogFeed({
+    active: mainView === "admin" && tab === "audit" && canViewAudit,
+    token,
+    filters: {
+      period: auditPeriodFilter,
+      dateFrom: auditDateFrom,
+      dateTo: auditDateTo,
+      categories: auditCategoryFilters,
+      search: auditSearch,
+    },
+  });
   const [resettingRole, setResettingRole] = useState<string | null>(null);
   /**
    * Ausbildungsbeginn while it is being typed, keyed by user id.
@@ -281,9 +289,8 @@ export function AdminPage() {
 
   useEffect(() => {
     if (tab === "groups" && canManageUsers) void loadEmployeeGroups();
-    if (tab === "audit" && canViewAudit) void loadAuditLogs();
     if (tab === "roles" && canManagePermissions) void loadRolePermissions();
-  }, [tab, canManageUsers, canViewAudit, canManagePermissions]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, canManageUsers, canManagePermissions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!availableTabs.includes(tab)) {
@@ -432,7 +439,15 @@ export function AdminPage() {
 
   // ── Audit filter ───────────────────────────────────────────────────────────
 
-  const auditCategories = Array.from(new Set(auditLogs.map((log) => log.category).filter(Boolean))).sort();
+  // The server filters period, category and search text over the whole log
+  // (useAuditLogFeed); the rows it answers are shown as they are. The menu
+  // lists the log's categories, plus the chosen one and those on screen, so
+  // neither can drop out of it while the categories request is pending.
+  const auditCategories = Array.from(
+    new Set([...auditFeed.categories, ...auditCategoryFilters, ...auditFeed.logs.map((log) => log.category)]),
+  )
+    .filter(Boolean)
+    .sort();
   const hasCustomAuditDateRange = auditDateFrom.trim() !== "" || auditDateTo.trim() !== "";
   const hasAuditDateFilter = auditPeriodFilter !== "all" && (auditPeriodFilter !== "custom" || hasCustomAuditDateRange);
   const hasAuditFilters = auditCategoryFilters.length > 0 || hasAuditDateFilter;
@@ -444,42 +459,15 @@ export function AdminPage() {
     setAuditDateTo("");
   };
 
-  const isLogWithinAuditDateRange = (createdAt: string) => {
-    if (!hasAuditDateFilter) return true;
-    const created = new Date(createdAt);
-    if (Number.isNaN(created.getTime())) return true;
-
-    let start: Date | null = null;
-    let end: Date | null = null;
-
-    if (auditPeriodFilter === "custom") {
-      if (auditDateFrom) start = new Date(`${auditDateFrom}T00:00:00`);
-      if (auditDateTo) end = new Date(`${auditDateTo}T23:59:59.999`);
-    } else {
-      end = new Date();
-      end.setHours(23, 59, 59, 999);
-      start = new Date(end);
-      start.setHours(0, 0, 0, 0);
-      if (auditPeriodFilter === "7d") start.setDate(start.getDate() - 6);
-      else if (auditPeriodFilter === "30d") start.setDate(start.getDate() - 29);
-      else if (auditPeriodFilter === "90d") start.setDate(start.getDate() - 89);
-    }
-
-    if (start && !Number.isNaN(start.getTime()) && created < start) return false;
-    if (end && !Number.isNaN(end.getTime()) && created > end) return false;
-    return true;
+  const exportAuditView = () => {
+    const { fromIso, toIso } = auditPeriodBounds(auditPeriodFilter, auditDateFrom, auditDateTo);
+    void exportAuditLogsCsv({
+      fromIso,
+      toIso,
+      categories: auditCategoryFilters.length > 0 ? auditCategoryFilters : undefined,
+      query: auditSearch.trim() || undefined,
+    });
   };
-
-  const filteredLogs = auditLogs.filter((l) => {
-    if (auditCategoryFilters.length > 0 && !auditCategoryFilters.includes(l.category)) return false;
-    if (!isLogWithinAuditDateRange(l.created_at)) return false;
-    if (!auditSearch.trim()) return true;
-    const q = auditSearch.toLowerCase();
-    const actor = l.actor_user_id
-      ? (adminUsersById.get(l.actor_user_id)?.display_name ?? String(l.actor_user_id))
-      : "system";
-    return l.action.toLowerCase().includes(q) || actor.toLowerCase().includes(q);
-  });
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -1733,41 +1721,14 @@ export function AdminPage() {
               <button
                 type="button"
                 className="admin-audit-refresh"
-                onClick={() => void loadAuditLogs()}
+                onClick={auditFeed.refresh}
               >
                 {de ? "Aktualisieren" : "Refresh"}
               </button>
               <button
                 type="button"
                 className="admin-audit-refresh admin-audit-refresh--ghost"
-                onClick={() => {
-                  // Translate the in-page filters into ISO bounds the backend
-                  // understands. Custom range uses the date pickers verbatim;
-                  // "today/7d/30d/90d" compute to a half-day-resolution range
-                  // matching what the in-page filter applies. "all" sends
-                  // unbounded.
-                  let fromIso: string | null = null;
-                  let toIso: string | null = null;
-                  if (auditPeriodFilter === "custom") {
-                    if (auditDateFrom) fromIso = `${auditDateFrom}T00:00:00`;
-                    if (auditDateTo) toIso = `${auditDateTo}T23:59:59.999`;
-                  } else if (auditPeriodFilter !== "all") {
-                    const end = new Date();
-                    end.setHours(23, 59, 59, 999);
-                    const start = new Date(end);
-                    start.setHours(0, 0, 0, 0);
-                    if (auditPeriodFilter === "7d") start.setDate(start.getDate() - 6);
-                    else if (auditPeriodFilter === "30d") start.setDate(start.getDate() - 29);
-                    else if (auditPeriodFilter === "90d") start.setDate(start.getDate() - 89);
-                    fromIso = start.toISOString();
-                    toIso = end.toISOString();
-                  }
-                  void exportAuditLogsCsv({
-                    fromIso,
-                    toIso,
-                    categories: auditCategoryFilters.length > 0 ? auditCategoryFilters : undefined,
-                  });
-                }}
+                onClick={exportAuditView}
                 title={
                   de
                     ? "Aktuelle Filter exportieren als CSV"
@@ -1808,6 +1769,14 @@ export function AdminPage() {
               </div>
             )}
 
+            {auditFeed.categoriesError && (
+              <div className="admin-page-muted" role="status">
+                {de
+                  ? `Kategorien konnten nicht geladen werden: ${auditFeed.categoriesError}`
+                  : `Failed to load the categories: ${auditFeed.categoriesError}`}
+              </div>
+            )}
+
             <div className="admin-page-card admin-audit-card">
               <div className="admin-audit-table-head">
                 <div className="admin-audit-col admin-audit-col--time">
@@ -1824,19 +1793,27 @@ export function AdminPage() {
                 </div>
               </div>
 
-              {auditLogsLoading && (
+              {auditFeed.loading && (
                 <div className="admin-page-muted admin-audit-empty">
                   {de ? "Lädt…" : "Loading…"}
                 </div>
               )}
 
-              {!auditLogsLoading && filteredLogs.length === 0 && (
+              {!auditFeed.loading && auditFeed.error && (
+                <div className="admin-audit-empty admin-audit-error" role="alert">
+                  {de
+                    ? `Protokoll konnte nicht geladen werden: ${auditFeed.error}`
+                    : `Failed to load the audit log: ${auditFeed.error}`}
+                </div>
+              )}
+
+              {!auditFeed.loading && !auditFeed.error && auditFeed.logs.length === 0 && (
                 <div className="admin-page-muted admin-audit-empty">
                   {de ? "Keine Einträge gefunden." : "No entries found."}
                 </div>
               )}
 
-              {filteredLogs.map((log) => {
+              {auditFeed.logs.map((log) => {
                 const actor = log.actor_user_id
                   ? (adminUsersById.get(log.actor_user_id)?.display_name ?? `#${log.actor_user_id}`)
                   : (de ? "System" : "System");
@@ -1879,6 +1856,34 @@ export function AdminPage() {
                   </div>
                 );
               })}
+
+              {/* The server answered one row more than a page: the list is cut
+                  off, and says so instead of ending as if that were all. */}
+              {auditFeed.hasMore && (
+                <div className="admin-audit-more">
+                  <span className="admin-page-muted">
+                    {de
+                      ? `${auditFeed.logs.length} Einträge angezeigt – ältere sind noch nicht geladen.`
+                      : `Showing ${auditFeed.logs.length} entries — older ones are not loaded yet.`}
+                  </span>
+                  <button
+                    type="button"
+                    className="admin-audit-refresh admin-audit-refresh--ghost"
+                    onClick={() => void auditFeed.loadOlder()}
+                    disabled={auditFeed.loadingOlder}
+                  >
+                    {auditFeed.loadingOlder ? (de ? "Lädt…" : "Loading…") : de ? "Ältere anzeigen" : "Show older"}
+                  </button>
+                </div>
+              )}
+
+              {auditFeed.olderError && (
+                <div className="admin-audit-more admin-audit-error" role="alert">
+                  {de
+                    ? `Ältere Einträge konnten nicht geladen werden: ${auditFeed.olderError}`
+                    : `Failed to load older entries: ${auditFeed.olderError}`}
+                </div>
+              )}
             </div>
           </div>
         )}

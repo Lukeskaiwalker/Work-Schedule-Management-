@@ -59,7 +59,6 @@ import type {
   SmtpTestResult,
   CompanySettings,
   EmployeeGroup,
-  AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
@@ -736,10 +735,6 @@ export interface AppContextValue {
   setEmployeeGroups: (groups: EmployeeGroup[]) => void;
   employeeGroupsLoading: boolean;
 
-  // ── Audit log ────────────────────────────────────────────────────────────────
-  auditLogs: AuditLogEntry[];
-  auditLogsLoading: boolean;
-
   // ── Admin async functions ─────────────────────────────────────────────────────
   loadEmployeeGroups: () => Promise<void>;
   createEmployeeGroup: (
@@ -756,7 +751,6 @@ export interface AppContextValue {
     },
   ) => Promise<void>;
   deleteEmployeeGroup: (id: number) => Promise<void>;
-  loadAuditLogs: () => Promise<void>;
   /** Stream the audit log as CSV honouring the current filters. The
    *  browser's save-as dialog handles the rest. Permission-gated by
    *  `audit:view` on the backend. */
@@ -764,6 +758,8 @@ export interface AppContextValue {
     fromIso?: string | null;
     toIso?: string | null;
     categories?: string[];
+    /** The search box's text; matched by the server as in the list. */
+    query?: string;
   }) => Promise<void>;
   updateVacationBalance: (targetUserId: number) => Promise<void>;
 

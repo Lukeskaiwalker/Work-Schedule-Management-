@@ -24,12 +24,39 @@
 import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { AppContext } from "../context/AppContext";
 import { makeAppContextStub } from "./appContextStub";
 import { AdminPage } from "../pages/AdminPage";
+import { apiFetch } from "../api/client";
 import type { AuditLogEntry, BackupListResponse, User } from "../types";
+
+// The Protokoll loads its rows itself (useAuditLogFeed). Every other request
+// keeps the real client, so the rest of this file runs as it always has.
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return { ...actual, apiFetch: vi.fn(actual.apiFetch) };
+});
+
+/** Answer the Protokoll's two requests with these rows. */
+function serveAuditLog(rows: AuditLogEntry[]) {
+  const real = vi.mocked(apiFetch).getMockImplementation();
+  vi.mocked(apiFetch).mockImplementation((async (path: string, ...rest: unknown[]) => {
+    if (path.startsWith("/admin/audit-logs/categories")) return rows.map((row) => row.category);
+    if (path.startsWith("/admin/audit-logs")) return rows;
+    return (real as (...args: unknown[]) => unknown)(path, ...rest);
+  }) as never);
+}
+
+/** The first Protokoll row, once the feed has painted it. */
+async function firstAuditRow(container: HTMLElement): Promise<HTMLElement> {
+  return waitFor(() => {
+    const row = container.querySelector<HTMLElement>(".admin-audit-row");
+    if (!row) throw new Error("no audit row");
+    return row;
+  });
+}
 
 const TEST_DIR = (import.meta as unknown as { dirname: string }).dirname;
 
@@ -169,6 +196,8 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (HTMLElement.prototype as unknown as { scrollTo?: unknown }).scrollTo;
+  // Back to the real client that vi.fn() was given.
+  vi.mocked(apiFetch).mockReset();
 });
 
 describe("Verwaltungszentrum tab strip", () => {
@@ -239,10 +268,10 @@ describe("Benutzer cards", () => {
 });
 
 describe("Protokoll rows", () => {
-  it("label every value, so a row can stack into a card", () => {
-    const { container } = render(page({ canViewAudit: true, auditLogs: [AUDIT_LOG] }));
-    const row = container.querySelector<HTMLElement>(".admin-audit-row");
-    if (!row) throw new Error("no audit row");
+  it("label every value, so a row can stack into a card", async () => {
+    serveAuditLog([AUDIT_LOG]);
+    const { container } = render(page({ canViewAudit: true, token: "test-token" }));
+    const row = await firstAuditRow(container);
 
     const expected: [string, string | RegExp][] = [
       ["Zeitpunkt", /\d/],
@@ -261,12 +290,10 @@ describe("Protokoll rows", () => {
     }
   });
 
-  it("leaves the target out when the event has none", () => {
-    const { container } = render(
-      page({ canViewAudit: true, auditLogs: [{ ...AUDIT_LOG, target_type: null, target_id: null }] }),
-    );
-    const row = container.querySelector<HTMLElement>(".admin-audit-row");
-    if (!row) throw new Error("no audit row");
+  it("leaves the target out when the event has none", async () => {
+    serveAuditLog([{ ...AUDIT_LOG, target_type: null, target_id: null }]);
+    const { container } = render(page({ canViewAudit: true, token: "test-token" }));
+    const row = await firstAuditRow(container);
     expect(within(row).queryByText("Ziel")).not.toBeInTheDocument();
   });
 });
