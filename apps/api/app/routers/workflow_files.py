@@ -197,6 +197,9 @@ def preview_page_count(
     attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
     if _safe_media_type(attachment.content_type) != "application/pdf":
         raise HTTPException(status_code=409, detail="Nur PDF-Dateien haben eine Seitenvorschau")
+    # Decrypting and pdfinfo need no database; a pager opening many pages at
+    # once must not hold a connection per page (see release_connection).
+    release_connection(db)
     data = _attachment_bytes_or_http_error(attachment)
     try:
         return {"page_count": pdf_page_count(data)}
@@ -223,6 +226,9 @@ def preview_page_image(
     attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
     if _safe_media_type(attachment.content_type) != "application/pdf":
         raise HTTPException(status_code=409, detail="Nur PDF-Dateien haben eine Seitenvorschau")
+    # Poppler may wait up to 10 s for a render slot, then render: no database
+    # needed for either, so the connection goes back to the pool first.
+    release_connection(db)
     data = _attachment_bytes_or_http_error(attachment)
     try:
         png = render_pdf_page(data, page)

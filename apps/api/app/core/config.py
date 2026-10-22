@@ -62,6 +62,24 @@ class Settings(BaseSettings):
     report_job_max_attempts: int = 3
     report_worker_poll_seconds: float = 1.0
     api_workers: int = 2
+    # ── PostgreSQL connection budget ───────────────────────────────────────
+    # Every process sizes its own pool from these, so the stack's total is
+    #   API_WORKERS × (DB_POOL_SIZE + DB_MAX_OVERFLOW + 1 event-stream LISTEN)
+    #   + the api_worker container's pool (docker-compose.yml sets a small one)
+    # and it must fit under the server's max_connections with room left for
+    # psql, pg_dump and alembic. 20 + 40 per worker against the default 100
+    # is what ran out on 2026-10-16 (see app/core/db_pool.py). Past the pool,
+    # a request waits up to DB_POOL_TIMEOUT_SECONDS for a connection to come
+    # back rather than failing at once — that queue is the point.
+    db_pool_size: int = Field(default=10, ge=1)
+    db_max_overflow: int = Field(default=20, ge=0)
+    db_pool_timeout_seconds: float = Field(default=30.0, gt=0)
+    db_pool_recycle_seconds: int = 1800
+    # The server's max_connections (postgres:16 default, not set in compose).
+    db_max_connections: int = Field(default=100, ge=1)
+    # What the api workers leave free: the api_worker container's pool, psql,
+    # pg_dump, a `docker compose run` alembic, Postgres's 3 superuser slots.
+    db_reserved_connections: int = Field(default=20, ge=0)
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

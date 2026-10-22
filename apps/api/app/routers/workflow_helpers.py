@@ -25,10 +25,10 @@ from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import ValidationError as _PydanticValidationError
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.core.config import get_settings
-from app.core.db import get_db
+from app.core.db import get_db, release_connection
 from app.core.deps import assert_project_access, get_current_user, require_permission
 from app.core.limits import INT32_MAX
 from app.core.permissions import ALL_ROLES, ROLE_EXTERNAL, has_global_project_access, has_permission_for_user, is_external_role
@@ -661,13 +661,25 @@ def _attachment_http_response(
     include_dav_headers: bool = False,
     head_only: bool = False,
 ) -> Response:
+    """The stored file as a response. Callers check access first and return
+    this directly: it releases the attachment's session (see below), so no
+    database work may follow it."""
+    # Everything below is file work — decrypting, maybe transcoding, then a
+    # stream as long as the client's download — and FastAPI closes the
+    # request's session only after the last byte is sent. Read what is needed
+    # from the row, then hand its connection back to the pool.
+    stored_path = attachment.stored_path
+    file_name = attachment.file_name
     media_type = _safe_media_type(attachment.content_type)
+    session = object_session(attachment)
+    if session is not None:
+        release_connection(session)
 
     # iPhone photos are HEIC and no browser but Safari draws them. Transcoding
     # happens before the allowlist check, so the preview is judged on what we
     # are actually about to send (JPEG) rather than on what is stored.
     transcoded: bytes | None = None
-    display_name = attachment.file_name
+    display_name = file_name
     if inline and needs_transcode(media_type):
         source = _attachment_bytes_or_http_error(attachment)
         transcoded = transcode_to_jpeg(source)
@@ -677,7 +689,7 @@ def _attachment_http_response(
             # "save image as" on the preview would otherwise write JPEG data
             # into a .heic file, which then fails to open for the opposite
             # reason it did before.
-            display_name = f"{Path(attachment.file_name).stem or 'foto'}.jpg"
+            display_name = f"{Path(file_name).stem or 'foto'}.jpg"
         # If it could not be decoded, fall through: the allowlist below rejects
         # HEIC and it becomes a download, which is the old behaviour and still
         # gets the user their file.
@@ -724,7 +736,7 @@ def _attachment_http_response(
         return Response(content=transcoded, media_type=media_type, headers=headers)
 
     try:
-        chunked_plain_size = encrypted_file_plain_size(attachment.stored_path)
+        chunked_plain_size = encrypted_file_plain_size(stored_path)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Stored file payload not found")
     except OSError:
@@ -738,7 +750,7 @@ def _attachment_http_response(
         # Validate before streaming so corrupted payloads fail as HTTP errors
         # instead of aborting the upstream connection mid-response.
         try:
-            validate_encrypted_file(attachment.stored_path)
+            validate_encrypted_file(stored_path)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Stored file payload not found")
         except OSError:
@@ -749,7 +761,7 @@ def _attachment_http_response(
         if head_only:
             return Response(status_code=200, media_type=media_type, headers=headers)
         return StreamingResponse(
-            iter_encrypted_file_bytes(attachment.stored_path),
+            iter_encrypted_file_bytes(stored_path),
             media_type=media_type,
             headers=headers,
         )
