@@ -696,10 +696,13 @@ router.
 ## 8. Migration
 
 One revision `20261021_0104_panel_catalog_entries.py`, `revision =
-"20261021_0104"`, `down_revision = "20261020_0102"`: create
+"20261021_0104"`, `down_revision = "20261022_0105"`: create
 `panel_catalog_entries` (§3.3) with a unique index on `code`; downgrade drops
 it. Additive, no backfill, no data change. It ships in **Slice P** (§9, §16)
-so every later image knows the head. Whoever merges after the 0103 branch
+so every later image knows the head. Written on `20261020_0102`; v2.14.42 put
+`20261022_0105` (`app_settings.value` TEXT, the permission-overrides fix) on
+top of 0102, so v2.14.43 re-pointed 0104 onto 0105: the chain is
+`0101 → 0102 → 0105 → 0104`. Whoever merges after the 0103 branch
 re-points `down_revision` (`tests/test_alembic_single_head.py` guards). Verify
 upgrade/downgrade on a throwaway PostgreSQL 16 and keep
 `apps/api/scripts/check_schema_drift.py` at 0. Everything else (document keys,
@@ -1298,8 +1301,10 @@ rule.
 * **Stacking**: this branch sits on `claude/customer-directory-fix`
   (2 commits, migration `20261020_0102`, not deployed; it clashes with
   `claude/label-calibration`'s 0102). Order: customer-directory-fix (with the
-  0102 clash resolved) → Slice P → feature. Whoever merges after the 0103
-  branch re-points `down_revision`.
+  0102 clash resolved) → Slice P → feature. As merged: v2.14.42 =
+  customer-directory-fix with `20261022_0105` on top of 0102, v2.14.43 =
+  Slice P with 0104 re-pointed onto 0105, v2.14.44 = the feature. Whoever
+  merges after the 0103 branch re-points `down_revision`.
 * **Two releases.** Slice P ships as its own PR and release (migration 0104,
   pass-through `enclosure`/`supplied_by`, `hlak`, `MAX_ROWS` 120, salvage
   ledger types). The feature release is deployed only after P has been live,
@@ -1310,8 +1315,10 @@ rule.
     120-row boards, and lists salvage movements. While rolled back, the
     Schrank tab, the enclosure findings and the removed lines are gone; the
     ledger and stock stay correct.
-  * P → before P needs `alembic downgrade 20261020_0102` first (it drops the
-    still-empty table), because an older image cannot start against an
+  * P → before P needs `alembic downgrade 20261022_0105` first (it drops the
+    still-empty table and nothing else; `20261020_0102` would also revert
+    0105, a lossy TEXT → VARCHAR(2048) that PostgreSQL refuses while a longer
+    value is stored), because an older image cannot start against an
     unknown head (the api image runs `alembic upgrade head`). Boards with
     `hlak` or more than 60 rows cannot exist yet in P, because P offers
     neither.

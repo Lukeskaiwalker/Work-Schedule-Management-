@@ -12,7 +12,7 @@ knows (the api image runs ``alembic upgrade head``). Rolling back past this
 release needs ``alembic downgrade 20261022_0105`` first, which drops the
 table; built-in codes keep working without it.
 
-Chain (2026-10-22): written on ``20261020_0102``; release v2.14.42 shipped
+Chain (2026-10-22): written on ``20261020_0102``; release v2.14.42 puts
 ``20261022_0105`` on top of 0102, so release v2.14.43 re-points this onto
 0105 and Alembic keeps a single head.
 
