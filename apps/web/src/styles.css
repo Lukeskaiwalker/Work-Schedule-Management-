@@ -130,7 +130,13 @@ code {
 .app-shell {
   display: grid;
   min-height: 100dvh;
-  grid-template-columns: 1fr;
+  /* `minmax(0, 1fr)`, never a bare `1fr` (= minmax(auto, 1fr)): an auto
+     minimum grows the column to the page's min-content, and a sideways
+     scroller counts its whole content in that. Between 768 and 899 px, where
+     `.content` is neither `min-width: 0` nor a scroll container, one wide
+     drawing (Schaltplan, Wochenplanung) made the page thousands of px wide
+     and the root's clip cut it off. Pinned in pageWidthCss.test.ts. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sidebar {
@@ -6218,7 +6224,11 @@ li {
   border-radius: 14px;
   background-color: #ffffff;
   box-shadow: 0 1px 4px rgba(20, 41, 61, 0.04);
-  overflow: hidden;
+  /* Only the vertical axis is clipped. This used to be the `overflow: hidden`
+     shorthand, which overrode the `overflow-x: auto` above: seven 164 px days
+     are wider than this box below ~1520 px, and Saturday and Sunday were cut
+     off with no way to scroll to them. The rounded corners still clip. */
+  overflow-y: hidden;
 }
 
 .planning-page .planning-grid-unified {
@@ -17098,7 +17108,8 @@ td {
   }
 
   .app-shell {
-    grid-template-columns: var(--sidebar-width) 1fr;
+    /* minmax(0, 1fr) for the same reason as the base rule. */
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
     height: 100dvh;
     overflow: hidden;
   }
@@ -34189,6 +34200,11 @@ button.time-calendar-cell {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   max-height: 72vh;
+  /* Its width comes from the page, never from the drawing: otherwise the
+     SVG's width is this box's min-content, which widens every ancestor that
+     sizes by content, and Einpassen then fits the drawing to that widened
+     box instead of the screen. */
+  contain: inline-size;
 }
 
 .sp-canvas {
@@ -34454,6 +34470,9 @@ button.time-calendar-cell {
   overflow-x: auto;
   padding-bottom: 4px;
   -webkit-overflow-scrolling: touch;
+  /* A full rail of 76 px tiles is wider than a tablet: the tiles scroll in
+     here instead of widening the page (see .sp-diagram-scroll). */
+  contain: inline-size;
 }
 
 .sp-tile {
