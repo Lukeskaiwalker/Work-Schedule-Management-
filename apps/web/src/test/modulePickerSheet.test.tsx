@@ -244,7 +244,8 @@ describe("ModulePickerSheet — taking over what exists", () => {
     fireEvent.click(adopt);
     fireEvent.click(item("ZU37KS"));
     const links = linkedRows(current(), SHELF_INDEX);
-    expect(links.get("alt")?.railKey).toBe("r1");
+    // The first rail that is no terminal rail (r1/r2 are reserved for WAGO terminals, R2 §3.6).
+    expect(links.get("alt")?.railKey).toBe("r3");
   });
 
   it("offers no row take-over without outside rows that hold devices", () => {

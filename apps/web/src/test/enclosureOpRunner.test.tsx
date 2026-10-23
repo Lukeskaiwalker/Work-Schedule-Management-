@@ -20,7 +20,7 @@ function relabel(label: string): (doc: PanelDocument) => PanelDocument {
   return (doc) => ({ ...doc, rows: doc.rows.map((candidate) => ({ ...candidate, label })) });
 }
 
-function setup(options: { readOnly?: boolean } = {}) {
+function setup(options: { readOnly?: boolean; onCommitted?: (before: PanelDocument, after: PanelDocument) => void } = {}) {
   const state = { document: BEFORE };
   const mutate = vi.fn((recipe: (current: PanelDocument) => PanelDocument) => {
     if (options.readOnly) return;
@@ -30,7 +30,7 @@ function setup(options: { readOnly?: boolean } = {}) {
   const onNotice = vi.fn();
   const confirmRegroup = vi.fn<(request: RegroupRequest) => void>();
   const hook = renderHook(
-    ({ document }) => useEnclosureOpRunner({ document, index: INDEX, mutate, confirmRegroup, onError, onNotice }),
+    ({ document }) => useEnclosureOpRunner({ document, index: INDEX, mutate, confirmRegroup, onError, onNotice, onCommitted: options.onCommitted }),
     { initialProps: { document: BEFORE } },
   );
   return { state, mutate, onError, onNotice, confirmRegroup, hook };
@@ -91,6 +91,29 @@ describe("useEnclosureOpRunner", () => {
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(op).toHaveBeenCalledTimes(2);
     expect(state.document.rows.map((candidate) => candidate.label)).toEqual(["edited meanwhile", "r2"]);
+  });
+
+  it("reports every committed op with the board before and after it (R2 §6.5: Rückgängig for actions)", () => {
+    const onCommitted = vi.fn();
+    const { state, confirmRegroup, hook } = setup({ onCommitted });
+    act(() => hook.result.current((doc) => ok(relabel("a")(doc))));
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+    expect(onCommitted.mock.calls[0][0]).toBe(BEFORE);
+    expect(onCommitted.mock.calls[0][1]).toBe(state.document);
+
+    // After the regroup confirmation, not before it.
+    const regrouped = [{ deviceId: "c1", from: "", to: "fi" }];
+    act(() => hook.result.current((doc) => ok(relabel("b")(doc), { regrouped })));
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+    const before = state.document;
+    act(() => confirmRegroup.mock.calls[0][0].apply());
+    expect(onCommitted).toHaveBeenCalledTimes(2);
+    expect(onCommitted.mock.calls[1][0]).toBe(before);
+    expect(onCommitted.mock.calls[1][1]).toBe(state.document);
+
+    // A refusal commits nothing.
+    act(() => hook.result.current(() => ({ ok: false, error: "nein" })));
+    expect(onCommitted).toHaveBeenCalledTimes(2);
   });
 
   it("does not follow up on a read-only board", () => {

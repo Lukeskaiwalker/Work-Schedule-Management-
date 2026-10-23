@@ -189,6 +189,81 @@
   overflow-wrap: anywhere;
 }
 
+/* A module without any rail (a cover, an unknown code) says why. */
+.sp-rail-group-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* A rail without a row (R2 §9): one 56 px line — name, length, "+ Gerät". */
+.sp-rail.sp-rail--empty {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 0 0 0 12px;
+  min-height: 56px;
+  border-style: dashed;
+  background: transparent;
+}
+
+.sp-rail-empty-name {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--sp-ink);
+  overflow-wrap: anywhere;
+}
+
+/* Pinned to the right end, also when a narrow phone wraps the line. */
+.sp-rail--empty .sp-tile--add {
+  margin-left: auto;
+  min-height: 56px;
+  min-width: 96px;
+  flex-direction: row;
+  gap: 6px;
+  border: 0;
+  border-left: 1px dashed var(--sp-line);
+  border-radius: 0 11px 11px 0;
+}
+
+.sp-rail--empty .sp-rail-empty {
+  padding-right: 12px;
+}
+
+/* A rail that holds the WAGO terminals (R2 §9): no "+ Gerät", says what sits there. */
+.sp-rail--empty.sp-rail--reserved .sp-rail-slots {
+  padding-right: 12px;
+}
+
+.sp-rail-reserved {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--sp-line);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+/* Devices sit where the terminals belong (R12): say so as a warning. */
+.sp-rail-reserved--warn {
+  border: 1px solid var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+  color: var(--sp-warn);
+}
+
+.sp-rail-reserved p {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
 /* ── "Prüfen:" banner: one chip for the cabinet ──────────────────────────── */
 
 .sp-warnings-chip {

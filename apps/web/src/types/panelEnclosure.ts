@@ -53,6 +53,16 @@ export interface EnclosureFitting {
   removable: boolean;
 }
 
+/**
+ * One field's manual WAGO strip sequence (docs/PANEL_ENCLOSURE_R2.md §2.1):
+ * strip ids left → right on rail 1, then rail 2; `rail2_from` = the strip
+ * that starts rail 2, null = split automatically.
+ */
+export interface TerminalOrderEntry {
+  strips: string[];
+  rail2_from: string | null;
+}
+
 export interface EnclosureModule {
   id: string;
   code: string;
@@ -71,6 +81,13 @@ export interface EnclosureModule {
   fittings?: EnclosureFitting[] | null;
   removed_fittings: string[];
   meters: EnclosureMeter[];
+  /**
+   * Round 2 (§2.1): the manual strip order, keyed by the field offset inside
+   * this module ("0" for every built-in). Only after a manual strip move;
+   * null and absent mean the same. Read ONLY through `parseTerminalOrder`
+   * (`utils/enclosureTerminals.ts`): a rollback image stores it unvalidated.
+   */
+  terminal_order?: Record<string, TerminalOrderEntry> | null;
 }
 
 /** `document.enclosure`: the cabinet and the modules in it. */
@@ -229,9 +246,20 @@ export type SceneBoxKind =
   | "meter_front"
   | "blind_plate"
   | "door"
-  | "handle";
+  | "handle"
+  /** Round 2 (§8): one placed WAGO strip on a terminal rail, open view only. */
+  | "terminal_strip";
 
-export type SceneBoxFlag = "overflow" | "supplied" | "sealable" | "unknown_code" | "unverified" | "free" | "retired";
+/** `terminals` (round 2, §8): a reserved terminal rail, drawn even when empty. */
+export type SceneBoxFlag =
+  | "overflow"
+  | "supplied"
+  | "sealable"
+  | "unknown_code"
+  | "unverified"
+  | "free"
+  | "retired"
+  | "terminals";
 
 /**
  * One box of the drawing, in mm. Origin: top-left corner of the cabinet's
@@ -264,3 +292,174 @@ export interface EnclosureScene {
   view: SceneView;
   boxes: SceneBox[];
 }
+
+// ── WAGO terminals on the rails (round 2, docs/PANEL_ENCLOSURE_R2.md) ───────
+
+/** How a field's strips were packed (§2.3): its stored order, none, or a stored split that no longer fits. */
+export type TerminalOrderStatus = "default" | "manual" | "ignored";
+
+/** One strip (Leiste or Block) placed on a terminal rail. Every mm is `round1`ed. */
+export interface PlacedTerminalStrip {
+  stripId: string;
+  stripNo: number;
+  kind: "leiste" | "block";
+  xLabel: string;
+  groupId: string;
+  /** R4: the field holding most of its circuits; null when none is in a field. */
+  homeField: number | null;
+  /** The field of its protective device; null for the supply group or a head outside the cabinet. */
+  headField: number | null;
+  /** From the rail's left end, the rail's back-compat devices included. */
+  offsetMm: number;
+  widthMm: number;
+  /** `widthMm`, plus the end plate when it sits inside this strip (before its trailing 2009-305). */
+  extentMm: number;
+}
+
+/**
+ * A part that closes a terminal rail: one end plate matching its last
+ * terminal block (R7). No end stops — the owner ruled the WAGO 249-116 out
+ * on 2026-10-22.
+ */
+export interface TerminalRailPart {
+  partId: string;
+  role: "end_plate";
+  offsetMm: number;
+  widthMm: number;
+}
+
+export interface PlacedTerminalRail {
+  moduleId: string;
+  railKey: string;
+  /** The rail's linked row, if any (devices placed before round 2). */
+  rowId: string | null;
+  /** 0 = the field's top terminal rail, 1 = the second. */
+  position: number;
+  /** "F2 · Verteiler 1". */
+  title: string;
+  capacityMm: number;
+  /** Σ widths of the non-placeholder devices on the rail's row (R12). */
+  devicesMm: number;
+  /** devicesMm + Σ strip widths + the last strip's end plate. */
+  usedMm: number;
+  /** The module's served spec has the fitting `u84t` (R8). */
+  insulated: boolean;
+  strips: PlacedTerminalStrip[];
+  parts: TerminalRailPart[];
+}
+
+export interface UnplacedTerminalStrip {
+  stripId: string;
+  xLabel: string;
+  widthMm: number;
+}
+
+export interface TerminalFieldPlacement {
+  field: number;
+  order: TerminalOrderStatus;
+  /** The module whose `terminal_order` the field read; null without one. */
+  orderModuleId: string | null;
+  rails: PlacedTerminalRail[];
+  unplaced: UnplacedTerminalStrip[];
+  /** Σ widths of the unplaced strips. */
+  missingMm: number;
+}
+
+/** Derived, never stored (§2.3): Python emits these key names, so the fixture compares as is. */
+export interface TerminalPlacement {
+  /** Sorted ids of the devices that get no terminal (R3). */
+  skip: string[];
+  /** TERMINAL_RAIL_USABLE_MM (R16). */
+  usableMm: number;
+  /** Every field with terminal rails, ascending. */
+  fields: TerminalFieldPlacement[];
+  /** R6: strips whose home field has no terminal rails, and where they went. */
+  elsewhere: { stripId: string; homeField: number; field: number }[];
+  /** Strips none of whose circuits sits in a field ("Nicht im Schrank"). */
+  outside: string[];
+  /** Strips with a home field on a board with no terminal rails at all. */
+  noRails: string[];
+  /** part id → count of the rail parts, in TERMINAL_PART_ORDER. */
+  railParts: Record<string, number>;
+  /** U84T sets: terminal rails with a placed strip that are not insulated. */
+  insulationSets: number;
+}
+
+// ── Close-up of a field's terminal rails (§7.1) ──────────────────────────────
+
+export interface CloseupItem {
+  /** No "end_stop": the owner ruled the WAGO 249-116 out on 2026-10-22. */
+  kind: "terminal" | "end_clamp" | "end_plate";
+  /** "2003-7641" / "WAGO 2003-7641". */
+  partId: string;
+  partNo: string;
+  stripId: string | null;
+  /** The strip's "X3"; "" for rail parts. */
+  xLabel: string;
+  /** On the rail, from its left end (devices included). */
+  offsetMm: number;
+  widthMm: number;
+  /** After overrides; "" without a marker. */
+  marker: string;
+  /** Conductors on this terminal, top → bottom. */
+  levels: string[];
+  /** The same text as TerminalGroupCard's "für" column. */
+  forText: string;
+  /** device.cable, trimmed. */
+  cable: string;
+  deviceId: string | null;
+}
+
+export interface CloseupRail {
+  moduleId: string;
+  railKey: string;
+  title: string;
+  position: 0 | 1;
+  capacityMm: number;
+  usedMm: number;
+  insulated: boolean;
+  devices: { deviceId: string; label: string; offsetMm: number; widthMm: number }[];
+  items: CloseupItem[];
+}
+
+export interface TerminalCloseup {
+  field: number;
+  order: TerminalOrderStatus;
+  rails: CloseupRail[];
+  unplaced: { stripId: string; xLabel: string; title: string; widthMm: number }[];
+}
+
+// ── Suggestions (§4.2) ───────────────────────────────────────────────────────
+
+export interface RailTarget {
+  moduleId: string;
+  railKey: string;
+  title: string;
+  field: number;
+}
+
+export type TerminalSuggestion =
+  | {
+      rule: "encl.terminal_rail_devices";
+      field: number;
+      kind: "relink_rows";
+      scopes: string[];
+      moves: { rowId: string; target: RailTarget }[];
+    }
+  | {
+      rule: "encl.terminals_overflow";
+      field: number;
+      kind: "move_group";
+      scope: string;
+      headId: string;
+      deviceIds: string[];
+      targets: RailTarget[];
+    }
+  | { rule: "encl.terminal_order_ignored"; field: number; kind: "reset_order"; scope: string }
+  | {
+      rule: "encl.terminal_placeholders";
+      field: number;
+      kind: "remove_placeholders";
+      scopes: string[];
+      deviceIds: string[];
+    };

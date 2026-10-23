@@ -16,12 +16,19 @@
  * disagrees with a row, that row's `widthMm` is the one number to change
  * (same policy as `CAP_TOP_RATIO` in werkstatt_labels.py).
  *
- * Marking. All seven parts are TOPJOB S; their marker is the 2009-110 strip
- * (11 mm, continuous, snapped into the terminal's marker slot) — the same
- * stock the BMK strip uses, so one strip is printed per Leiste and slid
+ * Marking. All seven terminals are TOPJOB S; their marker is the 2009-110
+ * strip (11 mm, continuous, snapped into the terminal's marker slot) — the
+ * same stock the BMK strip uses, so one strip is printed per Leiste and slid
  * along the row, and one 60 mm piece per 16 mm² Block. Feed and
- * Etagenklemmen carry a marker; the end clamp does not (`marker: false`)
- * and therefore never gets a segment on the strip.
+ * Etagenklemmen carry a marker; the end elements do not (`marker: false`)
+ * and therefore never get a segment on the strip.
+ *
+ * Rail parts (docs/PANEL_ENCLOSURE_R2.md §5.3, round 2). On a cabinet board
+ * every terminal rail that holds a strip is closed by one end plate matching
+ * its last terminal block (`TerminalPart.endPlate`). They are counted by the
+ * placement (`enclosureTerminals.ts`), never by a group, so a legacy
+ * Stückliste is unchanged. No end stops: the owner ruled the WAGO 249-116
+ * out on 2026-10-22.
  */
 import { catalogEntry } from "./schaltplanDevices";
 import type { DeviceKind, PanelDevice, PanelFinding, PanelGroup } from "../types/schaltplan";
@@ -33,7 +40,9 @@ export type TerminalPartId =
   | "2009-305"
   | "2016-7604"
   | "2016-7601"
-  | "2016-7607";
+  | "2016-7607"
+  | "2003-7692"
+  | "2016-7691";
 
 export interface TerminalPart {
   id: TerminalPartId;
@@ -50,6 +59,12 @@ export interface TerminalPart {
   /** The width was confirmed on a WAGO or distributor page (see `source`). */
   verified: boolean;
   source: string;
+  /**
+   * The end plate that closes a rail whose last terminal block is this part;
+   * null for parts that never end a rail's terminal row (feed, end clamp,
+   * the plates themselves).
+   */
+  endPlate: TerminalPartId | null;
 }
 
 export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
@@ -65,6 +80,9 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://www.bauhaus.info/installationsklemmen/wago-topjob-installationsetagenklemme-s-2003-7641/p/27588879",
+    // Verified: the 2003-7641 datasheet (Stand 28.05.2026) lists 2003-7692
+    // as "Notwendiges Zubehör".
+    endPlate: "2003-7692",
   },
   "2003-7642": {
     id: "2003-7642",
@@ -80,6 +98,8 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://www.elektroland24.de/Elektroinstallation/Verteilungseinbau/Reihenklemmen/WAGO/Wago-2003-7642-Installations-Etagenklemme-L-L.html",
+    // UNVERIFIED: the same 2003-76xx housing as 2003-7641 is assumed.
+    endPlate: "2003-7692",
   },
   "2016-7714": {
     id: "2016-7714",
@@ -92,6 +112,10 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://www.elanto24.de/elektromaterial/befestigung/reihenklemmen/wago/installationsetagenklemmen/31920/wago-2016-7714-n-einspeiseklemme-in-76-a-16mm2-12-mm-breit-blau",
+    // Never a rail's last terminal block: a Leiste with a feed ends in an
+    // outgoing and the 2009-305. Its series plate would be 2016-7792
+    // (unverified), which is not modelled.
+    endPlate: null,
   },
   "2009-305": {
     id: "2009-305",
@@ -107,6 +131,9 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: false,
     verified: true,
     source: "https://www.wago.com/us/rail-chassis-terminal-blocks/topjobs-busbar-carrier/p/2009-305",
+    // Skipped when looking for a rail's last terminal block: its break-out
+    // plate closes the N busbar, not the terminal's open side.
+    endPlate: null,
   },
   "2016-7604": {
     id: "2016-7604",
@@ -119,6 +146,8 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://www.elektroland24.de/elektroinstallation/verteilungseinbau/reihenklemmen/wago/wago-2016-7604-2-leiter-n-verteilereinspeiseklemme.html",
+    // UNVERIFIED: the same 2016-76xx housing as 2016-7601 is assumed.
+    endPlate: "2016-7691",
   },
   "2016-7601": {
     id: "2016-7601",
@@ -131,6 +160,9 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://heizung-billiger.de/770206-wago-verteiler-einspeiseklemme-2016-2016-7601-16mm2-800v-76a-12mm-grau-wago-2016-7601-4045454725082.html",
+    // Verified: the 2016-7601 datasheet (Stand 03.06.2026), "Notwendiges
+    // Zubehör: 2016-7691 Abschlussplatte; 1 mm dick; grau".
+    endPlate: "2016-7691",
   },
   "2016-7607": {
     id: "2016-7607",
@@ -146,6 +178,32 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     marker: true,
     verified: true,
     source: "https://www.wago.com/de/reihenklemmen/2-leiter-schutzleiterklemme/p/2016-7607",
+    // UNVERIFIED: the same 2016-76xx housing as 2016-7601 is assumed.
+    endPlate: "2016-7691",
+  },
+  "2003-7692": {
+    id: "2003-7692",
+    partNo: "WAGO 2003-7692",
+    name: "Abschluss- und Zwischenplatte, 0,8 mm, orange",
+    role: "rail_part",
+    // 0,8 mm (WAGO datasheet 2003-7641, Stand 28.05.2026, "Notwendiges Zubehör").
+    widthMm: 0.8,
+    marker: false,
+    verified: true,
+    source: "https://www.wago.com/gb/10001/p/2003-7692",
+    endPlate: null,
+  },
+  "2016-7691": {
+    id: "2016-7691",
+    partNo: "WAGO 2016-7691",
+    name: "Abschlussplatte, 1 mm, grau",
+    role: "rail_part",
+    // 1 mm (WAGO datasheet 2016-7601, Stand 03.06.2026: "Abschlussplatte; 1 mm dick; grau").
+    widthMm: 1.0,
+    marker: false,
+    verified: true,
+    source: "https://www.wago.com/nl/rijgklemmen/afsluitplaat/p/2016-7691",
+    endPlate: null,
   },
 };
 
@@ -153,16 +211,28 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
 export const TERMINAL_PART_ORDER: readonly TerminalPartId[] = [
   "2003-7641",
   "2003-7642",
+  "2003-7692",
   "2009-305",
   "2016-7601",
   "2016-7604",
   "2016-7607",
+  "2016-7691",
   "2016-7714",
 ];
 
 export const FEED_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2016-7714", "2016-7604"]);
 export const OUTGOING_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2003-7641", "2003-7642", "2016-7601"]);
 export const END_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2009-305"]);
+export const END_PLATE_PART_IDS: ReadonlySet<string> = new Set<TerminalPartId>(["2003-7692", "2016-7691"]);
+/** What closes a terminal rail. Only the end plates: no end stops (owner, 2026-10-22). */
+export const RAIL_PART_IDS: ReadonlySet<string> = END_PLATE_PART_IDS;
+
+/**
+ * Device ids that get no terminal whatever their flag says — on a cabinet
+ * board, everything on an AAR, NAR, RfZ or APZ rail (docs/PANEL_ENCLOSURE_R2.md
+ * §3.1, `terminalSkip`). Empty on a board without a cabinet.
+ */
+export const NO_SKIP: ReadonlySet<string> = new Set<string>();
 
 /**
  * Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits, and
@@ -249,9 +319,9 @@ export function isBlockDevice(device: Pick<PanelDevice, "poles" | "rating"> & { 
   return devicePoles(device) >= 3 && amps !== null && amps > BLOCK_MIN_AMPS_EXCLUSIVE;
 }
 
-/** The children of a group that end on a terminal, in physical order. */
-export function terminalChildren(group: PanelGroup): PanelDevice[] {
-  return group.children.filter(hasTerminal);
+/** The children of a group that end on a terminal, in physical order; `skip` (§3.1) leaves devices out. */
+export function terminalChildren(group: PanelGroup, skip: ReadonlySet<string> = NO_SKIP): PanelDevice[] {
+  return group.children.filter((device) => hasTerminal(device) && !skip.has(device.id));
 }
 
 /**
@@ -289,10 +359,10 @@ function deviceLabel(device: PanelDevice): string {
  * never `warn`: the derivation is still right, the electrician just needs
  * to know what it assumed.
  */
-export function terminalFindings(groups: PanelGroup[]): PanelFinding[] {
+export function terminalFindings(groups: PanelGroup[], skip: ReadonlySet<string> = NO_SKIP): PanelFinding[] {
   const findings: PanelFinding[] = [];
   for (const group of groups) {
-    const children = terminalChildren(group);
+    const children = terminalChildren(group, skip);
     const variant = terminalVariant(group, children);
     if (!variant) continue;
     // Only a Leiste lacks the feed terminal; a block brings its own N

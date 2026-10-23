@@ -17,6 +17,12 @@ alembic==1.16.5
 # unfixable), rsa and pyasn1, which only it pulled in.
 PyJWT==2.15.1
 passlib[bcrypt]==1.7.4
+# pydantic was only pulled in by fastapi (>= 2.9). EnclosureModule.terminal_order
+# (app/schemas/panel_enclosure.py) uses Field(exclude_if=...), which needs
+# pydantic >= 2.12; older releases do not know the argument (it would end up as
+# JSON-schema extra data and the null would be dumped again). Pinned to the
+# version the suite runs against.
+pydantic==2.14.1
 pydantic-settings==2.10.1
 python-multipart==0.0.32
 httpx==0.28.1

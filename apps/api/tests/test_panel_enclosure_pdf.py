@@ -9,19 +9,37 @@ sheet. The Materialliste pages follow, portrait, as their own PDF prints them.
 
 from __future__ import annotations
 
+import copy
 import re
 from datetime import datetime
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen.canvas import Canvas
 
 from app.core.db import SessionLocal
 from app.models.schaltplan import PanelPlan
 from app.schemas.schaltplan import PanelMaterialArticleOut, PanelMaterialLineOut, PanelMaterialOut, PanelMaterialPanelOut
 from app.services.panel_enclosure_catalog import builtin_catalog
-from app.services.panel_enclosure_pdf import MM, build_aufbau_pdf, pick_scale
+from app.services.panel_enclosure_pdf import MM, _fill, _stroke, build_aufbau_pdf, pick_scale
+from app.services.panel_enclosure_pdf_terminals import closeup_layout, draw_terminal_closeup_pages
+from app.services.panel_enclosure_terminal_closeup import terminal_closeup
 from app.services.schaltplan_material_pdf import build_material_pdf
-from scripts.write_enclosure_fixtures import meter_dist_zb33s, violations_zb34s
+from scripts.write_enclosure_fixtures import (
+    document as board,
+    fi,
+    ls,
+    meter_dist_zb33s,
+    module,
+    row,
+    terminals_rk_zb53s,
+    terminals_zb34s,
+    violations_zb34s,
+)
 from tests.panel_enclosure_helpers import auth, create_panel, employee, hidden_project
 from tests.test_schaltplan import _pdf_text
 
@@ -68,10 +86,11 @@ def test_the_aufbau_pdf_is_a_landscape_sheet_and_the_materialliste(client: TestC
     assert disposition.startswith("inline") and f"Aufbau_{panel['panel_number']}_" in disposition
     pages = _pages(resp.content)
     material = client.get(f"/api/schaltplan/panels/{panel['id']}/material/pdf", headers=auth(admin_token))
-    assert len(pages) == 1 + len(_pages(material.content))
-    width, height = pages[0]
-    assert width > height  # landscape
-    assert all(w < h for w, h in pages[1:])  # the Materialliste stays portrait
+    # Page 1, one close-up page per field with placed terminals (Feld 2 and 3,
+    # no text shortened, so no legend page), then the Materialliste.
+    assert len(pages) == 1 + 2 + len(_pages(material.content))
+    assert all(w > h for w, h in pages[:3])  # landscape: the front view and the close-ups
+    assert all(w < h for w, h in pages[3:])  # the Materialliste stays portrait
     text = _pdf_text(resp.content)
     assert b"stab 1:8" in text  # "Maßstab 1:8"
     for word in (panel["panel_number"].encode(), b"ZB33S", b"ZH3EH16", b"Q0", b"1XYZ0000000001", b"Materialliste"):
@@ -176,3 +195,151 @@ def test_open_returns_are_named_in_the_summary() -> None:
                                    status="open")
     text = _pdf_text(build_material_pdf(material=_material([removed], returns_open=2), company_name=None))
     assert b"2 \\327 ins Lager offen" in text or "2 × ins Lager offen".encode("cp1252") in text
+
+
+# ── the WAGO close-up pages (docs/PANEL_ENCLOSURE_R2.md §7.3) ────────────────
+
+CATALOG = builtin_catalog()
+LONG_LABEL = "Steckdosen Küche Arbeitsplatte links neben der Spüle und am Fenster"
+
+
+class _Recorder(Canvas):
+    """A canvas that remembers every string it draws (text, font, size) and every rectangle."""
+
+    def __init__(self) -> None:
+        super().__init__(BytesIO(), pagesize=landscape(A4))
+        self.strings: list[tuple[str, str, float]] = []
+        self.rects: list[tuple[float, float, float, float]] = []
+
+    def _note(self, text: str) -> None:
+        self.strings.append((text, self._fontname, self._fontsize))
+
+    def drawString(self, x, y, text, *args, **kwargs):  # noqa: N802 (reportlab's name)
+        self._note(text)
+        return super().drawString(x, y, text, *args, **kwargs)
+
+    def drawCentredString(self, x, y, text, *args, **kwargs):  # noqa: N802
+        self._note(text)
+        return super().drawCentredString(x, y, text, *args, **kwargs)
+
+    def drawRightString(self, x, y, text, *args, **kwargs):  # noqa: N802
+        self._note(text)
+        return super().drawRightString(x, y, text, *args, **kwargs)
+
+    def rect(self, x, y, width, height, *args, **kwargs):
+        self.rects.append((x, y, width, height))
+        return super().rect(x, y, width, height, *args, **kwargs)
+
+
+def _plan(document: dict) -> PanelPlan:
+    return PanelPlan(id=1, panel_number="VT-0042", customer_id=1, name="Zählerschrank Haus A", designation="ZS1",
+                     panel_type="meter", status="draft", revision=3, document=document)
+
+
+def _drawn(document: dict) -> tuple[_Recorder, int, list]:
+    closeup = terminal_closeup(document, CATALOG)
+    recorder = _Recorder()
+    pages = draw_terminal_closeup_pages(recorder, plan=_plan(document), closeup=closeup,
+                                        company_name="Beispiel Elektro")
+    return recorder, pages, closeup_layout(closeup, plan=_plan(document), company_name="Beispiel Elektro")
+
+
+def _ten_strips_with_long_labels() -> dict:
+    """Ten FI groups of two LS with long names in one ZU37KS: ten strips on its two terminal rails."""
+    groups = [
+        [fi(f"dev-f{g}", f"F{g}"),
+         *(ls(f"dev-f{g}-{k}", f"F{g}.{k}", str(2 * g + k), f"{LONG_LABEL} {g}.{k}", terminal_block=True)
+           for k in (1, 2))]
+        for g in range(1, 11)
+    ]
+    rows = [row(f"row-r{rail}", f"F1 · Verteiler {rail}", [*groups[2 * i], *groups[2 * i + 1]])
+            for i, rail in enumerate(range(3, 8))]
+    modules = [module("mod-v", "ZU37KS", 0, {f"r{rail}": f"row-r{rail}" for rail in range(3, 8)}),
+               module("mod-w", "ZU37KS", 1, {})]
+    return board("ZB32S", modules, rows)
+
+
+def test_a_close_up_page_per_field_names_it_and_carries_markers_scale_and_the_control_measure() -> None:
+    recorder, pages, layout = _drawn(meter_dist_zb33s())
+    texts = [text for text, _, _ in recorder.strings]
+    assert pages == len(layout) == 2  # Feld 2 and Feld 3 hold strips; nothing shortened, no legend
+    assert [page.field for page in layout] == [1, 2] and not any(page.legend for page in layout)
+    assert "Reihenklemmen · Feld 2 · VT-0042 Zählerschrank Haus A" in texts
+    assert "Reihenklemmen · Feld 3 · VT-0042 Zählerschrank Haus A" in texts
+    assert texts.count("Maßstab 1:1 (Breite) — zum Anlegen an die Hutschiene") == 2
+    assert texts.count("Kontrollmaß 100 mm") == 2
+    for marker in ("X1", "1.1", "1.2", "X2", "2.1", "F1.1 · Licht EG · Nr. 1", "NYM-J 3x2,5 mm²"):
+        assert marker in texts, marker
+    heading = next(text for text in texts if text.startswith("Hutschiene 1 · F2 · Verteiler 1"))
+    assert "U84T: 1 Satz" in heading and "Abschlussplatte 2003-7692" in heading
+    # 1:1 across: the rail outline is the rail's usable length, the bar 100 mm.
+    widths = [width for _, _, width, _ in recorder.rects]
+    assert any(abs(width - 210 * 72 / 25.4) < 0.01 for width in widths)
+    assert any(abs(width - 100 * MM) < 0.01 for width in widths)
+
+
+def test_no_string_on_a_close_up_page_is_wider_than_its_cell() -> None:
+    for document in (_ten_strips_with_long_labels(), terminals_zb34s(), terminals_rk_zb53s()):
+        recorder, _, layout = _drawn(document)
+        # Every string drawn is a laid-out text, in order: nothing bypasses its cell.
+        assert recorder.strings == [(text.text, text.font, text.size) for page in layout for text in page.texts]
+        for page in layout:
+            for text in page.texts:
+                length, cross = (text.h, text.w) if text.rotated else (text.w, text.h)
+                assert text.text and stringWidth(text.text, text.font, text.size) <= length + 0.01, text
+                assert text.size <= cross + 0.01, text
+
+
+def test_a_shortened_text_gets_a_legend_page_with_the_full_texts() -> None:
+    document = _ten_strips_with_long_labels()
+    _, pages, layout = _drawn(document)
+    assert [(page.field, page.legend) for page in layout] == [(0, False), (0, True)]
+    assert pages == 2
+    field_page, legend = layout
+    assert field_page.shortened and any(text.truncated for text in field_page.texts)
+    legend_texts = [text.text for text in legend.texts]
+    assert "Reihenklemmen · Feld 1 · Legende" in legend_texts
+    # The für text in full (wrapped over lines, never cut).
+    joined = " ".join(legend_texts)
+    assert f"{LONG_LABEL} 10.2" in joined and "X10" in legend_texts and "10.2" in legend_texts
+
+
+def test_unplaced_strips_and_devices_on_a_reserved_rail_are_on_the_page() -> None:
+    recorder, _, layout = _drawn(terminals_zb34s())
+    texts = [text for text, _, _ in recorder.strings]
+    assert [page.field for page in layout if not page.legend] == [1, 3]  # the empty RK field gets no page
+    assert "Ohne Platz: X4 (FI F4), X5 (FI F5), X6 (FI F6)" in texts
+    assert "F1.4" in texts  # the LS still on the reserved rail, drawn before the strips
+    rk = [text for text, _, _ in _drawn(terminals_rk_zb53s())[0].strings]
+    assert any(text.startswith("Hutschiene 1 · F2 · Verteiler 1") and "U84T ab Werk" in text for text in rk)
+
+
+def test_a_long_unplaced_list_is_cut_off_with_a_count() -> None:
+    document = terminals_zb34s()
+    closeup = copy.deepcopy(terminal_closeup(document, CATALOG))
+    field = next(entry for entry in closeup if entry["field"] == 1)
+    field["unplaced"] = [{"stripId": f"s{i}", "xLabel": f"X{i}", "title": f"X{i} · FI F{i} · {LONG_LABEL}",
+                          "widthMm": 61.1} for i in range(100, 160)]
+    layout = closeup_layout(closeup, plan=_plan(document))
+    footer = next(text.text for page in layout for text in page.texts if text.text.startswith("Ohne Platz:"))
+    match = re.search(r"… und (\d+) weitere$", footer)
+    assert match is not None and 0 < int(match.group(1)) < 60
+
+
+def test_a_board_without_placed_terminals_gets_no_close_up_page() -> None:
+    recorder, pages, layout = _drawn(violations_zb34s())
+    assert (pages, layout, recorder.strings) == (0, [], [])
+    plain = _pages(_aufbau(violations_zb34s(), []))
+    material = _pages(build_material_pdf(material=_material([]), company_name="Beispiel Elektro"))
+    assert len(plain) == 1 + len(material)
+
+
+def test_the_front_view_draws_strips_and_terminal_rails_in_the_schrank_tab_s_colours() -> None:
+    # R2 §8: the 2D drawing (EnclosureFrontBoxes, schaltplan-enclosure-terminals.css) draws a placed
+    # strip in WAGO grey (--sp-term-grey) with a dark outline (--sp-term-outline), and tints a rail
+    # reserved for terminals orange (--sp-term-reserved under its hatch). The sheet takes the same
+    # colours, the tint as one opaque print colour; every other rail stays grey.
+    assert _fill("terminal_strip", set(), "VT") == colors.HexColor("#c9ced4")
+    assert _stroke("terminal_strip", set()) == colors.HexColor("#2d3a48")
+    assert _fill("rail", {"terminals"}, "VT") == colors.HexColor("#f8d6b7")
+    assert _fill("rail", set(), "VT") == colors.HexColor("#9ca3af")

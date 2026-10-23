@@ -18,12 +18,15 @@
  * - a row behind an unresolvable key gets `encl.stale_rail`, not also
  *   `encl.row_unlinked`; `encl.row_order` compares the whole stored order.
  *
+ * Round 2 (docs/PANEL_ENCLOSURE_R2.md §4.1) replaced the one `encl.terminals`
+ * note with ten WAGO terminal rules (`enclosureTerminalRules.ts`), which read
+ * the board's precomputed terminals and placement.
+ *
  * `validateDocument` stays untouched: these are appended, not merged.
  */
 
 import { catalogEntry } from "./schaltplanDevices";
 import { buildTopology, findRowOf, isCircuitDevice } from "./schaltplanTopologyCore";
-import { deriveTerminals } from "./schaltplanTerminals";
 import { enclosureModules, METER_FAMILIES, meterPlaceCount, meterZones, type CatalogIndex } from "./enclosureCatalog";
 import {
   enclosureDeviceWidthMm,
@@ -35,15 +38,18 @@ import {
   resolvableRails,
   type RailLink,
 } from "./enclosureLayout";
-import { round1 } from "./enclosureGeometry";
+import { formatMmText } from "./enclosureGeometry";
+import { TERMINAL_RULE_ORDER, terminalFindings, type TerminalPrecomputed } from "./enclosureTerminalRules";
 import type { EnclosureModule, EnclosureSpec, ModuleSpec, RailSpec, ZoneSpec, ZoneType } from "../types/panelEnclosure";
 import type { DeviceKind, PanelDevice, PanelDocument, PanelFinding, PanelRow } from "../types/schaltplan";
+
+export { formatMmText };
 
 export const RULE_ORDER = [
   "encl.unknown_code", "encl.out_of_bounds", "encl.overlap", "encl.height_mismatch", "encl.field_gap",
   "encl.row_unlinked", "encl.stale_rail", "encl.row_order", "encl.rail_overflow", "encl.supplied_dangling",
-  "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid", "encl.terminals",
-  "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
+  "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid",
+  ...TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
   "vde.3p_main_switch", "vde.rfz_devices", "vde.apz_missing", "vde.apz_position", "vde.meter_place_empty",
 ] as const;
 const RANK = new Map<string, number>(RULE_ORDER.map((rule, rank) => [rule, rank]));
@@ -73,8 +79,6 @@ const COPY = {
   unverified: (art: string, note: string) => `${art}: Katalogdaten ungeprüft — ${note}.`,
   meterDevice: (bmk: string) => `${bmk}: Zwischenzähler auf der Hutschiene — eHZ/3-Punkt gehören auf den Zählerplatz.`,
   meterPlaceInvalid: (art: string, place: number) => `${art}: Zählerplatz ${place} gibt es nicht — Eintrag wird ignoriert.`,
-  terminals: (field: number, count: number, mm: string) =>
-    `Feld ${field}: Reihenklemmen ${count} Stück, ${mm} mm Hutschiene — im Schrankbild nicht gezeichnet.`,
   narSls: (field: number, art: string, have: number, need: number) =>
     `Feld ${field} (${art}): ${have} SLS-Schalter für ${need} Zählerplatz/-plätze im NAR.`,
   narFuse: (art: string) => `NAR ${art}: NH/Neozed ist nicht als Trennvorrichtung zulässig — SLS verwenden.`,
@@ -125,11 +129,6 @@ interface Board {
 
 function finding(rule: string, level: "warn" | "info", scope: string, message: string): PanelFinding {
   return { level, scope, message: rule.startsWith("vde.") ? VDE + message : message, rule };
-}
-
-/** "29,9" / "1050": a length as a sentence shows it. */
-export function formatMmText(value: number): string {
-  return String(round1(value)).replace(".", ",");
 }
 
 /** The last number in a rating ("B16" → 16, "C 32A" → 32, "0,5 A" → 0.5); null when there is none. */
@@ -357,21 +356,6 @@ function invalidMeterPlaces(board: Board): PanelFinding[] {
   });
 }
 
-/** WAGO strips per field, attributed to the field of their group's head device (Q3: not drawn in v1). */
-function terminalLengths(board: Board): PanelFinding[] {
-  const perField = new Map<number, { count: number; mm: number }>();
-  for (const group of deriveTerminals(board.doc)) {
-    const rail = group.headDevice ? railOfRow(board, findRowOf(board.doc, group.headDevice.id)) : undefined;
-    if (!rail) continue;
-    const entry = perField.get(rail.field) ?? { count: 0, mm: 0 };
-    const mm = group.terminals.reduce((total, terminal) => total + terminal.widthMm, 0);
-    perField.set(rail.field, { count: entry.count + group.terminals.length, mm: entry.mm + mm });
-  }
-  return [...perField.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([field, { count, mm }]) => finding("encl.terminals", "info", "", COPY.terminals(field + 1, count, formatMmText(mm))));
-}
-
 // ── vde.* (VDE-AR-N 4100:2026-04) ────────────────────────────────────────────
 
 type SortKey = (number | string)[];
@@ -535,7 +519,7 @@ function emptyMeterPlaces(board: Board): PanelFinding[] {
 const CHECKS: readonly ((board: Board) => PanelFinding[])[] = [
   unknownCodes, outOfBounds, overlaps, heightMismatch, fieldGaps, unlinkedRows, staleRails, rowOrder,
   railOverflow, suppliedDangling, crossModuleFeed, unverifiedEntries, meterDevices, invalidMeterPlaces,
-  terminalLengths, narSls, narContents, slsRating, aarContents, aarCircuits, threePointMainSwitch,
+  narSls, narContents, slsRating, aarContents, aarCircuits, threePointMainSwitch,
   rfzDevices, apzMissing, apzPosition, emptyMeterPlaces,
 ];
 
@@ -567,8 +551,10 @@ const byOrder = (a: PanelFinding, b: PanelFinding): number =>
  * Every cabinet finding of a board, sorted; [] without a cabinet. A check
  * that trips over a hand-edited document is skipped and logged, never
  * thrown: the editor must keep drawing whatever the board looks like.
+ * `pre`: the board's `boardTerminals` and `placeTerminals`, when the caller
+ * already has them (round 2, §6.7); the terminal rules derive them otherwise.
  */
-export function enclosureFindings(document: PanelDocument, index: CatalogIndex): PanelFinding[] {
+export function enclosureFindings(document: PanelDocument, index: CatalogIndex, pre?: TerminalPrecomputed): PanelFinding[] {
   if (!document.enclosure) return [];
   let board: Board;
   try {
@@ -585,5 +571,5 @@ export function enclosureFindings(document: PanelDocument, index: CatalogIndex):
       return [];
     }
   });
-  return findings.sort(byOrder);
+  return [...findings, ...terminalFindings(document, index, pre)].sort(byOrder);
 }

@@ -11,9 +11,11 @@
  *
  * Everything returns new objects; the document passed in is never touched.
  */
+import { parseTerminalOrder } from "./enclosureTerminals";
 import { catalogEntry, makeDevice, newId, nextCircuitNumber, rowUsedSlots } from "./schaltplanDevices";
-import { isTerminalEligible } from "./schaltplanTerminalRules";
+import { NO_SKIP, isTerminalEligible } from "./schaltplanTerminalRules";
 import { allDevices, isCircuitDevice, terminalOffered } from "./schaltplanTopology";
+import type { EnclosureModule, PanelEnclosure, TerminalOrderEntry } from "../types/panelEnclosure";
 import type { DeviceKind, PanelDevice, PanelDocument, PanelRow, PhaseLabel } from "../types/schaltplan";
 
 /** Width of a rail that was not sized by hand — the classic 12-TE Reihe. */
@@ -116,8 +118,11 @@ export function duplicateDevice(
  * turning a `meter` device into a meter place all come through here, so they
  * all clean up the same way. Anything that named a deleted device as its
  * feed goes back to positional derivation rather than pointing at a ghost,
- * and the deleted devices' Reihenklemmen overrides (`"<id>:<slot>"`) go too.
- * Unknown ids are ignored; nothing to delete returns the input itself.
+ * and the deleted devices' Reihenklemmen overrides (`"<id>:<slot>"`) go too,
+ * as do their strips in a cabinet module's stored strip order
+ * (docs/PANEL_ENCLOSURE_R2.md §2.1 — hygiene only, the derivation ignores
+ * stale ids anyway). Unknown ids are ignored; nothing to delete returns the
+ * input itself.
  */
 export function removeDevices(document: PanelDocument, ids: Iterable<string>): PanelDocument {
   const gone = new Set(ids);
@@ -131,11 +136,41 @@ export function removeDevices(document: PanelDocument, ids: Iterable<string>): P
       .map((device) => (device.parent_id !== null && gone.has(device.parent_id) ? { ...device, parent_id: null } : device));
     return { ...row, devices };
   });
+  const enclosure = pruneTerminalOrders(document.enclosure, gone);
+  const withEnclosure = enclosure === document.enclosure ? {} : { enclosure };
   const labels = document.terminal_labels;
-  if (!labels) return { ...document, rows };
+  if (!labels) return { ...document, rows, ...withEnclosure };
   const prefixes = [...gone].map((id) => `${id}:`);
   const kept = Object.entries(labels).filter(([key]) => !prefixes.some((prefix) => key.startsWith(prefix)));
-  return { ...document, rows, terminal_labels: Object.fromEntries(kept) };
+  return { ...document, rows, ...withEnclosure, terminal_labels: Object.fromEntries(kept) };
+}
+
+/**
+ * One module without the strips of deleted heads (`"<id>:leiste"`) and Block
+ * devices (`"<id>:block"`) in its stored order; a split marker that named
+ * one becomes null, an entry left empty goes, and an empty map with it. A
+ * module with nothing to prune is returned as it is.
+ */
+function pruneModuleOrder(module: EnclosureModule, goneStrips: ReadonlySet<string>): EnclosureModule {
+  const parsed = parseTerminalOrder(module.terminal_order);
+  if (!parsed || !Object.values(parsed).some((entry) => entry.strips.some((id) => goneStrips.has(id)))) return module;
+  const next: Record<string, TerminalOrderEntry> = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    const strips = entry.strips.filter((id) => !goneStrips.has(id));
+    if (strips.length === 0) continue;
+    const mark = entry.rail2_from !== null && strips.includes(entry.rail2_from) ? entry.rail2_from : null;
+    next[key] = { strips, rail2_from: mark };
+  }
+  if (Object.keys(next).length > 0) return { ...module, terminal_order: next };
+  const { terminal_order: _emptied, ...rest } = module;
+  return rest;
+}
+
+function pruneTerminalOrders(enclosure: PanelEnclosure | null | undefined, gone: ReadonlySet<string>) {
+  if (!enclosure || !Array.isArray(enclosure.modules)) return enclosure;
+  const goneStrips = new Set([...gone].flatMap((id) => [`${id}:leiste`, `${id}:block`]));
+  const modules = enclosure.modules.map((module) => pruneModuleOrder(module, goneStrips));
+  return modules.every((module, at) => module === enclosure.modules[at]) ? enclosure : { ...enclosure, modules };
 }
 
 // ── Rail templates ───────────────────────────────────────────────────────────
@@ -238,10 +273,17 @@ export function rowFromTemplate(
  * exactly the devices the inspector offers it to (`terminalOffered`); off
  * clears every eligible device, a stale flag hidden on a fuse that has since
  * become a Vorsicherung included. Only devices whose flag changes get a new
- * object, so an untouched breaker keeps its identity for React.
+ * object, so an untouched breaker keeps its identity for React. A device in
+ * the cabinet's skip set (docs/PANEL_ENCLOSURE_R2.md §3.1) is left alone
+ * either way: its flag stays the user's intent.
  */
-export function setTerminalsEverywhere(document: PanelDocument, flag: boolean): PanelDocument {
-  const applies = (device: PanelDevice) => (flag ? terminalOffered(device, document) : isTerminalEligible(device));
+export function setTerminalsEverywhere(
+  document: PanelDocument,
+  flag: boolean,
+  skip: ReadonlySet<string> = NO_SKIP,
+): PanelDocument {
+  const applies = (device: PanelDevice) =>
+    !skip.has(device.id) && (flag ? terminalOffered(device, document, skip) : isTerminalEligible(device));
   return {
     ...document,
     rows: document.rows.map((row) => ({

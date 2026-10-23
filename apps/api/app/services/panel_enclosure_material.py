@@ -5,7 +5,10 @@ cabinet brings to it, and books what comes back out of one:
 
 * **Lines the cabinet adds**: the cabinet itself, its field modules
   (counted), their accessories and one blind plate per reserve meter place.
-  Meters never: the grid operator supplies them (D7).
+  Meters never: the grid operator supplies them (D7). Among the accessories,
+  the U84T rail insulation the WAGO terminal rails need (one line with an
+  admin's own U84T accessory, the larger count; docs/PANEL_ENCLOSURE_R2.md
+  §5, ``panel_enclosure_terminal_material``).
 * **Pre-fitted parts** (D5). A module's ``fittings`` snapshot says what came
   in the box. A device that claims one through ``supplied_by`` is the
   module's part, counted by the module line and never again as a device. A
@@ -42,6 +45,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import PanelPlan, WerkstattArticle, WerkstattMovement
 from app.schemas.schaltplan import PanelMaterialLineOut
+from app.services import panel_enclosure_terminal_material as terminal_material
 from app.services import schaltplan_material as material
 from app.services.panel_enclosure_catalog import EnclosureCatalog, match_articles_by_number
 from app.services.schaltplan_layout import iter_devices
@@ -49,7 +53,8 @@ from app.services.werkstatt_movements import MovementError, apply_movement
 
 __all__ = [
     "RemovedFitting", "has_enclosure", "module_fittings", "supplied_device_ids", "removed_fittings",
-    "enclosure_planned_lines", "removed_planned_lines", "line_article_numbers", "match_articles_by_number",
+    "enclosure_planned_lines", "accessory_quantities", "removed_planned_lines", "line_article_numbers",
+    "match_articles_by_number",
     "salvaged_by_article", "apply_salvage", "book_salvage", "undo_salvage", "project_panel_returns",
 ]
 
@@ -264,8 +269,12 @@ def _maker(spec: Mapping[str, Any]) -> str:
     return f"{spec.get('manufacturer') or 'Hager'} {spec['article_no']}"
 
 
-def enclosure_planned_lines(document: Any, catalog: EnclosureCatalog) -> list[material.PlannedLine]:
-    """Cabinet, modules (counted, first-placement order), then accessories and blind plates."""
+def enclosure_planned_lines(document: Any, catalog: EnclosureCatalog, rail_sets: int = 0) -> list[material.PlannedLine]:
+    """Cabinet, modules (counted, first-placement order), then accessories and blind plates.
+
+    ``rail_sets``: the U84T sets the WAGO placement needs (R2 §5.1); they
+    join the accessories as one line with an admin's own U84T accessory.
+    """
     if not has_enclosure(document):
         return []
     code = _code(document["enclosure"].get("code"))
@@ -276,7 +285,7 @@ def enclosure_planned_lines(document: Any, catalog: EnclosureCatalog) -> list[ma
         lines.append(_cabinet_line(code, cabinet))
     unit_mm = int(cabinet.get("unit_mm") or DEFAULT_UNIT_MM) if cabinet is not None else DEFAULT_UNIT_MM
     lines.extend(_module_lines(modules, catalog, unit_mm))
-    lines.extend(_accessory_lines(cabinet, modules, catalog))
+    lines.extend(_accessory_lines(_accessories(cabinet, modules, catalog), rail_sets))
     return lines
 
 
@@ -310,10 +319,10 @@ def _module_lines(
     return lines
 
 
-def _accessory_lines(
+def _accessories(
     cabinet: Mapping[str, Any] | None, modules: list[Mapping[str, Any]], catalog: EnclosureCatalog
-) -> list[material.PlannedLine]:
-    """One line per accessory article, quantities summed over cabinet and modules.
+) -> dict[str, dict[str, Any]]:
+    """article number → {label, detail, qty}, quantities summed over cabinet and modules.
     The first mention names the line; a free place adds its module's blind plate."""
     found: dict[str, dict[str, Any]] = {}
 
@@ -339,10 +348,31 @@ def _accessory_lines(
         cover = spec.get("free_place_cover")
         if isinstance(cover, Mapping):
             add(spec, cover, "Blindabdeckung freier Zählerplatz", free_meter_places(module, spec))
-    return [
-        material.PlannedLine(f"accessory:{number}", LINE_ENCLOSURE, entry["label"], entry["detail"], entry["qty"])
-        for number, entry in found.items()
-    ]
+    return found
+
+
+def accessory_quantities(document: Any, catalog: EnclosureCatalog) -> dict[str, int]:
+    """article number → the quantity the cabinet's and modules' accessories add up to."""
+    if not has_enclosure(document):
+        return {}
+    cabinet = catalog.enclosure(_code(document["enclosure"].get("code")))
+    return {number: int(entry["qty"]) for number, entry in _accessories(cabinet, _modules(document), catalog).items()}
+
+
+def _accessory_lines(found: Mapping[str, Mapping[str, Any]], rail_sets: int) -> list[material.PlannedLine]:
+    """One line per accessory article. U84T is one line with the WAGO rails'
+    insulation sets: the larger count and the derived label (R2 §5.1)."""
+    u84t = terminal_material.U84T_ARTICLE_NO
+    lines: list[material.PlannedLine] = []
+    for number, entry in found.items():
+        if number == u84t:
+            line = terminal_material.u84t_line(int(entry["qty"]), rail_sets)
+            lines.extend([line] if line is not None else [])
+            continue
+        lines.append(material.PlannedLine(f"accessory:{number}", LINE_ENCLOSURE, entry["label"], entry["detail"],
+                                          entry["qty"]))
+    derived = terminal_material.u84t_line(0, rail_sets) if u84t not in found else None
+    return [*lines, *([derived] if derived is not None else [])]
 
 
 def removed_planned_lines(document: Any, catalog: EnclosureCatalog) -> list[material.PlannedLine]:
@@ -383,6 +413,8 @@ def line_article_numbers(document: Any, catalog: EnclosureCatalog) -> dict[str, 
     for item in removed_fittings(document, catalog):
         if item.article_no:
             out.setdefault(f"{REMOVED_PREFIX}{item.module_code}:{item.fitting_key}", item.article_no)
+    # The WAGO rails' insulation set (R2 §5.2): matched after its EAN.
+    out.setdefault(terminal_material.U84T_KEY, terminal_material.U84T_ARTICLE_NO)
     return out
 
 

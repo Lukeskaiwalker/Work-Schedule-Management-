@@ -12,13 +12,16 @@ the board's Material tab writes them when somebody books by hand. Because
 both sides are derived, correcting a mapping later re-sorts what was
 scanned under the right planned line without touching a single booking.
 
-Matching a planned line to a stock article, in this order:
+Matching a planned line to a stock article (``schaltplan_material_match``,
+re-exported here), in this order:
 
 1. an explicit mapping (``schaltplan_material_articles``, keyed by the
    line's key, global — "our B16 is SP-0152" holds for every board);
-2. for a WAGO terminal part, the article whose name leads with the part
+2. the EAN, for the one line that has one (the U84T rail insulation set);
+3. for a WAGO terminal part, the article whose name leads with the part
    number ("WAGO 2003-7641 - TOPJOB S …", the way the catalog names them),
-   or whose supplier number is the bare part number.
+   or whose supplier number is the bare part number; for a cabinet line,
+   its article number.
 
 A scanned article that matches no planned line is still booked and shows
 as an ``extra`` line ("nicht geplant"): the person at the rack holds the
@@ -28,19 +31,21 @@ A board in a cabinet adds the cabinet, its modules and accessories in front
 and the parts taken out of a module behind; ``panel_enclosure_material``
 derives those and books the returns (docs/PANEL_ENCLOSURE.md §6). Returns
 are not picks: no picking total, Regal screen or consumption ever counts them.
+Its WAGO lines come from the terminal placement
+(``panel_enclosure_terminal_material``, docs/PANEL_ENCLOSURE_R2.md §5).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.customer import Customer
-from app.models.entities import Project, WerkstattArticle, WerkstattArticleSupplier, WerkstattMovement
+from app.models.entities import Project, WerkstattArticle, WerkstattMovement
 from app.models.schaltplan import PanelMaterialArticle, PanelMaterialManualLine, PanelPlan
 from app.schemas.schaltplan import (
     PanelMaterialArticleOut,
@@ -50,19 +55,28 @@ from app.schemas.schaltplan import (
     PanelMaterialSummaryOut,
 )
 from app.services import panel_enclosure_material as enclosure_material
+from app.services import panel_enclosure_terminal_material as terminal_material
 from app.services import panel_work
 from app.services.panel_enclosure_catalog import EnclosureCatalog, builtin_catalog, load_catalog
+from app.services.panel_enclosure_readable import readable_blocks
+from app.services.panel_enclosure_terminals import BoardTerminals, insulation_sets
 from app.services.schaltplan_layout import DEVICE_CATALOG, iter_devices
-from app.services.schaltplan_terminal_rules import TERMINAL_PARTS
+
+# The matching moved to its own module (R2 §5.2); its names stay importable from here.
+from app.services.schaltplan_material_match import (  # noqa: F401  (re-exported)
+    LINE_TERMINAL,
+    auto_match_part,
+    explicit_mappings,
+    match_articles_by_ean,
+    resolve_line_articles,
+)
 from app.services.schaltplan_terminals import derive_terminals, terminal_bom
-from app.services.werkstatt_article_labels import split_item_name
 from app.services.werkstatt_movements import MovementError, apply_movement
 
 CONSUMPTION = "consumption"
 CONSUMPTION_UNDO = "consumption_undo"
 
 LINE_DEVICE = "device"
-LINE_TERMINAL = "terminal"
 LINE_MANUAL = "manual"
 LINE_EXTRA = "extra"
 LINE_ENCLOSURE = "enclosure"
@@ -119,21 +133,28 @@ def _normalize_rating(rating: str) -> str:
     return "".join((rating or "").lower().split())
 
 
-def planned_lines(document: dict[str, Any], catalog: EnclosureCatalog | None = None) -> list[PlannedLine]:
+def planned_lines(
+    document: dict[str, Any], catalog: EnclosureCatalog | None = None, *,
+    terms: BoardTerminals | None = None, placement: Mapping[str, Any] | None = None,
+) -> list[PlannedLine]:
     """The board's parts: device types in catalog order, then the WAGO terminals.
 
-    In a cabinet: the cabinet, modules and accessories first, the parts taken
-    out of a module last, and a pre-fitted device is not a device line (the
-    module counts it). ``catalog`` defaults to the built-ins for pure callers;
-    ``material_lines`` passes the merged one.
+    In a cabinet: the cabinet, modules and accessories first (U84T for the
+    WAGO rails among them), the parts taken out of a module last, and a
+    pre-fitted device is not a device line (the module counts it). The
+    terminals then come from the placement: no AAR/NAR/RfZ/APZ circuit, the
+    end plates added (docs/PANEL_ENCLOSURE_R2.md §5). ``catalog`` defaults to
+    the built-ins for pure callers; ``material_lines`` passes the merged one,
+    and ``terms``/``placement`` when it already has them.
     """
     if not enclosure_material.has_enclosure(document):
         return [*_device_lines(document), *_terminal_lines(document)]
     catalog = catalog if catalog is not None else builtin_catalog()
+    terms, placement = terminal_material.board_placement(document, catalog, terms, placement)
     return [
-        *enclosure_material.enclosure_planned_lines(document, catalog),
+        *enclosure_material.enclosure_planned_lines(document, catalog, rail_sets=insulation_sets(placement)),
         *_device_lines(document, skip=enclosure_material.supplied_device_ids(document, catalog), cabinet=True),
-        *_terminal_lines(document),
+        *terminal_material.terminal_lines(document, catalog, terms, placement),
         *enclosure_material.removed_planned_lines(document, catalog),
     ]
 
@@ -236,86 +257,6 @@ def article_out(article: WerkstattArticle) -> PanelMaterialArticleOut:
         internal_code=article.internal_code,
         stock_available=int(article.stock_available or 0),
     )
-
-
-def explicit_mappings(db: Session, keys: list[str]) -> dict[str, WerkstattArticle]:
-    if not keys:
-        return {}
-    rows = db.execute(
-        select(PanelMaterialArticle.part_key, WerkstattArticle)
-        .join(WerkstattArticle, WerkstattArticle.id == PanelMaterialArticle.article_id)
-        .where(PanelMaterialArticle.part_key.in_(keys))
-    ).all()
-    return {str(key): article for key, article in rows}
-
-
-def auto_match_part(db: Session, part_no: str) -> WerkstattArticle | None:
-    """The stock article for a WAGO part number, by the catalog's naming.
-
-    "WAGO 2003-7641" matches an article named "WAGO 2003-7641 - TOPJOB S …"
-    (the head before " - " is the part number) or one whose supplier number
-    is the bare "2003-7641". Archived and merged-away articles never match.
-    """
-    cleaned = " ".join((part_no or "").split())
-    if not cleaned:
-        return None
-    bare = cleaned.split(" ")[-1]
-    candidates = db.scalars(
-        select(WerkstattArticle)
-        .where(
-            WerkstattArticle.is_archived.is_(False),
-            WerkstattArticle.merged_into_id.is_(None),
-            func.lower(WerkstattArticle.item_name).like(f"%{bare.lower()}%"),
-        )
-        .order_by(WerkstattArticle.id.asc())
-    ).all()
-    for article in candidates:
-        head, _ = split_item_name(article.item_name, article.manufacturer)
-        if head.lower() == cleaned.lower() or head.lower().endswith(bare.lower()):
-            return article
-    for article in candidates:
-        if article.item_name.lower().startswith(cleaned.lower()):
-            return article
-    supplier_row = db.execute(
-        select(WerkstattArticle)
-        .join(WerkstattArticleSupplier, WerkstattArticleSupplier.article_id == WerkstattArticle.id)
-        .where(
-            WerkstattArticleSupplier.supplier_article_no == bare,
-            WerkstattArticle.is_archived.is_(False),
-            WerkstattArticle.merged_into_id.is_(None),
-        )
-        .order_by(WerkstattArticle.id.asc())
-    ).first()
-    return supplier_row[0] if supplier_row is not None else None
-
-
-def resolve_line_articles(
-    db: Session, lines: list[PlannedLine], numbers: dict[str, str] | None = None
-) -> dict[str, tuple[WerkstattArticle, str]]:
-    """key → (article, "mapping" | "auto") for every planned line that has one.
-
-    ``numbers`` (line key → article number) is what the cabinet's lines are
-    matched by when nobody mapped them; all of them in one batched lookup.
-    """
-    resolved: dict[str, tuple[WerkstattArticle, str]] = {}
-    mapped = explicit_mappings(db, [line.key for line in lines])
-    wanted = {line.key: numbers[line.key].strip() for line in lines if numbers and line.key in numbers}
-    matched = enclosure_material.match_articles_by_number(
-        db, [number for key, number in wanted.items() if key not in mapped]
-    )
-    for line in lines:
-        article = mapped.get(line.key)
-        if article is not None:
-            resolved[line.key] = (article, "mapping")
-            continue
-        if line.kind == LINE_TERMINAL:
-            part = TERMINAL_PARTS.get(line.key.removeprefix("part:"))
-            article = auto_match_part(db, part.part_no if part is not None else line.label)
-        else:
-            article = matched.get(wanted.get(line.key, ""))
-        if article is not None:
-            resolved[line.key] = (article, "auto")
-    return resolved
 
 
 def set_mapping(db: Session, *, key: str, article: WerkstattArticle | None, user_id: int | None) -> None:
@@ -445,12 +386,19 @@ def allocate_scans(planned: list[int], net: int) -> list[int]:
 
 
 def material_lines(db: Session, plan: PanelPlan, catalog: EnclosureCatalog | None = None) -> list[PanelMaterialLineOut]:
-    document = plan.document or {}
-    if catalog is None and enclosure_material.has_enclosure(document):
-        catalog = load_catalog(db)  # once per board, and only for a board in a cabinet
-    planned = planned_lines(document, catalog)
-    numbers = enclosure_material.line_article_numbers(document, catalog) if catalog is not None else {}
-    articles = resolve_line_articles(db, planned, numbers)
+    # A stored cabinet block the types refuse is left out, as the detail route does (D14).
+    document = readable_blocks(plan.document or {})
+    numbers: dict[str, str] = {}
+    eans: dict[str, str] = {}
+    if enclosure_material.has_enclosure(document):
+        catalog = catalog if catalog is not None else load_catalog(db)  # once, and only for a board in a cabinet
+        terms, placement = terminal_material.board_placement(document, catalog)
+        planned = planned_lines(document, catalog, terms=terms, placement=placement)
+        numbers = enclosure_material.line_article_numbers(document, catalog)
+        eans = terminal_material.line_eans(document, catalog, placement)
+    else:
+        planned = planned_lines(document, catalog)
+    articles = resolve_line_articles(db, planned, numbers, eans)
     consumed = consumed_by_article(db, plan.id)
     # Every line first, without scans: the derived ones, then the lines added
     # by hand (owner, 2026-10-09) in the order they were added — after the

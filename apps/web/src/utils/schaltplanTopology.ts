@@ -17,7 +17,7 @@
  */
 
 import { catalogEntry } from "./schaltplanDevices";
-import { isTerminalEligible, terminalFindings } from "./schaltplanTerminalRules";
+import { NO_SKIP, isTerminalEligible, terminalFindings } from "./schaltplanTerminalRules";
 import { deriveTerminals, deviceTerminalLabels } from "./schaltplanTerminals";
 import {
   allDevices,
@@ -47,9 +47,11 @@ export {
  * qualifies only as an outgoing of its own: one that heads circuits, or is
  * the Vorsicherung of an FI/SLS/Hauptschalter, feeds others, and a flag on
  * it would turn into a 2016 block the day it stopped (review, 2026-10-09).
+ * A device in the cabinet's skip set (an AAR, NAR, RfZ or APZ rail,
+ * docs/PANEL_ENCLOSURE_R2.md §3.1) is offered nothing: the inspector says why.
  */
-export function terminalOffered(device: PanelDevice, document: PanelDocument): boolean {
-  if (!isTerminalEligible(device)) return false;
+export function terminalOffered(device: PanelDevice, document: PanelDocument, skip: ReadonlySet<string> = NO_SKIP): boolean {
+  if (!isTerminalEligible(device) || skip.has(device.id)) return false;
   if (device.kind !== "fuse") return true;
   const isPreFuse = allDevices(document).some((other) => isGroupDevice(other) && other.parent_id === device.id);
   return !opensGroup(device, document) && !isPreFuse;
@@ -108,11 +110,12 @@ function ownRcd(device: PanelDevice, inherited: string): string {
   return parts[0] || "FI/LS";
 }
 
-export function buildLegend(document: PanelDocument): PanelLegendRow[] {
+/** `skip`: the cabinet's skip set (docs/PANEL_ENCLOSURE_R2.md §3.1), so the X labels match the Klemmen tab. */
+export function buildLegend(document: PanelDocument, skip: ReadonlySet<string> = NO_SKIP): PanelLegendRow[] {
   const rows: PanelLegendRow[] = [];
   // "X1.1, X1.2" — the Reihenklemmen a circuit ends on, from the same
   // derivation the Klemmen tab and the print sheet use.
-  const terminalLabels = deviceTerminalLabels(deriveTerminals(document));
+  const terminalLabels = deviceTerminalLabels(deriveTerminals(document, skip));
   const groups = buildTopology(document);
   const groupsByHead = new Map(
     groups.filter((group) => group.device !== null).map((group) => [group.device!.id, group] as const),
@@ -146,7 +149,8 @@ export function buildLegend(document: PanelDocument): PanelLegendRow[] {
 
 // ── Validation ───────────────────────────────────────────────────────────────
 
-export function validateDocument(document: PanelDocument): PanelFinding[] {
+/** `skip`: the cabinet's skip set (§3.1), passed to the Reihenklemmen checks. */
+export function validateDocument(document: PanelDocument, skip: ReadonlySet<string> = NO_SKIP): PanelFinding[] {
   const findings: PanelFinding[] = [];
 
   for (const row of document.rows) {
@@ -241,8 +245,8 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
 
   // Reihenklemmen: a group without an FI that still wants terminals, and
   // pole counts the Etagenklemmen round. Info, not warn — see the rules.
-  findings.push(...terminalFindings(groups));
-  findings.push(...stripNameClashes(document));
+  findings.push(...terminalFindings(groups, skip));
+  findings.push(...stripNameClashes(document, skip));
 
   return findings;
 }
@@ -252,12 +256,13 @@ const STRIP_NAMED_KINDS = new Set<PanelDevice["kind"]>(["terminal", "blank"]);
 
 /**
  * A device whose BMK a derived Klemmleiste also carries ("X1") — mirrors
- * `_strip_name_clashes`. X is the Verteilerblock's natural letter and the
- * letter the strips count in, so one label would end up on two parts.
+ * `strip_name_clashes` (`schaltplan_terminal_checks.py`). X is the
+ * Verteilerblock's natural letter and the letter the strips count in, so one
+ * label would end up on two parts.
  */
-function stripNameClashes(document: PanelDocument): PanelFinding[] {
+function stripNameClashes(document: PanelDocument, skip: ReadonlySet<string>): PanelFinding[] {
   const stripNames = new Set(
-    deriveTerminals(document)
+    deriveTerminals(document, skip)
       .flatMap((group) => group.strips.map((strip) => strip.xLabel.trim().toUpperCase()))
       .filter(Boolean),
   );

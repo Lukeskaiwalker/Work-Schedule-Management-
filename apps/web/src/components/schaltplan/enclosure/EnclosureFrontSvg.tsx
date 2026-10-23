@@ -28,11 +28,30 @@
  * The hit layer's order is load-bearing: in an SVG the shape painted last
  * takes the tap, so devices come after rail bands, and bands after free
  * units and module backgrounds (enclosureFrontSvg.test.tsx keeps it).
+ *
+ * Device drag (docs/PANEL_ENCLOSURE_R2.md §6, owner 2026-10-22): in the
+ * Offen view of an editable board, with `onMoveDevice` and `dragSource`,
+ * every device target is a drag source — long-press then move with a
+ * finger or pen, or drag with the mouse (`useLongPressDrag`). A tap, short
+ * or slow, still opens RailSheet as above. While dragging, nothing here
+ * re-renders: the finger's position goes into a store that only
+ * `EnclosureDragLayer` reads, and boxes are memoised.
+ *
+ * WAGO terminals (R2 §8, §7.2): placed strips are drawn on their terminal
+ * rail; with `onOpenTerminals` a tap on a reserved rail's band, or on a
+ * strip, opens the field's close-up (a device on a reserved rail still opens
+ * RailSheet). With `onMoveStrip` and `stripSource` a strip drags as a whole
+ * onto its own field's terminal rails (`useDrawingDrag`). Strip targets lie
+ * above the bands and below the devices.
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
 
-import type { EnclosureScene, SceneBox } from "../../../types/panelEnclosure";
+import type { EnclosureScene, SceneBox, TerminalPlacement } from "../../../types/panelEnclosure";
 import { BoxShape, FieldHeader, GapShape, HatchPattern, ModuleLabel, isDrawn, type ShapeState } from "./EnclosureFrontBoxes";
+import { reservedRailLine } from "./enclosureEditorModel";
+import { EnclosureDragLayer } from "./EnclosureDragLayer";
+import type { DeviceDragSource, DeviceDrop, StripDragSource, StripDrop } from "./enclosureDropTargets";
+import { STRIP_BOX_PREFIX, useDrawingDrag } from "./useDrawingDrag";
 import {
   DEFAULT_UNIT_MM,
   DRAWING_PAD_PX,
@@ -71,7 +90,23 @@ export interface EnclosureFrontSvgProps {
    * cabinet width changes — feed it to `initialZoomStep`. Never on zoom.
    */
   onFitWidth?: (availablePx: number) => void;
+  /** A device dropped by drag (Offen view, editable boards): the dragged device and where it lands. */
+  onMoveDevice?: (deviceId: string, drop: DeviceDrop) => void;
+  /** What dragging a device needs from the board, asked when a drag starts. Devices are drag sources only with this and `onMoveDevice`. */
+  dragSource?: (deviceId: string) => DeviceDragSource | null;
+  /** Rails reserved for WAGO terminals (`reservedRailKey`): a device drop there is refused, a tap opens the close-up. */
+  reservedRails?: ReadonlySet<string>;
+  /** The board's terminal placement: where a dragged strip may go. */
+  placement?: TerminalPlacement | null;
+  /** A tap on a reserved rail's band (`stripId` null) or on a strip: the field's close-up. */
+  onOpenTerminals?: (field: number, stripId: string | null) => void;
+  /** A strip dropped by drag (Offen view, editable boards): which strip and where it lands. */
+  onMoveStrip?: (stripId: string, drop: StripDrop) => void;
+  /** What dragging a strip needs, asked when a drag starts. Strips are drag sources only with this and `onMoveStrip`. */
+  stripSource?: (stripId: string) => StripDragSource | null;
 }
+
+const NO_RAILS: ReadonlySet<string> = new Set();
 
 const VIEW_WORD = { open: "offen", closed: "geschlossen" } as const;
 
@@ -91,7 +126,7 @@ function activateOnKey(event: KeyboardEvent<SVGElement>, activate: () => void) {
 function Target({ rect, label, kind, focusable, onActivate, data }: {
   rect: { x: number; y: number; w: number; h: number };
   label: string;
-  kind: "module" | "slot" | "rail" | "device";
+  kind: "module" | "slot" | "rail" | "strip" | "device";
   focusable: boolean;
   onActivate: () => void;
   data?: Record<string, string | number>;
@@ -130,16 +165,46 @@ interface HitProps {
   scene: EnclosureScene;
   cells: FreeCell[];
   bands: RailBand[];
+  /** Devices carry `data-drag-device` (drag sources). */
+  draggable: boolean;
+  /** Strips carry `data-drag-device` (their box id). */
+  stripsDraggable: boolean;
   onOpenRail: EnclosureFrontSvgProps["onOpenRail"];
   onOpenModule: EnclosureFrontSvgProps["onOpenModule"];
   onPickSlot: EnclosureFrontSvgProps["onPickSlot"];
+  onOpenTerminals: EnclosureFrontSvgProps["onOpenTerminals"];
+  /** The X labels the placement puts on each terminal rail, by `moduleId\u0000railKey`. */
+  railStrips: ReadonlyMap<string, readonly string[]>;
 }
 
-/** Bottom → top: module backgrounds, free units, rail bands, devices — the most specific target wins. */
-function HitLayer({ scene, cells, bands, onOpenRail, onOpenModule, onPickSlot }: HitProps) {
+/**
+ * A reserved band names its strips ("· X1, X2" / "· noch keine"), then any
+ * devices left there from before round 2; it is never "leer" while it holds
+ * terminals. Every other band counts its devices.
+ */
+function bandLabel(band: RailBand, xLabels: readonly string[]): string {
+  if (!band.reserved) return `Hutschiene ${band.label} · ${plural(band.deviceCount)}`;
+  const devices = band.deviceCount > 0 ? ` · ${plural(band.deviceCount)}` : "";
+  return `Hutschiene ${band.label} · ${reservedRailLine(xLabels)}${devices}`;
+}
+
+/** Placed strips per rail, left → right (open and closed view alike: the closed view only hides them). */
+function stripsByRail(placement: TerminalPlacement | null): ReadonlyMap<string, readonly string[]> {
+  const out = new Map<string, string[]>();
+  for (const rail of placement?.fields.flatMap((field) => field.rails) ?? []) {
+    out.set(`${rail.moduleId}\u0000${rail.railKey}`, rail.strips.map((strip) => strip.xLabel));
+  }
+  return out;
+}
+
+/** Bottom → top: module backgrounds, free units, rail bands, strips, devices — the most specific target wins. */
+function HitLayer({ scene, cells, bands, draggable, stripsDraggable, onOpenRail, onOpenModule, onPickSlot, onOpenTerminals, railStrips }: HitProps) {
   const railLabels = new Map(bands.map((band) => [`${band.moduleId}\u0000${band.railKey}`, band.label]));
   const modules = scene.boxes.filter((box) => box.kind === "module" && box.moduleId !== null);
   const devices = scene.boxes.filter((box) => (box.kind === "device" || box.kind === "device_front") && box.deviceId && box.moduleId && box.railKey);
+  const strips = onOpenTerminals ? scene.boxes.filter((box) => box.kind === "terminal_strip" && box.moduleId && box.railKey) : [];
+  const openBand = (band: RailBand) =>
+    band.reserved && onOpenTerminals && band.field !== null ? onOpenTerminals(band.field, null) : onOpenRail?.(band.moduleId, band.railKey, null);
   return (
     <g className="sp-encl-hits">
       {modules.map((box, i) => (
@@ -170,11 +235,26 @@ function HitLayer({ scene, cells, bands, onOpenRail, onOpenModule, onPickSlot }:
           rect={band}
           kind="rail"
           focusable
-          label={`Hutschiene ${band.label} · ${plural(band.deviceCount)}`}
-          onActivate={() => onOpenRail?.(band.moduleId, band.railKey, null)}
+          label={bandLabel(band, railStrips.get(`${band.moduleId}\u0000${band.railKey}`) ?? [])}
+          onActivate={() => openBand(band)}
           data={{ "module-id": band.moduleId, "rail-key": band.railKey }}
         />
       ))}
+      {strips.map((box, i) => {
+        const field = fieldIndexAt(scene, box.x + box.w / 2);
+        const stripId = box.id.slice(STRIP_BOX_PREFIX.length);
+        return (
+          <Target
+            key={`${box.id}#${i}`}
+            rect={box}
+            kind="strip"
+            focusable={false}
+            label={`Klemmleiste ${box.label} auf ${railLabels.get(`${box.moduleId}\u0000${box.railKey}`) ?? ""}`}
+            onActivate={() => field !== null && onOpenTerminals?.(field, stripId)}
+            data={stripsDraggable ? { "strip-id": stripId, "drag-device": box.id } : { "strip-id": stripId }}
+          />
+        );
+      })}
       {devices.map((box, i) => (
         <Target
           key={`${box.id}#${i}`}
@@ -183,7 +263,7 @@ function HitLayer({ scene, cells, bands, onOpenRail, onOpenModule, onPickSlot }:
           focusable={false}
           label={deviceTargetLabel(box, railLabels.get(`${box.moduleId}\u0000${box.railKey}`) ?? "")}
           onActivate={() => onOpenRail?.(box.moduleId as string, box.railKey as string, box.deviceId)}
-          data={{ "device-id": box.deviceId as string }}
+          data={draggable ? { "device-id": box.deviceId as string, "drag-device": box.deviceId as string } : { "device-id": box.deviceId as string }}
         />
       ))}
     </g>
@@ -255,13 +335,26 @@ export function EnclosureFrontSvg({
   activeRail = null,
   unitMm = DEFAULT_UNIT_MM,
   onFitWidth,
+  onMoveDevice,
+  dragSource,
+  reservedRails = NO_RAILS,
+  placement = null,
+  onOpenTerminals,
+  onMoveStrip,
+  stripSource,
 }: EnclosureFrontSvgProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const patternId = `sp-encl-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const cells = useMemo(() => freeCells(scene, unitMm), [scene, unitMm]);
   const gaps = useMemo(() => gapRuns(cells), [cells]);
-  const bands = useMemo(() => railBands(scene), [scene]);
-  const emptyRails = useMemo(() => new Set(bands.filter((band) => band.deviceCount === 0).map((band) => band.boxId)), [bands]);
+  const bands = useMemo(() => railBands(scene, reservedRails), [scene, reservedRails]);
+  const railStrips = useMemo(() => stripsByRail(placement), [placement]);
+  const emptyRails = useMemo(() => {
+    // A rail with strips is not empty: its label would lie under them.
+    const withStrips = new Set(scene.boxes.filter((box) => box.kind === "terminal_strip").map((box) => `rail:${box.moduleId}:${box.railKey}`));
+    return new Set(bands.filter((band) => band.deviceCount === 0 && !withStrips.has(band.boxId)).map((band) => band.boxId));
+  }, [bands, scene]);
   const size = drawingSizePx(scene, zoom);
   const rememberCentre = useZoomAnchor(scrollRef, zoom, size);
   useScrollToDevice(scrollRef, highlightDeviceId);
@@ -269,8 +362,17 @@ export function EnclosureFrontSvg({
     if (onFitWidth && scrollRef.current) onFitWidth(scrollRef.current.clientWidth);
     // Keyed on the cabinet width alone: a zoom step or a new callback identity must not re-fit.
   }, [scene.width]);
+  const draggable = !readOnly && scene.view === "open" && !!onMoveDevice && !!dragSource;
+  const stripsDraggable = !readOnly && scene.view === "open" && !!onMoveStrip && !!stripSource && !!placement && !!onOpenTerminals;
+  const dragStore = useDrawingDrag({
+    scrollRef, svgRef, scene, zoom, bands, enabled: draggable || stripsDraggable, reserved: reservedRails, placement,
+    dragSource: draggable ? dragSource : undefined, onMoveDevice, stripSource: stripsDraggable ? stripSource : undefined, onMoveStrip, onOpenRail, onOpenTerminals,
+  });
 
-  const state: ShapeState = { zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails };
+  const state: ShapeState = useMemo(
+    () => ({ zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails }),
+    [zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails],
+  );
   const drawn = scene.boxes.filter((box) => isDrawn(box, scene.view));
   const back = drawn.filter((box) => box.kind === "shell" || box.kind === "field");
   const front = drawn.filter((box) => box.kind !== "shell" && box.kind !== "field");
@@ -281,7 +383,8 @@ export function EnclosureFrontSvg({
   return (
     <div className="sp-encl-scroll" ref={scrollRef} onScroll={rememberCentre}>
       <svg
-        className={`sp-encl-svg sp-encl-svg--${scene.view}${readOnly ? " sp-encl-svg--readonly" : ""}`}
+        ref={svgRef}
+        className={`sp-encl-svg sp-encl-svg--${scene.view}${readOnly ? " sp-encl-svg--readonly" : ""}${draggable ? " sp-encl-svg--draggable" : ""}`}
         width={size.width}
         height={size.height}
         viewBox={`${-pad} ${-(head + pad)} ${scene.width + 2 * pad} ${scene.height + head + 2 * pad}`}
@@ -299,8 +402,20 @@ export function EnclosureFrontSvg({
           {front.filter((box) => box.kind === "module").map((box, i) => <ModuleLabel key={`label:${box.id}#${i}`} box={box} zoom={zoom} />)}
         </g>
         {!readOnly && (
-          <HitLayer scene={scene} cells={cells} bands={bands} onOpenRail={onOpenRail} onOpenModule={onOpenModule} onPickSlot={onPickSlot} />
+          <HitLayer
+            scene={scene}
+            cells={cells}
+            bands={bands}
+            draggable={draggable}
+            stripsDraggable={stripsDraggable}
+            onOpenRail={onOpenRail}
+            onOpenModule={onOpenModule}
+            onPickSlot={onPickSlot}
+            onOpenTerminals={onOpenTerminals}
+            railStrips={railStrips}
+          />
         )}
+        {draggable || stripsDraggable ? <EnclosureDragLayer store={dragStore} scene={scene} bands={bands} zoom={zoom} /> : null}
       </svg>
     </div>
   );

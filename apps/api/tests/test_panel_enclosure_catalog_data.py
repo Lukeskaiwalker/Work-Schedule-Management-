@@ -57,7 +57,7 @@ CABINETS = {
 E1050 = "AAR 0-1 aar1,aar2 | RFZ 2 rfz | ZF 3-4 | NAR 5-6 nar*"
 P1050 = "AAR 0-1 aar1,aar2 | ZF 2-4 | NAR 5-6 nar*"
 E1350 = "VF 0-1 vf1,vf2 | AAR 2-3 aar1,aar2 | RFZ 4 rfz | ZF 5-6 | NAR 7-8 nar*"
-BUSBAR, BKE, PE_N, RJ45 = {"busbar": None}, {"bke": None}, {"pe_n": None}, {"rj45": None}
+BUSBAR, BKE, PE_N, RJ45, U84T = {"busbar": None}, {"bke": None}, {"pe_n": None}, {"rj45": None}, {"u84t": None}
 
 MODULES = {
     # code: (family, field height, zones, (meter places, meter type) | None, mm², {fitting: device kind})
@@ -68,7 +68,7 @@ MODULES = {
     "ZH33X7": ("meter_3p", 1050, P1050, (1, "3punkt"), None, BUSBAR),
     "ZH31X7NT": ("meter_3p", 1050, P1050, (1, "3punkt"), 10, BUSBAR | {"trenn": "hauptschalter"}),
     "ZU37KS": ("distribution", 1050, "VT 0-6 r1..r7", None, None, PE_N),
-    "ZU37RK": ("distribution", 1050, "VT 0-6 r1..r7", None, None, {}),
+    "ZU37RK": ("distribution", 1050, "VT 0-6 r1..r7", None, None, U84T),
     "ZU37VT5APZ2": ("distribution_apz", 1050, "VT 0-4 r1..r5 | APZ 5-6 apz(6)", None, None, RJ45),
     "ZU37VT4APZ2": ("distribution_apz", 1050, "VT 0-3 r1..r4 | RFZ 4 rfz | APZ 5-6 apz(6)", None, None, RJ45),
     "ZH3ES5": ("busbar", 1050, "SAS 0-1 sas* | VT 2-6 r1..r5", None, None, BUSBAR | PE_N),
@@ -78,7 +78,7 @@ MODULES = {
     "ZH5EL16": ("meter_ehz", 1350, E1350, (1, "ehz"), 16, BUSBAR | BKE | {"hlak": "hlak"}),
     "ZH53X3": ("meter_3p", 1350, "AAR 0-1 aar1,aar2 | ZF 2-6 | NAR 7-8 nar*", (2, "3punkt"), None, BUSBAR),
     "ZU59KS": ("distribution", 1350, "VT 0-8 r1..r9", None, None, PE_N),
-    "ZU59RK": ("distribution", 1350, "VT 0-8 r1..r9", None, None, {}),
+    "ZU59RK": ("distribution", 1350, "VT 0-8 r1..r9", None, None, U84T),
     "ZU59VT7APZ2": ("distribution_apz", 1350, "VT 0-6 r1..r7 | APZ 7-8 apz(6)", None, None, RJ45),
     "ZH53XS": ("busbar", 1350, "SAS 0-1 sas* | VT 2-8 r1..r7", None, None, BUSBAR | PE_N),
     "ZH55SAR2": ("communication", 1350, "APZ 0-1 apz(6) | RFZ 2-6 rfz1..rfz5 | SAS 7-8 sas*", None, None, BUSBAR),
@@ -86,7 +86,16 @@ MODULES = {
     "ZU62A": ("cover", None, "COVER 0", None, None, {}),
     "ZU79A": ("cover", None, "COVER 0-1", None, None, {}),
     "ZU93A": ("cover", None, "COVER 0-2", None, None, {}),
+    # Round 2 (docs/PANEL_ENCLOSURE_R2.md §10): the RK siblings, appended.
+    "ZU37V5RKAPZ2": ("distribution_apz", 1050, "VT 0-4 r1..r5 | APZ 5-6 apz(6)", None, None, U84T),
+    "ZU59V7RKAPZ2": ("distribution_apz", 1350, "VT 0-6 r1..r7 | APZ 7-8 apz(6)", None, None, U84T),
+    "ZH3ES5RK": ("busbar", 1050, "SAS 0-1 sas* | VT 2-6 r1..r5", None, None, BUSBAR | U84T),
+    "ZH53XSRK": ("busbar", 1350, "SAS 0-1 sas* | VT 2-8 r1..r7", None, None, BUSBAR | U84T),
 }
+
+#: Every field built for terminal blocks ships the U84T rail insulation (Hager
+#: flyer 21DE0246) instead of PE/N blocks (§2.2, R8, R15).
+RK_CODES = ("ZU37RK", "ZU59RK", "ZU37V5RKAPZ2", "ZU59V7RKAPZ2", "ZH3ES5RK", "ZH53XSRK")
 
 
 def _expand(rails: str) -> list[tuple[str, int, str]]:
@@ -237,6 +246,66 @@ def test_the_unverified_facts_of_section_3_2_are_flagged() -> None:
         assert "als Füllung ohne Einbausatz angenommen" in catalog.module(cover)["unverified"]
 
 
+def test_every_rk_field_ships_the_u84t_insulation_as_a_fixed_part() -> None:
+    """R8/R15: the fitting is data, non-device and not removable, so it never
+    makes a Materialliste line of its own; its set-count caveat lives on the
+    fitting alone."""
+    for code in RK_CODES:
+        spec = builtin_catalog().module(code)
+        u84t = next(f for f in spec["fittings"] if f["key"] == "u84t")
+        assert spec["fittings"][-1] is u84t, f"{code}: u84t is appended last"
+        assert (u84t["label"], u84t["article_no"]) == ("Hutschienen-Isolierung U84T (ab Werk)", "U84T"), code
+        assert (u84t["device"], u84t["removable"], u84t["retired"]) == (None, False, False), code
+        assert u84t["verified"] is False, code
+        assert u84t["note"] == (
+            "Lieferform RK: U84T statt PE/N-Klemmblöcken (Hager-Flyer 21DE0246); "
+            "Anzahl der Sätze ab Werk nicht angegeben (Foto: 1 Satz ZU37RK, 2 Sätze ZU59RK)"
+        ), code
+        assert "pe_n" not in fitting_kinds(spec), code
+    others = [code for code in MODULES if code not in RK_CODES]
+    assert not any("u84t" in fitting_kinds(builtin_catalog().module(code)) for code in others)
+
+
+def test_the_two_shipped_rk_fields_stay_verified() -> None:
+    """The caveat is on the fitting, so existing RK boards gain no
+    ``encl.unverified`` line (§10)."""
+    for code in ("ZU37RK", "ZU59RK"):
+        spec = builtin_catalog().module(code)
+        assert (spec["verified"], spec["unverified"]) == (True, []), code
+
+
+def test_the_four_rk_built_ins_of_round_two() -> None:
+    catalog = builtin_catalog()
+    names = {
+        "ZU37V5RKAPZ2": "Verteilerfeld, 5 Reihen, für Reihenklemmen, APZ unten, 1050 mm",
+        "ZU59V7RKAPZ2": "Verteilerfeld, 7 Reihen, für Reihenklemmen, APZ unten, 1350 mm",
+        "ZH3ES5RK": "Verteilerfeld mit Sammelschienen, 5 Reihen, für Reihenklemmen, 1050 mm",
+        "ZH53XSRK": "Verteilerfeld mit Sammelschienen, 7 Reihen, für Reihenklemmen, 1350 mm",
+    }
+    sas = ["Lage der Sammelschienenzone aus Rechnung abgeleitet", "Sammelschienenzone als plombierbar angenommen"]
+    unverified = {
+        "ZU37V5RKAPZ2": ["APZ-Höhe wie ZU37VT5APZ2 angenommen"],
+        "ZU59V7RKAPZ2": ["APZ-Höhe wie ZU59VT7APZ2 angenommen"],
+        "ZH3ES5RK": sas,
+        "ZH53XSRK": sas,
+    }
+    for code, name in names.items():
+        spec = catalog.module(code)
+        assert spec["name"] == name, code
+        assert (spec["verified"], spec["unverified"]) == (False, unverified[code]), code
+        assert spec["source_url"] == f"https://hager.com/de/katalog/?artnr={code}", code
+        # hager.com names no RJ45 socket for the APZ variants: left out (keys are append-only).
+        assert "rj45" not in fitting_kinds(spec), code
+    for code in ("ZU37V5RKAPZ2", "ZU59V7RKAPZ2"):
+        apz = next(zone for zone in catalog.module(code)["zones"] if zone["type"] == "APZ")
+        assert apz["sealable"] is True, code
+    # Rail keys are the KS/VT siblings' own.
+    for rk, sibling in (("ZU37V5RKAPZ2", "ZU37VT5APZ2"), ("ZU59V7RKAPZ2", "ZU59VT7APZ2"),
+                        ("ZH3ES5RK", "ZH3ES5"), ("ZH53XSRK", "ZH53XS")):
+        assert rail_keys(catalog.module(rk)) == rail_keys(catalog.module(sibling)), rk
+        assert frozen_fields("module", catalog.module(rk)) == frozen_fields("module", catalog.module(sibling)), rk
+
+
 def test_every_built_in_spec_passes_its_own_validator() -> None:
     for spec in BUILTIN_ENCLOSURES:
         assert EnclosureSpec.model_validate(spec).model_dump() == builtin_catalog().enclosure(spec["code"])
@@ -341,6 +410,17 @@ def test_no_shipped_built_in_ever_disappears_or_breaks_its_keys() -> None:
         for key, kind in shipped["fittings"].items():
             assert key in current["fittings"], f"{code}: fitting {key} vanished — retire it instead"
             assert current["fittings"][key] == kind, f"{code}: fitting {key} changed its device kind"
+
+
+def test_the_record_holds_every_key_a_built_in_has_now() -> None:
+    """A key added to a shipped code (``u84t`` on ZU37RK/ZU59RK, R15) is
+    recorded in the same PR, so it is append-only from then on too. Retired
+    keys stay in the spec, so record and spec agree for good."""
+    catalog = builtin_catalog()
+    for code, shipped in _shipped()["codes"].items():
+        current = _record(catalog.entries[code].entry_type, catalog.entries[code].spec)
+        assert shipped["rail_keys"] == current["rail_keys"], code
+        assert shipped["fittings"] == current["fittings"], f"record {code}: " + json.dumps(current["fittings"])
 
 
 def test_frozen_fields_of_shipped_built_ins_are_unchanged() -> None:

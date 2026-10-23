@@ -10,8 +10,16 @@
  * `round`) and a fully specified output order.
  *
  * Geometry reads the LIVE catalogue on purpose (§3.5): a corrected stack
- * reaches every drawing. Display-only sizes (device 90 × 70 mm, meters,
- * every z) are drawing approximations, not catalogue facts.
+ * reaches every drawing. Display-only sizes (device 90 × 70 mm, meters, a
+ * terminal strip 96 × 42.3 mm — the 2003-7641 body —, every z) are drawing
+ * approximations, not catalogue facts.
+ *
+ * WAGO terminals (docs/PANEL_ENCLOSURE_R2.md §8) come from the placement
+ * (`placeTerminals`; pass it in when it is at hand): a terminal rail carries
+ * the flag `terminals` in both views, and in the open view every placed strip
+ * is one `terminal_strip` box on its rail. A hand-placed "Reihenklemme N/PE"
+ * on a terminal rail is a placeholder the strips replace (R2 §3.6), so it is
+ * not drawn there.
  */
 
 import { catalogEntry } from "./schaltplanDevices";
@@ -26,6 +34,7 @@ import {
   zoneLabel,
   type RailLink,
 } from "./enclosureLayout";
+import { PLACEHOLDER_KINDS, placeTerminals } from "./enclosureTerminals";
 import type {
   DeviceSuppliedBy,
   EnclosureMeter,
@@ -33,10 +42,12 @@ import type {
   EnclosureScene,
   EnclosureSpec,
   ModuleSpec,
+  PlacedTerminalRail,
   RailSpec,
   SceneBox,
   SceneBoxKind,
   SceneView,
+  TerminalPlacement,
   ZoneSpec,
   ZoneType,
 } from "../types/panelEnclosure";
@@ -45,6 +56,15 @@ import type { PanelDevice, PanelDocument, PanelRow } from "../types/schaltplan";
 /** `floor(v·10 + 0.5) / 10` — the one rounding both twins use on every number. */
 export function round1(value: number): number {
   return Math.floor(value * 10 + 0.5) / 10;
+}
+
+/**
+ * "29,9" / "1050": a length as a finding's sentence shows it. Here, next to
+ * `round1`, because the terminal findings need it and `enclosureRules`
+ * imports them (Python moved `mm_text` into its geometry module alike).
+ */
+export function formatMmText(value: number): string {
+  return String(round1(value)).replace(".", ",");
 }
 
 // Drawing approximations (mm), not catalogue facts.
@@ -59,6 +79,8 @@ const METER_BOX: Readonly<Record<"ehz" | "3punkt", { w: number; h: number }>> = 
   "3punkt": { w: 180, h: 330 },
 };
 const HANDLE = { w: 15, h: 120, d: 20 };
+/** A placed WAGO strip: the 2003-7641 body's height (a drawing approximation). */
+const STRIP_H = 96;
 /** Right edge past the rail end by more than this = overflow (float noise allowance). */
 const OVERFLOW_TOLERANCE_MM = 0.05;
 
@@ -72,6 +94,7 @@ const Z = {
   rail: [40, 7.5],
   meter: [40, 80],
   device: [47.5, 70],
+  strip: [47.5, 42.3],
   cover: [120, 2],
   slot: [122, 0.5],
   window: [122, 0.5],
@@ -122,7 +145,11 @@ interface Context {
   links: Map<string, RailLink>;
   rows: Map<string, PanelRow>;
   supplied: Map<string, DeviceSuppliedBy>;
+  /** "moduleId\u0000railKey" → the placement's terminal rail. */
+  terminals: Map<string, PlacedTerminalRail>;
 }
+
+const terminalKey = (moduleId: string, railKey: string): string => `${moduleId}\u0000${railKey}`;
 
 // ── Cabinet ──────────────────────────────────────────────────────────────────
 
@@ -197,7 +224,9 @@ function zoneBoxes(ctx: Context, module: EnclosureModule, zone: ZoneSpec, rect: 
 function railBoxes(ctx: Context, module: EnclosureModule, zone: ZoneSpec, rail: RailSpec, zoneRect: Rect): SceneBox[] {
   const rowId = railRowId(ctx.links, module, rail.key);
   const row = rowId ? ctx.rows.get(rowId) : undefined;
-  const devices = row?.devices ?? [];
+  const terminalRail = ctx.terminals.get(terminalKey(module.id, rail.key));
+  // The strips replace the hand-placed placeholders on a terminal rail (R2 §3.6).
+  const devices = (row?.devices ?? []).filter((device) => !terminalRail || !PLACEHOLDER_KINDS.has(String(device.kind ?? "")));
   // A retired rail gets no new rows; it is drawn only while it still holds devices.
   if (rail.retired && devices.length === 0) return [];
   const U = ctx.cabinet.unit_mm;
@@ -212,7 +241,7 @@ function railBoxes(ctx: Context, module: EnclosureModule, zone: ZoneSpec, rail: 
     box(`rail:${module.id}:${rail.key}`, busbar ? "busbar" : "rail", railRect, busbar ? Z.busbar : Z.rail, {
       ...refs,
       label: (row?.label ?? "").trim() || generatedRowLabel(module, zone, rail),
-      flags: rail.retired ? ["retired"] : [],
+      flags: [...(rail.retired ? ["retired"] : []), ...(terminalRail ? ["terminals"] : [])],
     }),
   ];
   if (ctx.view === "closed") {
@@ -231,6 +260,13 @@ function railBoxes(ctx: Context, module: EnclosureModule, zone: ZoneSpec, rail: 
         : box(`front:${device.id}`, "device_front", { x: cursor, y: cy - FRONT_H / 2, w: width, h: FRONT_H }, Z.front, deviceRefs),
     );
     cursor += width;
+  }
+  if (terminalRail && ctx.view === "open") {
+    // Behind the cover in the closed view.
+    for (const strip of terminalRail.strips) {
+      const rect = { x: x + strip.offsetMm, y: cy - STRIP_H / 2, w: strip.extentMm, h: STRIP_H };
+      boxes.push(box(`terminal:${strip.stripId}`, "terminal_strip", rect, Z.strip, { ...refs, label: strip.xLabel }));
+    }
   }
   return boxes;
 }
@@ -306,8 +342,12 @@ function compareBoxes(a: SceneBox, b: SceneBox): number {
  * Every box of the cabinet in one view, sorted by (z, y, x, id). Null when
  * the board has no cabinet or its cabinet code does not resolve. Devices of
  * rows not in the cabinet, and fittings without a device, produce no box.
+ * `placement`: the board's `placeTerminals` result, when the caller already
+ * has it; derived here otherwise (memoised by document identity).
  */
-export function buildEnclosureScene(document: PanelDocument, index: CatalogIndex, view: SceneView): EnclosureScene | null {
+export function buildEnclosureScene(
+  document: PanelDocument, index: CatalogIndex, view: SceneView, placement?: TerminalPlacement,
+): EnclosureScene | null {
   const enclosure = document.enclosure;
   const cabinet = enclosure ? index.enclosure(enclosure.code) : null;
   if (!enclosure || !cabinet) return null;
@@ -318,6 +358,11 @@ export function buildEnclosureScene(document: PanelDocument, index: CatalogIndex
     links: linkedRows(document, index),
     rows: new Map(document.rows.map((row) => [row.id, row] as const)),
     supplied: suppliedDevices(document, index),
+    terminals: new Map(
+      (placement ?? placeTerminals(document, index)).fields.flatMap((field) =>
+        field.rails.map((rail) => [terminalKey(rail.moduleId, rail.railKey), rail] as const),
+      ),
+    ),
   };
   const boxes = [...cabinetBoxes(cabinet), ...enclosureModules(document).flatMap((module) => moduleBoxes(ctx, module))];
   return {

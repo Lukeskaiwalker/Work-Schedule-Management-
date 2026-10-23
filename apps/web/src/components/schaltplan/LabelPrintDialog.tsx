@@ -22,7 +22,9 @@
  * `utils/schaltplanTerminals.ts` at the terminals' own pitch and pad, and
  * an editing list under it lets every marker text be overridden in the
  * document — the printer reads the saved document, so the edits travel
- * through the page's autosave, not through the print request.
+ * through the page's autosave, not through the print request. The strips
+ * are the page's one derivation (`useBoardTerminals`, R2 §3.1), so a cabinet
+ * board numbers them as the Klemmen tab does — and waits for the catalogue.
  *
  * Same bottom sheet as the palette and the inspector: it is the reachable
  * third of a phone held in front of an open board.
@@ -32,6 +34,8 @@ import { useEffect, useMemo, useState } from "react";
 import { StripSvg, layoutSegments, previewFontPx } from "./StripSvg";
 import { TerminalLabelEditor } from "./LabelPrintTerminalEditor";
 import { TERMINAL_MATERIAL, TerminalPreview, TerminalStripList, boardStrips } from "./LabelPrintTerminals";
+import { CATALOG_LOADING } from "./TerminalList";
+import { boardTerminalsState, type BoardTerminalsState } from "../../hooks/useBoardTerminals";
 import {
   DEFAULT_LABEL_MATERIAL,
   LABEL_MATERIALS,
@@ -50,10 +54,10 @@ import {
   type RowLabelCounts,
 } from "../../utils/schaltplanStrip";
 import {
-  deriveTerminals,
   terminalFontSize,
   terminalStrips,
   unverifiedTerminalParts,
+  type TerminalGroup,
 } from "../../utils/schaltplanTerminals";
 import type { PrintTarget } from "../../utils/schaltplanApi";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
@@ -75,6 +79,11 @@ type Props = {
   readOnly?: boolean;
   /** Reihenklemmen: one marker override changed — `value` null removes it. Absent = no editing list. */
   onEditTerminalLabel?: (key: string, value: string | null) => void;
+  /**
+   * Reihenklemmen: the page's one derivation (`useBoardTerminals`). Absent:
+   * derived here against no catalogue, so a cabinet board waits for it.
+   */
+  boardTerminals?: BoardTerminalsState;
   onPrint: (ids: string[], materialId: string, options: LabelPrintOptions) => void;
   onClose: () => void;
 };
@@ -97,6 +106,8 @@ function SingleLabels({ row }: { row: PanelRow }) {
     </div>
   );
 }
+
+const NO_GROUPS: readonly TerminalGroup[] = [];
 
 function deviceCountLabel(count: number): string {
   return count === 1 ? "1 Gerät" : `${count} Geräte`;
@@ -176,6 +187,7 @@ export function LabelPrintDialog({
   mode = "bmk",
   readOnly = false,
   onEditTerminalLabel,
+  boardTerminals,
   onPrint,
   onClose,
 }: Props) {
@@ -198,7 +210,13 @@ export function LabelPrintDialog({
   // Over the whole document on purpose — see the header comment.
   const board = useMemo(() => boardFontSize(document, STRIP_HEIGHT_MM), [document]);
 
-  const groups = useMemo(() => (terminalMode ? deriveTerminals(document) : []), [document, terminalMode]);
+  const own = useMemo(
+    () => boardTerminalsState(boardTerminals || !terminalMode ? null : document, null),
+    [boardTerminals, terminalMode, document],
+  );
+  const { ready, terms } = boardTerminals ?? own;
+  const terminalsReady = terminalMode && ready && terms !== null;
+  const groups = terminalsReady && terms ? terms.groups : NO_GROUPS;
   // Exactly the ticked strips: an empty selection is an empty preview and a
   // disabled Drucken, never "every strip" — the server reads [] the same way.
   const selection = useMemo(() => terminalStrips(groups, selectedIds), [groups, selectedIds]);
@@ -228,7 +246,13 @@ export function LabelPrintDialog({
     setSelectedIds(every ? [] : stripIds);
   };
 
-  const print = () => onPrint(selectedIds, material.id, { target: terminalMode ? "reihenklemmen" : "bmk" });
+  // Only strips the board still derives: the server refuses any other as a stale screen.
+  const printIds = () => {
+    if (!terminalMode) return selectedIds;
+    const derived = new Set(boardStrips(groups).map((entry) => entry.stripId));
+    return selectedIds.filter((id) => derived.has(id));
+  };
+  const print = () => onPrint(printIds(), material.id, { target: terminalMode ? "reihenklemmen" : "bmk" });
 
   const title = terminalMode ? "Klemmen-Etiketten drucken" : "BMK-Etiketten drucken";
 
@@ -256,7 +280,11 @@ export function LabelPrintDialog({
             )}
           </div>
 
-          {terminalMode ? (
+          {terminalMode && !terminalsReady ? (
+            <p className="sp-label-empty" role="status">
+              {CATALOG_LOADING}
+            </p>
+          ) : terminalMode ? (
             <TerminalStripList
               groups={groups}
               selectedIds={selectedIds}
@@ -295,7 +323,7 @@ export function LabelPrintDialog({
             </div>
           )}
 
-          {terminalMode ? (
+          {terminalMode && !terminalsReady ? null : terminalMode ? (
             <>
               <TerminalPreview
                 strips={selectedStrips}

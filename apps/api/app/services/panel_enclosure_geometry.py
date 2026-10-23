@@ -24,10 +24,18 @@ device's flags; a blind plate carries ``free``; a door leaf whose centre is
 exactly the cabinet centre (three leaves) counts as right of centre; labels
 of the shell, doors, handles, covers and windows are "".
 
+WAGO terminals (docs/PANEL_ENCLOSURE_R2.md §8) come from the placement
+(``panel_enclosure_terminals.place_terminals``; pass it in when it is at
+hand): a terminal rail carries the flag ``terminals`` in both views, and in
+the open view every placed strip is one ``terminal_strip`` box on its rail.
+A hand-placed "Reihenklemme N/PE" on a terminal rail is a placeholder the
+strips replace (R2 §3.6), so it is not drawn there.
+
 The display sizes below are drawing approximations, not catalogue facts:
 a device is drawn 90 × 70 mm, an eHZ 110 × 210 mm, a 3-Punkt meter
 180 × 330 mm, an SLS on a busbar 78.75 mm wide (``panel_enclosure_layout``),
-and every ``z`` is a layer, not a measurement.
+a terminal strip 96 mm high and 42.3 mm deep (the 2003-7641 body), and every
+``z`` is a layer, not a measurement.
 """
 
 from __future__ import annotations
@@ -57,6 +65,7 @@ from app.services.panel_enclosure_layout import (
     text,
     zone_label,
 )
+from app.services.panel_enclosure_terminals import PLACEHOLDER_KINDS, place_terminals
 from app.services.schaltplan_layout import DEVICE_CATALOG
 
 View = Literal["open", "closed"]
@@ -72,6 +81,8 @@ _OVERFLOW_TOLERANCE_MM = 0.05
 _COVER_INSET_MM = 2.0
 _SLOT_H, _FRONT_H = 46.0, 45.0
 _HANDLE_W, _HANDLE_H, _HANDLE_D = 15.0, 120.0, 20.0
+# A placed WAGO strip: the 2003-7641 body, 96 × 42.3 mm (a drawing approximation).
+_STRIP_H, _STRIP_D, _STRIP_Z = 96.0, 42.3, 47.5
 
 _KEY_ORDER = ("id", "kind", "x", "y", "z", "w", "h", "d", "label",
               "moduleId", "railKey", "rowId", "deviceId", "zoneType", "flags")
@@ -80,6 +91,12 @@ _KEY_ORDER = ("id", "kind", "x", "y", "z", "w", "h", "d", "label",
 def round1(value: float) -> float:
     """``floor(v·10 + 0.5) / 10`` — the same in both languages, unlike ``round``."""
     return math.floor(value * 10 + 0.5) / 10
+
+
+def mm_text(value: float) -> str:
+    """"29,9", "1050": a length as a finding's sentence shows it."""
+    rounded = round1(value)
+    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}".replace(".", ",")
 
 
 def _box(box_id: str, kind: str, x: float, y: float, z: float, w: float, h: float, d: float, *,
@@ -125,21 +142,30 @@ class _Context:
     rows: Mapping[str, dict[str, Any]]
     linked: Mapping[str, tuple[str, str]]
     supplied: frozenset[str]
+    terminals: Mapping[tuple[str, str], Mapping[str, Any]]  # (module id, rail key) → the placement's rail
 
 
-def build_enclosure_scene(document: Any, catalog: EnclosureCatalog, *, view: View = "open") -> dict[str, Any] | None:
-    """Every box of the cabinet in one view; None without a known cabinet."""
+def build_enclosure_scene(document: Any, catalog: EnclosureCatalog, *, view: View = "open",
+                          placement: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+    """Every box of the cabinet in one view; None without a known cabinet.
+
+    ``placement``: the board's ``place_terminals`` result, when the caller
+    already has it; derived here otherwise.
+    """
     enclosure = enclosure_of(document)
     code = enclosure.get("code") if enclosure is not None else None
     spec = catalog.enclosure(code) if isinstance(code, str) else None
     if spec is None:
         return None
     cabinet = _Cabinet.of(spec)
+    placement = place_terminals(document, catalog) if placement is None else placement
     context = _Context(
         cabinet=cabinet, catalog=catalog, closed=view == "closed",
         rows={row["id"]: row for row in rows_of(document)},
         linked=linked_rows(document, catalog),
         supplied=frozenset(supplied_device_ids(document, catalog)),
+        terminals={(rail["moduleId"], rail["railKey"]): rail
+                   for field in placement.get("fields") or [] for rail in field["rails"]},
     )
     boxes = [*_cabinet_boxes(cabinet)]
     for module in modules_of(document):
@@ -220,7 +246,10 @@ def _rail_boxes(ctx: _Context, module: dict[str, Any], zone: dict[str, Any], rai
     if row_id is not None and ctx.linked.get(row_id) != (module_id, key):
         row_id = None  # a dangling name: the rail is drawn empty
     row = ctx.rows.get(row_id) if row_id is not None else None
+    terminal_rail = ctx.terminals.get((module_id, key))
     devices = row_devices(row)
+    if terminal_rail is not None:  # the strips replace the hand-placed placeholders (R2 §3.6)
+        devices = [device for device in devices if str(device.get("kind") or "") not in PLACEHOLDER_KINDS]
     retired = bool(rail.get("retired"))
     if retired and not devices:
         return  # a retired rail stays only while its row still holds devices
@@ -229,14 +258,13 @@ def _rail_boxes(ctx: _Context, module: dict[str, Any], zone: dict[str, Any], rai
     rail_x = zone_x + (cab.field_width - rail_w) / 2
     label = text(row.get("label")) if row is not None else ""
     common = {"module": module_id, "rail": key, "row": row_id, "zone": kind}
+    rail_flags = [*(["retired"] if retired else []), *(["terminals"] if terminal_rail is not None else [])]
     if rail.get("mount") == "busbar":
         yield _box(f"rail:{module_id}:{key}", "busbar", rail_x, centre - _BUSBAR_H / 2, _BUSBAR_Z, rail_w, _BUSBAR_H,
-                   _BUSBAR_D, label=label or default_rail_label(module, zone, position),
-                   flags=["retired"] if retired else [], **common)
+                   _BUSBAR_D, label=label or default_rail_label(module, zone, position), flags=rail_flags, **common)
     else:
         yield _box(f"rail:{module_id}:{key}", "rail", rail_x, centre - _RAIL_H / 2, _RAIL_Z, rail_w, _RAIL_H, _RAIL_D,
-                   label=label or default_rail_label(module, zone, position),
-                   flags=["retired"] if retired else [], **common)
+                   label=label or default_rail_label(module, zone, position), flags=rail_flags, **common)
     if ctx.closed:
         yield _box(f"slot:{module_id}:{key}", "cover_slot", rail_x, centre - _SLOT_H / 2, 122, rail_w, _SLOT_H, 0.5,
                    **common)
@@ -255,6 +283,10 @@ def _rail_boxes(ctx: _Context, module: dict[str, Any], zone: dict[str, Any], rai
             yield _box(f"device:{device_id}", "device", cursor, centre - _DEVICE_H / 2, _DEVICE_Z, width, _DEVICE_H,
                        _DEVICE_D, label=name, device=device_id, flags=flags, **common)
         cursor += width
+    if terminal_rail is not None and not ctx.closed:  # behind the cover in the closed view
+        for strip in terminal_rail["strips"]:
+            yield _box(f"terminal:{strip['stripId']}", "terminal_strip", rail_x + strip["offsetMm"], centre - _STRIP_H / 2,
+                       _STRIP_Z, strip["extentMm"], _STRIP_H, _STRIP_D, label=strip["xLabel"], **common)
 
 
 def _device_label(device: Mapping[str, Any]) -> str:

@@ -183,7 +183,36 @@ def _merge_override(builtin: CatalogEntry, row: PanelCatalogEntry) -> CatalogEnt
     if spec is None:
         # A broken override must not take a Hager cabinet away from every board.
         return replace(builtin, archived=archived)
-    return CatalogEntry(builtin.code, builtin.entry_type, spec, "override", archived)
+    return CatalogEntry(builtin.code, builtin.entry_type, _with_builtin_fittings(builtin, spec), "override", archived)
+
+
+def _with_builtin_fittings(builtin: CatalogEntry, spec: dict[str, Any]) -> dict[str, Any]:
+    """The override plus every built-in fitting whose key it lacks, in built-in order.
+
+    docs/PANEL_ENCLOSURE_R2.md §10: fitting keys are append-only from the
+    built-in to its override too, so a ZU37RK override saved before ``u84t``
+    existed is still served insulated, and a custom row for a code that later
+    became built in gains the built-in's parts. Rails are not appended. A
+    merge the schema would refuse (more than 16 fittings, a device on a rail
+    the override lacks) serves the override as saved: a stored spec the
+    admin could never save again is worse than one missing part.
+    """
+    builtin_fittings = (builtin.spec or {}).get("fittings")
+    own = spec.get("fittings")
+    if not isinstance(builtin_fittings, list) or not isinstance(own, list):
+        return spec
+    have = {fitting.get("key") for fitting in own if isinstance(fitting, Mapping)}
+    missing = [f for f in builtin_fittings if isinstance(f, Mapping) and f.get("key") not in have]
+    if not missing:
+        return spec
+    try:
+        return SPEC_MODELS[builtin.entry_type].model_validate({**spec, "fittings": [*own, *missing]}).model_dump()
+    except ValidationError as exc:
+        key = (builtin.code, f"merge: {exc.errors(include_url=False)[0]}")
+        if key not in _LOGGED_INVALID:
+            _LOGGED_INVALID.add(key)
+            logger.warning("panel catalogue override %s is served without the built-in fittings it lacks: %s", *key)
+        return spec
 
 
 def _custom_entry(code: str, row: PanelCatalogEntry) -> CatalogEntry:

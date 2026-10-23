@@ -270,6 +270,36 @@ describe("cabinet-aware document ops", () => {
     expect(removeDevices(withParent, ["nope"])).toBe(withParent);
   });
 
+  it("removeDevices prunes deleted heads and Blocks from the stored strip order (§2.1)", () => {
+    const order = (strips: string[], rail2_from: string | null) => ({ strips, rail2_from });
+    const keep = { id: "m-keep", code: "ZU37KS", field: 2, unit: 0, label: "", rails: {}, removed_fittings: [], meters: [],
+      terminal_order: { "0": order(["f9:leiste"], null) } };
+    const doc: PanelDocument = {
+      ...panelWithGroup(),
+      enclosure: {
+        code: "ZB33S",
+        modules: [
+          { id: "m1", code: "ZU37KS", field: 0, unit: 0, label: "", rails: {}, removed_fittings: [], meters: [],
+            terminal_order: { "0": order(["c1:block", "supply:leiste", "fi:leiste"], "fi:leiste") } },
+          { id: "m2", code: "ZU37KS", field: 1, unit: 0, label: "", rails: {}, removed_fittings: [], meters: [],
+            terminal_order: { "0": order(["fi:leiste"], null) } },
+          keep,
+        ],
+      },
+    };
+    const out = removeDevices(doc, ["fi", "c1"]);
+    const [m1, m2, m3] = out.enclosure!.modules;
+    // The pruned split marker goes with its strip; the supply Leiste is nobody's device.
+    expect(m1.terminal_order).toEqual({ "0": order(["supply:leiste"], null) });
+    // An entry left empty is deleted, and an empty map with it.
+    expect("terminal_order" in m2).toBe(false);
+    expect(m3).toBe(keep);
+    expect(doc.enclosure!.modules[0].terminal_order!["0"].strips).toHaveLength(3);
+    // Nothing of the order deleted: the enclosure keeps its identity.
+    const untouched = removeDevices(doc, ["c2"]);
+    expect(untouched.enclosure).toBe(doc.enclosure);
+  });
+
   it("a new board with a cabinet starts without rows", () => {
     expect(emptyDocument({ enclosureCode: " zb33s " })).toMatchObject({ rows: [], enclosure: { code: "ZB33S", modules: [] } });
     expect(emptyDocument().rows).toHaveLength(1);

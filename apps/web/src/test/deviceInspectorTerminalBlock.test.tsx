@@ -130,3 +130,52 @@ describe("DeviceInspector — Neozed straight on the 2016 block", () => {
     expect(screen.queryByLabelText(BLOCK_TOGGLE)).toBeNull();
   });
 });
+
+// Round 2 (docs/PANEL_ENCLOSURE_R2.md §3.1, R3): no WAGO for circuits in the
+// AAR, NAR, RfZ or APZ. The page passes the zone; the inspector then says so
+// where the checkbox would be. The SAS of a busbar Verteilerfeld keeps it.
+describe("DeviceInspector — no terminal in a meter field's zone", () => {
+  const CHECKBOX = "Reihenklemme am Abgang (WAGO)";
+
+  function renderBlocked(device: ReturnType<typeof makeDevice>, terminalBlockedZone: string | null) {
+    render(
+      <DeviceInspector
+        device={device}
+        document={boardWith(device)}
+        terminalBlockedZone={terminalBlockedZone}
+        readOnly={false}
+        onChange={noop}
+        onEditTerminalLabel={noop}
+        onDelete={noop}
+        onDuplicate={noop}
+        onMove={noop}
+        onClose={noop}
+      />,
+    );
+  }
+
+  it("shows the note instead of the checkbox for a circuit in the AAR", () => {
+    renderBlocked(makeDevice("mcb", { id: "a", designation: "F0.1", rating: "B16", terminal_block: true }), "AAR");
+    expect(screen.getByText("Im AAR keine Reihenklemme — nur in Verteilerfeldern.")).toBeInTheDocument();
+    expect(screen.queryByLabelText(CHECKBOX)).toBeNull();
+    expect(screen.queryByText(/Bei 1 Pol: WAGO 2003-7641/)).toBeNull();
+  });
+
+  it("hides the Block's name field with it", () => {
+    renderBlocked(wallbox(), "APZ");
+    expect(screen.getByText("Im APZ keine Reihenklemme — nur in Verteilerfeldern.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Name auf dem Klemmenblock")).toBeNull();
+  });
+
+  it("keeps the checkbox for a circuit on the SAS (no zone passed)", () => {
+    renderBlocked(wallbox(), null);
+    expect(screen.getByLabelText(CHECKBOX)).toBeChecked();
+    expect(screen.queryByText(/keine Reihenklemme — nur in Verteilerfeldern/)).toBeNull();
+  });
+
+  it("says nothing for a device that never gets a terminal anyway", () => {
+    renderBlocked(makeDevice("sls", { id: "q", designation: "Q0" }), "NAR");
+    expect(screen.queryByText(/keine Reihenklemme — nur in Verteilerfeldern/)).toBeNull();
+    expect(screen.queryByLabelText(CHECKBOX)).toBeNull();
+  });
+});

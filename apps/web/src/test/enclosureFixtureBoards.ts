@@ -10,7 +10,13 @@
  */
 import fixtures from "./fixtures/enclosureFixtures.json";
 import { catalogIndex } from "../utils/enclosureCatalog";
-import type { EnclosureCatalog, EnclosureScene } from "../types/panelEnclosure";
+import type {
+  EnclosureCatalog,
+  EnclosureScene,
+  TerminalCloseup,
+  TerminalPlacement,
+  TerminalSuggestion,
+} from "../types/panelEnclosure";
 import type { PanelDocument, PanelFinding } from "../types/schaltplan";
 
 export interface FixtureBoard {
@@ -19,11 +25,28 @@ export interface FixtureBoard {
   scene_open: EnclosureScene | null;
   scene_closed: EnclosureScene | null;
   findings: PanelFinding[];
+  /** Round 2 (docs/PANEL_ENCLOSURE_R2.md §14.1): ids of the devices that get no terminal, sorted. */
+  terminal_skip: string[];
+  terminal_placement: TerminalPlacement;
+  /** Round 2 (§7.1, §4.2): the close-up and the suggestion pass, as Python answers them. */
+  terminal_closeup: TerminalCloseup[];
+  terminal_suggestions: TerminalSuggestion[];
 }
 
-const raw = fixtures as unknown as { catalog: EnclosureCatalog; boards: Record<string, FixtureBoard> };
+/** The constants Python placed with, echoed so a change shows up in one diff (§3.5). */
+export interface FixtureConstants {
+  TERMINAL_RAIL_USABLE_MM: number;
+  TERMINAL_RAIL_USABLE_VERIFIED: boolean;
+}
+
+const raw = fixtures as unknown as {
+  catalog: EnclosureCatalog;
+  constants: FixtureConstants;
+  boards: Record<string, FixtureBoard>;
+};
 
 export const FIXTURE_CATALOG = raw.catalog;
+export const FIXTURE_CONSTANTS = raw.constants;
 export const FIXTURE_INDEX = catalogIndex(raw.catalog);
 export const FIXTURE_BOARDS: Readonly<Record<string, FixtureBoard>> = raw.boards;
 export const BOARD_NAMES = Object.keys(raw.boards);

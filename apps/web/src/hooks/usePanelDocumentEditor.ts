@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { normalizeEnclosure } from "../utils/enclosureOps";
+import { followPosition } from "../utils/enclosureOpsDrag";
 import { makeDevice, newId, nextCircuitNumber } from "../utils/schaltplanDevices";
 import {
   duplicateDevice as duplicateDeviceInDocument,
@@ -144,8 +145,17 @@ function patchDeviceIn(document: PanelDocument, deviceId: string, patch: Partial
  * because "move left" should mean the same thing at position 0 as anywhere
  * else — order is continuous across the whole board, and so is the
  * protection grouping it drives.
+ *
+ * The moved circuit then follows its position (`followPosition`, R10 of
+ * docs/PANEL_ENCLOSURE_R2.md), exactly like a drag: a step inside a run
+ * keeps a deliberate cross-feed, a step past another head clears it.
  */
-function moveDeviceIn(document: PanelDocument, deviceId: string, direction: -1 | 1): PanelDocument {
+export function moveDeviceIn(document: PanelDocument, deviceId: string, direction: -1 | 1): PanelDocument {
+  const moved = swapOrHop(document, deviceId, direction);
+  return moved === document ? document : followPosition(document, moved, deviceId);
+}
+
+function swapOrHop(document: PanelDocument, deviceId: string, direction: -1 | 1): PanelDocument {
   const rowIndex = document.rows.findIndex((row) => row.devices.some((device) => device.id === deviceId));
   if (rowIndex < 0) return document;
   const row = document.rows[rowIndex];

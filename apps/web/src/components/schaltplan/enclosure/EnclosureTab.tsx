@@ -21,29 +21,54 @@
  *
  * On a board the viewer may not edit, the drawing has no free-unit targets
  * (`onPickSlot` absent), but rails and modules still open to be read.
+ *
+ * Device drag (docs/PANEL_ENCLOSURE_R2.md §6): in the Offen view of an
+ * editable board a device (a group head with its circuits) is dragged onto
+ * a rail; "Auf andere Hutschiene…" runs the same `dropDevice` after closing
+ * the sheets. Both go through `useDropUndo`: one edit per drop, the note
+ * at the bottom, one-step Rückgängig. The field's two terminal rails
+ * (`terminalRailKeys`) refuse device drops.
+ *
+ * WAGO terminals (R2 §7, §8): the board's one derivation (`boardTerminals`
+ * from the page, else the tab's own `useBoardTerminals`) feeds the drawing
+ * (strips, reserved rails), the findings and their actions, the field bar's
+ * "Klemmen Feld {n}" and the close-up sheet. Strip moves, the order reset
+ * and every "Vorschlag ausführen" go through `useTerminalActions`: the op
+ * runner's pins and confirmation, then the same note and Rückgängig.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { DropNote } from "./DropNote";
+import { describeDrop } from "./dropNoteText";
 import { Enclosure3DPane, type Enclosure3DLoader } from "./Enclosure3DBoundary";
 import { EnclosureFieldBar } from "./EnclosureFieldBar";
 import { EnclosureFindings } from "./EnclosureFindings";
 import { EnclosureFrontSvg } from "./EnclosureFrontSvg";
 import { cabinetLine } from "./EnclosurePickerSheet";
-import { EnclosureSheetHost, type TabSheet } from "./EnclosureSheetHost";
+import { EnclosureSheetHost, type TabSheet, type TerminalSheetContext } from "./EnclosureSheetHost";
 import { EnclosureToolbar, type EnclosureViewMode } from "./EnclosureToolbar";
 import { rowsInPhysicalOrder } from "./enclosureEditorModel";
+import { deviceDragSource, stripDragSource, type DeviceDragSource, type DeviceDrop, type StripDragSource, type StripDrop } from "./enclosureDropTargets";
 import { ENCLOSURE_ZOOM_STEPS, clampZoomStep, initialZoomStep } from "./enclosureFrontLayout";
-import { useEnclosureOpRunner } from "./useEnclosureOpRunner";
+import { useDropUndo } from "./useDropUndo";
+import { useEnclosureOpRunner, type RegroupRequest } from "./useEnclosureOpRunner";
 import { useSheetStack } from "./useSheetStack";
+import { useTerminalActions, type TerminalActionsArgs } from "./useTerminalActions";
+import { useBoardTerminals, type BoardTerminalsState } from "../../../hooks/useBoardTerminals";
 import type { EnclosureCatalogState } from "../../../hooks/useEnclosureCatalog";
 import type { PanelDocumentEditor } from "../../../hooks/usePanelDocumentEditor";
+import type { CatalogIndex } from "../../../utils/enclosureCatalog";
 import { buildEnclosureScene } from "../../../utils/enclosureGeometry";
 import { orderRowsPhysically } from "../../../utils/enclosureOps";
+import { dropDevice, type DropTarget } from "../../../utils/enclosureOpsDrag";
 import { enclosureFindings } from "../../../utils/enclosureRules";
+import { terminalCloseup } from "../../../utils/enclosureTerminalCloseup";
+import { terminalSuggestions } from "../../../utils/enclosureTerminalSuggest";
+import { terminalRailKeys, type BoardTerminals } from "../../../utils/enclosureTerminals";
 import { reloadAfterSave, savedPdfClick } from "../../../utils/openAfterSave";
 import { aufbauPdfUrl } from "../../../utils/schaltplanEnclosureApi";
-import type { EnclosureSpec } from "../../../types/panelEnclosure";
-import type { PanelDocument, PanelPlan } from "../../../types/schaltplan";
+import type { EnclosureSpec, TerminalPlacement, TerminalSuggestion } from "../../../types/panelEnclosure";
+import type { PanelDocument, PanelFinding, PanelPlan } from "../../../types/schaltplan";
 import "../../../styles/schaltplan-enclosure-tab.css";
 
 export interface EnclosureTabProps {
@@ -66,6 +91,83 @@ export interface EnclosureTabProps {
    */
   openSheet?: TabSheet | null;
   onSheetOpened?: () => void;
+  /**
+   * The page's one `useBoardTerminals` answer (docs/PANEL_ENCLOSURE_R2.md
+   * §6.7, §12.2), so the tab numbers the X labels as the legend and the
+   * print do. Without it the tab derives its own (memoised by document).
+   */
+  boardTerminals?: BoardTerminalsState;
+}
+
+const NO_RAILS: ReadonlySet<string> = new Set();
+const NO_SUGGESTIONS: readonly TerminalSuggestion[] = Object.freeze([]);
+const NO_FINDINGS: readonly PanelFinding[] = Object.freeze([]);
+
+/** What the tab reads of the board's WAGO terminals, derived once per document. */
+interface TabTerminals {
+  terms: BoardTerminals | null;
+  placement: TerminalPlacement | null;
+  /** The terminal rails, `"moduleId:railKey"`: no device drops, a tap opens the close-up. */
+  reserved: ReadonlySet<string>;
+  findings: readonly PanelFinding[];
+  /** The findings' suggestions; none on a read-only board. */
+  suggestions: readonly TerminalSuggestion[];
+  /** Per field with terminal rails: how many strips have no place (the field bar). */
+  fields: readonly { field: number; unplaced: number }[];
+}
+
+function useTabTerminals(document: PanelDocument | null, index: CatalogIndex | null, passed: BoardTerminalsState | undefined, readOnly: boolean): TabTerminals {
+  const own = useBoardTerminals(passed ? null : document, passed ? null : index);
+  const { terms, placement } = passed ?? own;
+  const reserved = useMemo(() => (document?.enclosure && index ? terminalRailKeys(document, index) : NO_RAILS), [document, index]);
+  const findings = useMemo(
+    () => (document && index ? enclosureFindings(document, index, terms && placement ? { terms, placement } : undefined) : NO_FINDINGS),
+    [document, index, terms, placement],
+  );
+  const suggestions = useMemo(
+    () => (!readOnly && document?.enclosure && index && terms && placement ? terminalSuggestions(document, index, terms, placement) : NO_SUGGESTIONS),
+    [readOnly, document, index, terms, placement],
+  );
+  const fields = useMemo(() => (placement?.fields ?? []).map((field) => ({ field: field.field, unplaced: field.unplaced.length })), [placement]);
+  return { terms, placement, reserved, findings, suggestions, fields };
+}
+
+interface TerminalUiArgs extends Omit<TerminalActionsArgs, "suggestions"> {
+  terminals: TabTerminals;
+  entries: readonly TabSheet[];
+  resetSheets: (entry?: TabSheet) => void;
+}
+
+/**
+ * The terminal actions and what the close-up needs: strip moves and every
+ * "Vorschlag ausführen" (`useTerminalActions`, with the note's Rückgängig),
+ * the close-up of each field (derived only while one is open), the strip
+ * drag's source, and the way into the close-up.
+ */
+function useTerminalUi(args: TerminalUiArgs) {
+  const { terminals, entries, resetSheets, ...rest } = args;
+  const { document, index } = rest;
+  const { terms, placement, suggestions, findings } = terminals;
+  const { actions, moveStrip, resetOrder, runSuggestion } = useTerminalActions({ ...rest, suggestions });
+  const closeupOpen = entries.some((entry) => entry.kind === "terminals");
+  const closeups = useMemo(
+    () => (closeupOpen && document && index && terms && placement ? terminalCloseup(document, index, terms, placement) : []),
+    [closeupOpen, document, index, terms, placement],
+  );
+  const sheet = useMemo<TerminalSheetContext | null>(
+    () =>
+      terms && placement
+        ? { terms, placement, closeups, suggestions, findings, actions, onMoveStrip: moveStrip, onResetOrder: resetOrder, onRunSuggestion: runSuggestion }
+        : null,
+    [terms, placement, closeups, suggestions, findings, actions, moveStrip, resetOrder, runSuggestion],
+  );
+  const stripSource = useMemo(
+    () => (document && index && placement ? (stripId: string) => stripDragSource(document, index, placement, stripId) : undefined),
+    [document, index, placement],
+  );
+  const openTerminals = useCallback((field: number, stripId: string | null) => resetSheets({ kind: "terminals", field, stripId }), [resetSheets]);
+  const dropStrip = useCallback((stripId: string, drop: StripDrop) => moveStrip(stripId, { field: drop.field, rail: drop.rail, at: drop.at }), [moveStrip]);
+  return { actions, sheet, stripSource, openTerminals, dropStrip };
 }
 
 /** What the drawing marks for the sheets that are open: the rail, the device, the module. */
@@ -151,23 +253,42 @@ export function EnclosureTab(props: EnclosureTabProps) {
   const [zoomStep, setZoomStep] = useState(0);
   const { push } = stack;
   useHandedSheet(stack.reset, openSheet, onSheetOpened);
-  const runOp = useEnclosureOpRunner({
-    document,
-    index,
-    mutate,
-    confirmRegroup: (request) => push({ kind: "regroup", ...request }),
-    onError,
-    onNotice,
-  });
+  const confirmRegroup = useCallback((request: RegroupRequest) => push({ kind: "regroup", ...request }), [push]);
+  const runOp = useEnclosureOpRunner({ document, index, mutate, confirmRegroup, onError, onNotice });
+  const terminals = useTabTerminals(document, index, props.boardTerminals, readOnly);
+  const { placement, reserved } = terminals;
   const scene = useMemo(
-    () => (document && index ? buildEnclosureScene(document, index, view === "closed" ? "closed" : "open") : null),
-    [document, index, view],
+    () => (document && index ? buildEnclosureScene(document, index, view === "closed" ? "closed" : "open", placement ?? undefined) : null),
+    [document, index, view, placement],
   );
-  const findings = useMemo(() => (document && index ? enclosureFindings(document, index) : []), [document, index]);
   const focus = useMemo(() => drawingFocus(stack.entries), [stack.entries]);
   const pdfHref = aufbauPdfUrl(panel.id);
   const onPdfClick = useMemo(() => savedPdfClick(pdfHref, settleSaves, onError, "Aufbau"), [pdfHref, settleSaves, onError]);
   const onReloadPage = useCallback(() => void reloadAfterSave(settleSaves, onError, reloadPage), [settleSaves, onError, reloadPage]);
+  const drops = useDropUndo({ document, mutate });
+  const { run: runDrop } = drops;
+  const moveDevice = useCallback(
+    (deviceId: string, target: DropTarget) => {
+      if (!index) return;
+      runDrop(
+        (current) => dropDevice(current, index, deviceId, target, { reserved: terminalRailKeys(current, index) }),
+        (before, after) => describeDrop(before, after, index, deviceId),
+      );
+    },
+    [index, runDrop],
+  );
+  const dragSource = useMemo(() => (document && index ? (deviceId: string) => deviceDragSource(document, index, deviceId) : undefined), [document, index]);
+  const { close: closeSheets } = stack;
+  const dropFromPicker = useCallback(
+    (deviceId: string, target: DropTarget) => {
+      closeSheets();
+      moveDevice(deviceId, target);
+    },
+    [closeSheets, moveDevice],
+  );
+  const terminalUi = useTerminalUi({
+    document, index, terminals, readOnly, drops, mutate, confirmRegroup, onError, onNotice, entries: stack.entries, resetSheets: stack.reset,
+  });
 
   if (!document) return null;
   if (!catalog || !index) return <CatalogNotReady state={catalogState} />;
@@ -185,8 +306,12 @@ export function EnclosureTab(props: EnclosureTabProps) {
       onEdit={mutate}
       devices={editor}
       onReloadCatalog={catalogState.reload}
+      onDropDevice={dropFromPicker}
+      reservedRails={reserved}
+      terminals={terminalUi.sheet}
     />
   );
+  const note = <DropNote note={drops.note} onUndo={drops.undo} onDismiss={drops.dismiss} />;
   const chooseCabinet = () => stack.reset({ kind: "enclosure-picker" });
 
   if (!document.enclosure) {
@@ -219,6 +344,8 @@ export function EnclosureTab(props: EnclosureTabProps) {
         selectedModuleId={focus.selectedModuleId}
         onOpenModule={(moduleId) => stack.reset({ kind: "module", moduleId })}
         onAddModule={(field) => stack.reset({ kind: "module-picker", field, unit: null })}
+        terminals={terminals.fields}
+        onOpenTerminals={(field) => terminalUi.openTerminals(field, null)}
       />
       <EnclosureDrawing
         document={document}
@@ -233,9 +360,19 @@ export function EnclosureTab(props: EnclosureTabProps) {
         onView={setView}
         onZoomStep={setZoomStep}
         onOpen={(sheet) => stack.reset(sheet)}
+        onMoveDevice={readOnly ? undefined : (deviceId, drop) => moveDevice(deviceId, drop)}
+        dragSource={readOnly ? undefined : dragSource}
+        terminals={{
+          placement,
+          reserved,
+          onOpen: terminalUi.openTerminals,
+          onMoveStrip: readOnly ? undefined : terminalUi.dropStrip,
+          stripSource: readOnly ? undefined : terminalUi.stripSource,
+        }}
       />
-      <EnclosureFindings findings={findings} />
+      <EnclosureFindings findings={terminals.findings} actions={terminalUi.actions} />
       {host}
+      {note}
     </div>
   );
 }
@@ -253,10 +390,26 @@ type DrawingProps = {
   onView: (view: EnclosureViewMode) => void;
   onZoomStep: (step: number) => void;
   onOpen: (sheet: TabSheet) => void;
+  /** Device drag (Offen view only; absent read-only). */
+  onMoveDevice?: (deviceId: string, drop: DeviceDrop) => void;
+  dragSource?: (deviceId: string) => DeviceDragSource | null;
+  terminals: DrawingTerminals;
 };
 
+/** The drawing's WAGO terminals: strips and reserved rails, the close-up, and the strip drag. */
+interface DrawingTerminals {
+  placement: TerminalPlacement | null;
+  reserved: ReadonlySet<string>;
+  /** A tap on a reserved rail's band (`stripId` null) or on a strip. */
+  onOpen: (field: number, stripId: string | null) => void;
+  /** Strip drag (Offen view only; absent read-only). */
+  onMoveStrip?: (stripId: string, drop: StripDrop) => void;
+  stripSource?: (stripId: string) => StripDragSource | null;
+}
+
 /** The 2D front (open or closed) or the 3D pane; a cabinet code the catalogue lacks has no picture. */
-function EnclosureDrawing({ document, scene, view, zoomStep, unitMm, readOnly, focus, load3D, onReloadPage, onView, onZoomStep, onOpen }: DrawingProps) {
+function EnclosureDrawing(props: DrawingProps) {
+  const { document, scene, view, zoomStep, unitMm, readOnly, focus, load3D, onReloadPage, onView, onZoomStep, onOpen, onMoveDevice, dragSource, terminals } = props;
   if (!scene) {
     return (
       <p className="sp-encl-tab-state">
@@ -279,6 +432,13 @@ function EnclosureDrawing({ document, scene, view, zoomStep, unitMm, readOnly, f
       onOpenModule={(moduleId) => onOpen({ kind: "module", moduleId })}
       onPickSlot={readOnly ? undefined : (field, unit) => onOpen({ kind: "module-picker", field, unit })}
       onFitWidth={(px) => onZoomStep(initialZoomStep(scene.width, px))}
+      onMoveDevice={view === "open" ? onMoveDevice : undefined}
+      dragSource={dragSource}
+      reservedRails={terminals.reserved}
+      placement={terminals.placement}
+      onOpenTerminals={terminals.onOpen}
+      onMoveStrip={view === "open" ? terminals.onMoveStrip : undefined}
+      stripSource={terminals.stripSource}
     />
   );
 }

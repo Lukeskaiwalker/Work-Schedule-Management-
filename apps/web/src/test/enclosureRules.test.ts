@@ -43,7 +43,7 @@ describe("helpers", () => {
     expect(ratingValue("C 32A")).toBe(32);
     expect(ratingValue("0,5 A")).toBe(0.5);
     expect(ratingValue("")).toBeNull();
-    expect(RULE_ORDER).toHaveLength(25);
+    expect(RULE_ORDER).toHaveLength(34); // round 2: ten terminal rules where "encl.terminals" was
   });
 });
 

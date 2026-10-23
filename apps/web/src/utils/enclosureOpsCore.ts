@@ -84,21 +84,50 @@ export function mapDevices(doc: PanelDocument, change: (device: PanelDevice) => 
   };
 }
 
+/**
+ * Where a moved device lands in its target row: the start, the end, or an
+ * index counted AFTER the moved devices left the row (clamped to the row).
+ */
+export type RowPosition = "start" | "end" | number;
+
+function insertAt<T>(items: readonly T[], position: RowPosition, added: readonly T[]): T[] {
+  const at = position === "start" ? 0 : position === "end" ? items.length : Math.max(0, Math.min(items.length, Math.floor(position)));
+  return [...items.slice(0, at), ...added, ...items.slice(at)];
+}
+
 /** Take a device out of its row and put it into `rowId` at `position` (end by default), with `patch` applied. */
 export function moveDeviceInto(
   doc: PanelDocument,
   deviceId: string,
   rowId: string,
   patch: Partial<PanelDevice> = {},
-  position: "start" | "end" = "end",
+  position: RowPosition = "end",
 ): PanelDocument {
   const device = doc.rows.flatMap((row) => row.devices).find((candidate) => candidate.id === deviceId);
   if (!device) return doc;
-  const moved = { ...device, ...patch };
+  return moveDevicesInto(doc, [deviceId], rowId, position, { [deviceId]: { ...device, ...patch } });
+}
+
+/**
+ * Take several devices out of wherever they are and put them, in the order
+ * given, into `rowId` at `position` — a group head with its circuits travels
+ * as one block. Unknown ids are skipped; untouched rows keep their identity.
+ */
+export function moveDevicesInto(
+  doc: PanelDocument,
+  deviceIds: readonly string[],
+  rowId: string,
+  position: RowPosition = "end",
+  replacements: Readonly<Record<string, PanelDevice>> = {},
+): PanelDocument {
+  const byId = new Map(doc.rows.flatMap((row) => row.devices).map((device) => [device.id, device] as const));
+  const moved = deviceIds.filter((id) => byId.has(id)).map((id) => replacements[id] ?? byId.get(id)!);
+  if (moved.length === 0) return doc;
+  const leaving = new Set(moved.map((device) => device.id));
   const rows = doc.rows.map((row) => {
-    const rest = row.devices.filter((candidate) => candidate.id !== deviceId);
+    const rest = row.devices.filter((candidate) => !leaving.has(candidate.id));
     if (row.id !== rowId) return rest.length === row.devices.length ? row : { ...row, devices: rest };
-    return { ...row, devices: position === "start" ? [moved, ...rest] : [...rest, moved] };
+    return { ...row, devices: insertAt(rest, position, moved) };
   });
   return { ...doc, rows };
 }
@@ -184,7 +213,7 @@ function withPhysicalOrder(doc: PanelDocument, index: CatalogIndex): PanelDocume
 }
 
 /** Linked rows that are empty and still carry their generated label go, with their rail reference. */
-function pruneEmptyRailRows(doc: PanelDocument, index: CatalogIndex): PanelDocument {
+export function pruneEmptyRailRows(doc: PanelDocument, index: CatalogIndex): PanelDocument {
   const links = linkedRows(doc, index);
   const byId = new Map(doc.rows.map((row) => [row.id, row] as const));
   const prune = new Set<string>();

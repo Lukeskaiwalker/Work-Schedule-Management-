@@ -14,6 +14,11 @@
  * rule as the module picker's row take-over, because a legacy row of
  * breakers belongs in a Verteilerfeld, never in the NAR or the RfZ.
  *
+ * A rail reserved for WAGO terminals (docs/PANEL_ENCLOSURE_R2.md R2, §3.6)
+ * says so: devices left on it from before keep their tiles and inspector
+ * (tolerated), the banner offers the suggestion that moves them and the
+ * field's close-up, and nothing new is offered — no "+ Gerät", no template.
+ *
  * The tiles share RailEditor's `sp-tile` markup and 44 px-per-TE sizing but
  * not `RailRow` itself: `RailRow` brings its own name input, slot meter and
  * "+" tile, which this sheet already has as "Name der Reihe" and the 56 px
@@ -30,8 +35,12 @@ import { addDeviceToRail, assignRowToRail, fillRailFromTemplate } from "../../..
 import { ROW_TEMPLATES } from "../../../utils/schaltplanDocumentOps";
 import { catalogEntry, deviceLabel } from "../../../utils/schaltplanDevices";
 import { isCircuitDevice, isGroupDevice } from "../../../utils/schaltplanTopology";
+import type { FindingAction } from "./EnclosureFindings";
+import { RESERVED_RAIL_TEXT } from "./TerminalCloseupSheet";
 import type { DeviceChoiceRequest, EditDocument, RunEnclosureOp } from "./useSheetStack";
+import { TERMINAL_RAIL_RESERVED } from "../../../utils/enclosureOpsDrag";
 import type { PanelDevice, PanelDocument, PanelRow } from "../../../types/schaltplan";
+import "../../../styles/schaltplan-enclosure-terminals.css";
 
 type Props = {
   document: PanelDocument;
@@ -49,7 +58,40 @@ type Props = {
   onChooseDevice: (request: DeviceChoiceRequest) => void;
   onBack?: () => void;
   onClose: () => void;
+  /** One of the field's two terminal rails (R2): nothing new goes on it. */
+  reserved?: boolean;
+  /** The finding's action for the devices still on it ("Vorschlag ausführen"). */
+  reservedAction?: FindingAction | null;
+  /** "Klemmen Feld {n}": the field's close-up. */
+  onOpenTerminals?: () => void;
 };
+
+
+function ReservedBanner({ field, withDevices, readOnly, action, onOpenTerminals }: {
+  field: number;
+  withDevices: boolean;
+  readOnly: boolean;
+  action: FindingAction | null;
+  onOpenTerminals?: () => void;
+}) {
+  return (
+    <div className="sp-encl-reserved" role="note">
+      <p>{withDevices ? RESERVED_RAIL_TEXT : TERMINAL_RAIL_RESERVED}</p>
+      <div className="sp-term-banner-actions">
+        {action && !readOnly ? (
+          <button type="button" className="sp-btn sp-btn--primary sp-encl-target" onClick={action.run}>
+            {action.label}
+          </button>
+        ) : null}
+        {onOpenTerminals ? (
+          <button type="button" className="sp-btn sp-encl-target" onClick={onOpenTerminals}>
+            {`Klemmen Feld ${field}`}
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 /** Templates that put something on the rail ("Leere Reihe" would fill nothing). */
 const FILL_TEMPLATES = ROW_TEMPLATES.filter((template) => template.kinds.length > 0);
@@ -189,6 +231,7 @@ function useCentredTile(highlightDeviceId: string | null) {
 
 export function RailSheet(props: Props) {
   const { document, index, moduleId, railKey, highlightDeviceId, readOnly, onOp, onEdit, onOpenDevice, onChooseDevice, onBack, onClose } = props;
+  const reserved = props.reserved ?? false;
   const highlightedTile = useCentredTile(highlightDeviceId);
   const rail = railInfo(document, index, moduleId, railKey);
 
@@ -223,6 +266,7 @@ export function RailSheet(props: Props) {
     `${formatPle(rail.usedPle)} / ${rail.rail.ple} PLE`,
     rail.rail.mount === "busbar" ? "Sammelschiene" : "",
     rail.rail.retired ? "ausgemustert — Geräte umsetzen" : "",
+    reserved ? "für Reihenklemmen reserviert" : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -235,13 +279,16 @@ export function RailSheet(props: Props) {
       onClose={onClose}
       className="sp-encl-rail-sheet"
       footer={
-        readOnly || rail.rail.retired ? undefined : (
+        readOnly || rail.rail.retired || reserved ? undefined : (
           <button type="button" className="sp-btn sp-btn--primary sp-encl-target" onClick={addDevice}>
             + Gerät
           </button>
         )
       }
     >
+      {reserved ? (
+        <ReservedBanner field={rail.field} withDevices={!empty} readOnly={readOnly} action={props.reservedAction ?? null} onOpenTerminals={props.onOpenTerminals} />
+      ) : null}
       {rail.row ? (
         <label className="sp-field">
           <span className="sp-field-label">Name der Reihe</span>
@@ -265,7 +312,7 @@ export function RailSheet(props: Props) {
           ))}
         </ul>
       )}
-      {!readOnly && empty && !rail.rail.retired ? (
+      {!readOnly && empty && !rail.rail.retired && !reserved ? (
         <SheetSection title="Hutschiene bestücken">
           <TemplateFill rail={rail} onOp={onOp} />
           {distribution ? <RowAdoption document={document} index={index} rail={rail} onOp={onOp} /> : null}

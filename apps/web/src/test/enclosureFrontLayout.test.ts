@@ -152,6 +152,16 @@ describe("railBands", () => {
     expect(bands.find((band) => band.moduleId === "m2" && band.railKey === "r2")).toMatchObject({ rowId: null, deviceCount: 0 });
   });
 
+  it("knows its field, whether its rail is retired, and whether it is reserved for terminals (R2 §6.3)", () => {
+    const bands = railBands(renderScene(), new Set(["m2:r2"]));
+    expect(bands.find((band) => band.moduleId === "m1" && band.railKey === "nar")).toMatchObject({ field: 0, retired: false, reserved: false });
+    expect(bands.find((band) => band.moduleId === "m2" && band.railKey === "r1")).toMatchObject({ field: 1, reserved: false });
+    expect(bands.find((band) => band.moduleId === "m2" && band.railKey === "r2")).toMatchObject({ field: 1, reserved: true });
+    expect(bands.find((band) => band.moduleId === "m3" && band.railKey === "aar1")).toMatchObject({ field: 2 });
+    // Without a reserved set (until W3 passes the terminal rails), nothing is reserved.
+    expect(railBands(renderScene()).every((band) => !band.reserved)).toBe(true);
+  });
+
   it("exists in the closed view too, so the same tap does the same thing", () => {
     const closed = railBands(renderScene("closed"));
     expect(closed.find((band) => band.moduleId === "m2" && band.railKey === "r1")).toMatchObject({ deviceCount: 2, y: 55, h: 90 });

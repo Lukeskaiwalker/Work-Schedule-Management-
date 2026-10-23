@@ -12,6 +12,11 @@
  * booking: the Materialliste turns it into a return line the Werkstatt
  * books (D6). Catalogue facts nobody has checked yet ("ungeprüft") are said
  * next to the part, so nobody orders a Hauptschalter on a guess.
+ *
+ * "U84T ab Werk" (docs/PANEL_ENCLOSURE_R2.md §2.2) is read from the SERVED
+ * spec, not from the module's snapshot: a field placed before round 2 lacks
+ * the fitting there, and the sheet must agree with the close-up and the
+ * Materialliste, which read the served spec too.
  */
 import { useId, useState } from "react";
 
@@ -33,7 +38,9 @@ import {
   swapModules,
 } from "../../../utils/enclosureOps";
 import type { EditDocument, RunEnclosureOp } from "./useSheetStack";
+import { INSULATED_RAILS_FITTING } from "../../../utils/enclosureTerminals";
 import type { EnclosureFitting, EnclosureModule, ModuleSpec } from "../../../types/panelEnclosure";
+import "../../../styles/schaltplan-enclosure-terminals.css";
 import type { PanelDocument } from "../../../types/schaltplan";
 
 const REMOVE_QUESTION =
@@ -322,10 +329,12 @@ export function ModuleSheet(props: Props) {
   const spec = index.module(module.code);
   const shared: Shared = { document, index, module, readOnly, onOp };
   const remove = () => onOp((current, idx) => removeModule(current, idx, module.id), () => (onRemoved ?? onClose)());
+  const insulated = !!spec?.fittings.some((fitting) => fitting.key === INSULATED_RAILS_FITTING && !fitting.retired);
   const subtitle = (
     <>
       {spec ? spec.name : "Unbekannter Katalogcode — nur als Platzhalter gezeigt."}
       {spec && !spec.verified ? <UnverifiedBadge /> : null}
+      {insulated ? <span className="sp-encl-badge sp-encl-badge--u84t">U84T ab Werk</span> : null}
     </>
   );
 

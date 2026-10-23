@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -795,6 +795,7 @@ def build_panel_plan_pdf(
     company_name: str | None = None,
     legend_only: bool = False,
     terminals_only: bool = False,
+    terminal_skip: frozenset[str] = frozenset(), rail_parts: Mapping[str, int] | None = None,
 ) -> bytes:
     """Render the plan. Returns PDF bytes; never writes to disk.
 
@@ -802,12 +803,13 @@ def build_panel_plan_pdf(
     board has at least one Reihenklemme — the terminal sheet. ``legend_only``
     and ``terminals_only`` each print just their sheet; ``terminals_only``
     wins when both are set, because the Klemmen tab is the only caller that
-    sets it and it wants exactly that page.
+    sets it and it wants exactly that page. ``terminal_skip``/``rail_parts``:
+    a cabinet board's skip set and end plates (docs/PANEL_ENCLOSURE_R2.md §5.1).
     """
 
     document = plan.document or {}
     company = (company_name or "SMPL").strip() or "SMPL"
-    terminal_groups = derive_terminals(document)
+    terminal_groups = derive_terminals(document, skip=terminal_skip)
 
     buffer = BytesIO()
     c = pdfcanvas.Canvas(buffer, pagesize=landscape(A4))
@@ -816,10 +818,7 @@ def build_panel_plan_pdf(
 
     def terminal_sheet() -> None:
         draw_terminal_sheets(
-            c,
-            plan=plan,
-            document=document,
-            groups=terminal_groups,
+            c, plan=plan, document=document, groups=terminal_groups, rail_parts=rail_parts,
             customer_name=customer_name,
             project_label=project_label,
             company=company,
@@ -849,7 +848,7 @@ def build_panel_plan_pdf(
     _draw_legend_sheets(
         c,
         plan=plan,
-        rows=build_legend(document),
+        rows=build_legend(document, terminal_skip=terminal_skip),
         customer_name=customer_name,
         project_label=project_label,
         company=company,

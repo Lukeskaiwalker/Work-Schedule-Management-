@@ -9,8 +9,11 @@ their way to the shelf, and the warn findings as a Prüfhilfe. Each list
 stops at the column bottom with "… und {n} weitere"; when the hints did not
 all fit, the full list follows on the Materialliste's last page.
 
-Then the Materialliste pages, portrait, drawn by the same function as their
-own PDF (``schaltplan_material_pdf.draw_material_pages``).
+Then one WAGO close-up page per field whose terminal rails hold a strip, at
+1:1 across the rail, with a legend page where a text had to be cut
+(``panel_enclosure_pdf_terminals``, docs/PANEL_ENCLOSURE_R2.md §7.3), and
+the Materialliste pages, portrait, drawn by the same function as their own
+PDF (``schaltplan_material_pdf.draw_material_pages``).
 
 Every position comes from ``build_enclosure_scene`` — this module only maps
 millimetres to points and draws boxes, so the sheet is the picture the
@@ -33,6 +36,9 @@ from app.models.schaltplan import PanelPlan
 from app.schemas.schaltplan import PanelMaterialOut
 from app.services.panel_enclosure_catalog import EnclosureCatalog
 from app.services.panel_enclosure_geometry import build_enclosure_scene
+from app.services.panel_enclosure_pdf_terminals import draw_terminal_closeup_pages
+from app.services.panel_enclosure_terminal_closeup import terminal_closeup
+from app.services.panel_enclosure_terminals import BoardTerminals, board_terminals, place_terminals
 from app.services.panel_enclosure_layout import (
     as_int,
     enclosure_of,
@@ -76,7 +82,14 @@ _HEAD_H = 30.0  # a heading: gap, up to two lines, rule
 _FILL: Mapping[str, Any] = {
     "shell": colors.HexColor("#f3f4f6"), "rail": colors.HexColor("#9ca3af"), "busbar": colors.HexColor("#d97706"),
     "device": colors.white, "meter": colors.HexColor("#dbeafe"), "module": colors.white,
+    # A placed WAGO strip, with its X label: the Schrank tab's WAGO grey (--sp-term-grey, R2 §8).
+    "terminal_strip": colors.HexColor("#c9ced4"),
 }
+#: Its outline, the Schrank tab's --sp-term-outline.
+_TERMINAL_STRIP_STROKE = colors.HexColor("#2d3a48")
+#: A rail reserved for the WAGO strips (R2 §8): the Schrank tab's orange tint
+#: (--sp-term-reserved under its hatch) as one opaque print colour.
+_TERMINAL_RAIL_FILL = colors.HexColor("#f8d6b7")
 _ZONE_FILL: Mapping[str, Any] = {
     "NAR": colors.HexColor("#fef3c7"), "SAS": colors.HexColor("#fef3c7"), "ZF": colors.HexColor("#e0f2fe"),
     "AAR": colors.HexColor("#fff7ed"), "RFZ": colors.HexColor("#ede9fe"), "APZ": colors.HexColor("#ede9fe"),
@@ -102,19 +115,26 @@ def build_aufbau_pdf(
     customer_name: str | None,
     project_label: str | None,
     company_name: str | None,
+    terms: BoardTerminals | None = None,
+    placement: Mapping[str, Any] | None = None,
 ) -> bytes:
+    """``terms``/``placement``: the board's ``board_terminals``/``place_terminals``, when the caller has them."""
     buffer = BytesIO()
     c = pdfcanvas.Canvas(buffer, pagesize=landscape(A4))
     width, height = landscape(A4)
     header_bar(c, width, height, "Aufbau", text_of(company_name) or "SMPL")
     document = plan.document or {}
-    _draw_front(c, document, catalog)
+    terms = board_terminals(document, catalog) if terms is None else terms
+    placement = place_terminals(document, catalog, terms) if placement is None else placement
+    _draw_front(c, document, catalog, placement)
     warnings = [text_of(f.get("message")) for f in findings if f.get("level") == "warn"]
     column = _Column(c, top=_MARGIN + _BOX, bottom=_MARGIN)
     _title_block(column, plan, document, catalog, customer_name, project_label)
     sections = _sections(document, catalog, material, warnings)
     complete = column.lists(sections)
     c.showPage()
+    draw_terminal_closeup_pages(c, plan=plan, closeup=terminal_closeup(document, catalog, terms, placement),
+                                company_name=company_name)
     hints_cut = not complete.get(HINTS_TITLE, True)
     draw_material_pages(c, material=material, company_name=company_name,
                         notes_title=HINTS_TITLE if hints_cut else "", notes=warnings if hints_cut else ())
@@ -126,9 +146,9 @@ def build_aufbau_pdf(
 # ── The drawing ──────────────────────────────────────────────────────────────
 
 
-def _draw_front(c: pdfcanvas.Canvas, document: Any, catalog: EnclosureCatalog) -> None:
+def _draw_front(c: pdfcanvas.Canvas, document: Any, catalog: EnclosureCatalog, placement: Mapping[str, Any]) -> None:
     box_top = _MARGIN + _BOX
-    scene = build_enclosure_scene(document, catalog, view="open")
+    scene = build_enclosure_scene(document, catalog, view="open", placement=placement)
     if scene is None:
         enclosure = enclosure_of(document) or {}
         c.setStrokeColor(GRID)
@@ -160,6 +180,8 @@ def _fill(kind: str, flags: set[str], zone_type: str | None) -> Any:
         return BLUE_TINT  # pre-fitted: came with the module
     if kind == "module" and "unknown_code" in flags:
         return colors.HexColor("#fef2f2")
+    if kind == "rail" and "terminals" in flags:
+        return _TERMINAL_RAIL_FILL
     return _ZONE_FILL.get(zone_type or "") if kind == "zone" else _FILL.get(kind)
 
 
@@ -168,6 +190,8 @@ def _stroke(kind: str, flags: set[str]) -> Any:
         return WARN
     if kind == "module":
         return BLUE_DEEP
+    if kind == "terminal_strip":
+        return _TERMINAL_STRIP_STROKE
     return INK if kind in ("device", "meter") else GRID
 
 
@@ -187,7 +211,7 @@ def _draw_box(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, f
 
 def _draw_label(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, float, float, float]) -> None:
     kind = item["kind"]
-    if kind in ("device", "meter", "meter_place"):
+    if kind in ("device", "meter", "meter_place", "terminal_strip"):
         _centre_label(c, item["label"], *rect)
     elif kind in ("module", "field"):
         _corner_label(c, item["label"], *rect, below=kind == "field")

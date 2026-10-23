@@ -44,10 +44,12 @@ Decisions, spelled out because the owner's words allowed two readings:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from app.services.schaltplan_layout import BMK_EDGE_JUNK, DEVICE_CATALOG, build_topology, font_size_for_fits
 from app.services.schaltplan_terminal_rules import (
+    END_PART_IDS,
+    FEED_PART_IDS,
     OUTGOING_PART_IDS,
     TERMINAL_PART_ORDER,
     TERMINAL_PARTS,
@@ -189,8 +191,13 @@ def _block_x(strip_no: int, device: dict[str, Any], overrides: dict[str, str]) -
     return _clean(overrides[key]) if key in overrides else f"X{strip_no}"
 
 
-def derive_terminals(document: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_terminals(document: dict[str, Any], *, skip: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """One entry per group that has at least one terminal, in group order.
+
+    ``skip``: device ids left out whatever their ``terminal_block`` flag says
+    (docs/PANEL_ENCLOSURE_R2.md §3.1). The X numbers run over what is left,
+    so every caller on a cabinet board must pass the same set — the one
+    ``panel_enclosure_terminals.board_terminals`` derives.
 
     Returns::
 
@@ -211,7 +218,7 @@ def derive_terminals(document: dict[str, Any]) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
     strip_no = 0
     for group in build_topology(document)["groups"]:
-        children = terminal_children(group)
+        children = terminal_children(group, skip)
         variant = terminal_variant(group, children)
         if variant is None:
             continue
@@ -268,6 +275,35 @@ def derive_terminals(document: dict[str, Any]) -> list[dict[str, Any]]:
     return groups
 
 
+def rcd_detail(head: Mapping[str, Any] | None) -> str:
+    """"30 mA / Typ A" for an FI head, "" for anything else."""
+    if head is None or str(head.get("kind") or "") != "rcd":
+        return ""
+    parts = [p for p in (_text(head.get("residual_current")), _text(head.get("rcd_type"))) if p]
+    if len(parts) == 2:
+        return f"{parts[0]} / Typ {parts[1]}"
+    return parts[0] if parts else ""
+
+
+def terminal_for_text(terminal: Mapping[str, Any], device_by_id: Mapping[str, Mapping[str, Any]],
+                      head: Mapping[str, Any] | None) -> str:
+    """The "für" column of the Klemmen tab (``TerminalGroupCard.forText``):
+    the end clamp "—", a feed "FI F1 · 30 mA / Typ A", an outgoing
+    "F1.1 · Licht · Nr. 3". Shared by the PDF sheet and the close-up."""
+    part_id = str(terminal["part_id"])
+    if part_id in END_PART_IDS:
+        return "—"
+    if part_id in FEED_PART_IDS:
+        parts = [f"FI {_text(head.get('designation')) or '?'}" if head else "", rcd_detail(head)]
+        return " · ".join(p for p in parts if p) or "—"
+    device = device_by_id.get(str(terminal.get("device_id") or ""))
+    if device is None:
+        return "—"
+    circuit = _text(device.get("circuit"))
+    parts = [_text(device.get("designation")), _text(device.get("label")), f"Nr. {circuit}" if circuit else ""]
+    return " · ".join(p for p in parts if p) or "—"
+
+
 def terminal_group_title(group: dict[str, Any]) -> str:
     """"FI F1 · Reihe 1" — how a group is named on the strip list and the PDF."""
     return _group_name(group.get("head_device"), str(group.get("rail_label") or ""))
@@ -289,15 +325,22 @@ def device_terminal_labels(groups: list[dict[str, Any]]) -> dict[str, list[str]]
     return labels
 
 
-def terminal_bom(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Parts summed over the board, sorted by part number."""
+def terminal_bom(groups: Sequence[dict[str, Any]], *, extra: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
+    """Parts summed over the board, sorted by part number.
+
+    ``extra``: part id → count added on top, for the rail parts a cabinet
+    board's placement needs (``panel_enclosure_terminals.terminal_rail_parts``);
+    they sort into the same order. A part with no count gets no row.
+    """
     counts: dict[str, int] = {}
     for group in groups:
         for terminal in group["terminals"]:
             counts[terminal["part_id"]] = counts.get(terminal["part_id"], 0) + 1
+    for part_id, count in (extra or {}).items():
+        counts[part_id] = counts.get(part_id, 0) + count
     rows: list[dict[str, Any]] = []
     for part_id in TERMINAL_PART_ORDER:
-        if part_id not in counts:
+        if counts.get(part_id, 0) <= 0:
             continue
         part = TERMINAL_PARTS[part_id]
         rows.append(

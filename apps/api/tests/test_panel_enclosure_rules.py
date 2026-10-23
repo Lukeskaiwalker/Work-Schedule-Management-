@@ -170,7 +170,7 @@ def test_an_overflowing_rail_unless_the_slot_warning_says_it() -> None:
     rail = _rows(doc)["row-v2"]
     rail["devices"] += [fi("x1", "F8"), fi("x2", "F9")]
     rail["slots"] = 18
-    assert _rule(doc, "encl.rail_overflow") == [("warn", "row-v2", "F2 · Verteiler 2: 245 mm Geräte auf 12 PLE Hutschiene.")]
+    assert _rule(doc, "encl.rail_overflow") == [("warn", "row-v2", "F2 · Verteiler 4: 245 mm Geräte auf 12 PLE Hutschiene.")]
     rail["slots"] = 12
     assert _rule(doc, "encl.rail_overflow") == []
 
@@ -224,9 +224,11 @@ def test_meter_places_that_do_not_exist_or_stay_free() -> None:
 
 
 def test_terminal_strips_are_stated_per_field() -> None:
+    # Round 2 places them on the field's two top rails (R2 §4.1); the other
+    # nine terminal rules: tests/test_panel_enclosure_terminal_rules.py.
     assert _rule(meter_dist_zb33s(), "encl.terminals") == [
-        ("info", "", "Feld 2: Reihenklemmen 4 Stück, 29,9 mm Hutschiene — im Schrankbild nicht gezeichnet."),
-        ("info", "", "Feld 3: Reihenklemmen 3 Stück, 24,7 mm Hutschiene — im Schrankbild nicht gezeichnet."),
+        ("info", "", "Feld 2: 4 Reihenklemmen auf den oberen Hutschienen, 30,7 von 420 mm belegt."),
+        ("info", "", "Feld 3: 3 Reihenklemmen auf den oberen Hutschienen, 25,5 von 420 mm belegt."),
     ]
 
 

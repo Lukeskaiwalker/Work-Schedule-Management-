@@ -53,6 +53,7 @@ import {
   type FitSegment,
 } from "./schaltplanStrip";
 import {
+  NO_SKIP,
   OUTGOING_PART_IDS,
   TERMINAL_PARTS,
   TERMINAL_PART_ORDER,
@@ -293,12 +294,17 @@ function railLabelOf(document: PanelDocument, head: PanelDevice | null): string 
 /**
  * One entry per group that has at least one terminal, in group order; the
  * X numbers count through every strip of the board.
+ *
+ * `skip`: device ids left out whatever their `terminal_block` flag says
+ * (docs/PANEL_ENCLOSURE_R2.md §3.1). The X numbers run over what is left, so
+ * every caller on a cabinet board must pass the same set — the one
+ * `boardTerminals` (`enclosureTerminals.ts`) derives.
  */
-export function deriveTerminals(document: PanelDocument): TerminalGroup[] {
+export function deriveTerminals(document: PanelDocument, skip: ReadonlySet<string> = NO_SKIP): TerminalGroup[] {
   const overrides = labelOverrides(document);
   let stripNo = 0;
   return buildTopology(document).flatMap((group): TerminalGroup[] => {
-    const children = terminalChildren(group);
+    const children = terminalChildren(group, skip);
     const variant = terminalVariant(group, children);
     if (!variant) return [];
     const head = group.device;
@@ -391,15 +397,27 @@ export interface TerminalBomRow {
   verified: boolean;
 }
 
-/** Parts summed over the board, sorted by part number. */
-export function terminalBom(groups: readonly TerminalGroup[]): TerminalBomRow[] {
-  const counts = new Map<TerminalPartId, number>();
+/**
+ * Parts summed over the board, sorted by part number.
+ *
+ * `extra`: part id → count added on top, for the rail parts a cabinet
+ * board's placement needs (`terminalRailParts`); they sort into the same
+ * order. A part with no count gets no row.
+ */
+export function terminalBom(
+  groups: readonly TerminalGroup[],
+  extra: Readonly<Record<string, number>> = {},
+): TerminalBomRow[] {
+  const counts = new Map<string, number>();
   for (const group of groups) {
     for (const terminal of group.terminals) {
       counts.set(terminal.partId, (counts.get(terminal.partId) ?? 0) + 1);
     }
   }
-  return TERMINAL_PART_ORDER.filter((partId) => counts.has(partId)).map((partId) => {
+  for (const [partId, count] of Object.entries(extra)) {
+    counts.set(partId, (counts.get(partId) ?? 0) + count);
+  }
+  return TERMINAL_PART_ORDER.filter((partId) => (counts.get(partId) ?? 0) > 0).map((partId) => {
     const part = TERMINAL_PARTS[partId];
     return {
       partId,

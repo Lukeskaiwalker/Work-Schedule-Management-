@@ -190,6 +190,47 @@ class EnclosureFitting(BaseModel):
     removable: bool = False
 
 
+# ``module.terminal_order`` caps (docs/PANEL_ENCLOSURE_R2.md §2.1). A 210 mm
+# rail holds ≤ 8 Leisten; 40 is a DoS cap, not a model limit.
+MAX_ORDER_STRIPS = 40
+STRIP_ID_MAX = 80
+# Field offsets inside a module ("0" for every built-in; width_fields ≤ 3).
+FIELD_OFFSET_KEYS: tuple[str, ...] = ("0", "1", "2")
+
+
+def parse_terminal_order(value: Any) -> dict[str, dict[str, Any]] | None:
+    """``module.terminal_order`` as far as it makes sense; never raises.
+
+    Lenient on purpose: a raised error would make ``readable_document`` drop
+    the whole cabinet block, and an image without this key (a rollback to
+    v2.15.0) stores it unvalidated. So the schema and every derivation that
+    reads a stored board (``panel_enclosure_terminals``) parse it with this.
+    Twin: ``parseTerminalOrder`` in ``apps/web/src/utils/enclosureTerminals.ts``.
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, dict[str, Any]] = {}
+    for key in FIELD_OFFSET_KEYS:
+        entry = value.get(key)
+        if not isinstance(entry, dict) or not isinstance(entry.get("strips"), list):
+            continue
+        strips = list(dict.fromkeys(
+            s for s in entry["strips"] if isinstance(s, str) and 0 < len(s) <= STRIP_ID_MAX))[:MAX_ORDER_STRIPS]
+        if strips:
+            mark = entry.get("rail2_from")
+            out[key] = {"strips": strips, "rail2_from": mark if isinstance(mark, str) and mark in strips else None}
+    return out or None
+
+
+class TerminalOrderEntry(BaseModel):
+    """One field's manual strip sequence (§2.1): left → right on rail 1, then
+    rail 2; ``rail2_from`` names the strip that starts rail 2 (None: split
+    automatically). Only what ``parse_terminal_order`` returns reaches it."""
+
+    strips: list[str]
+    rail2_from: str | None = None
+
+
 class EnclosureModule(BaseModel):
     model_config = _KEEP_UNKNOWN
 
@@ -208,6 +249,12 @@ class EnclosureModule(BaseModel):
     fittings: Annotated[list[EnclosureFitting], Field(max_length=MAX_FITTINGS_PER_MODULE)] | None = None
     removed_fittings: list[FittingRef] = Field(default_factory=list, max_length=MAX_FITTINGS_PER_MODULE)
     meters: list[EnclosureMeter] = Field(default_factory=list, max_length=MAX_METERS_PER_MODULE)
+    # Written only by a manual strip move (§2.1). Garbage is dropped, never
+    # refused; None (absent, null or nothing usable) is never dumped, so a
+    # board without a manual order keeps exactly the keys it had.
+    terminal_order: Annotated[
+        dict[str, TerminalOrderEntry] | None, BeforeValidator(parse_terminal_order)
+    ] = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("removed_fittings")
     @classmethod

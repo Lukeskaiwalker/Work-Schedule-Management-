@@ -7,7 +7,9 @@
  *   Modul wählen        → (placed) Modul, in its place
  *   Modul               → Hutschiene
  *   Hutschiene          → Gerät (inspector) · Gerät hinzufügen (palette)
- *   Gerät               → Hutschiene wählen
+ *   Gerät               → Hutschiene wählen → (Wohin auf …?) → drop: all sheets close, the drop note shows
+ *   field bar / drawing → Reihenklemmen · Feld {n} (close-up) → Hutschiene ("Geräte bearbeiten")
+ *   Hutschiene (reserved) → Reihenklemmen · Feld {n}
  *   Modul wählen        → Schrankkatalog (managers; prefilled for a shelf article)
  *   any op that re-feeds a circuit → Stromkreise ändern ihre Einspeisung
  *
@@ -26,15 +28,21 @@ import { ModuleSheet } from "./ModuleSheet";
 import { RailPickerSheet } from "./RailPickerSheet";
 import { RailSheet } from "./RailSheet";
 import { RegroupConfirm } from "./RegroupConfirm";
-import { suppliedInfo } from "./enclosureEditorModel";
+import { TerminalCloseupSheet } from "./TerminalCloseupSheet";
+import { findingKey, type FindingAction } from "./EnclosureFindings";
+import { suppliedInfo, terminalBlockedZone } from "./enclosureEditorModel";
 import { DEFAULT_PICKER_SWITCHES, type EditDocument, type EnclosureSheet, type RunEnclosureOp, type SheetStack } from "./useSheetStack";
 import { DeviceInspector } from "../DeviceInspector";
 import { DevicePalette } from "../DevicePalette";
 import type { PanelDocumentEditor } from "../../../hooks/usePanelDocumentEditor";
 import type { CatalogIndex } from "../../../utils/enclosureCatalog";
+import { reservedRailKey, type DropTarget } from "../../../utils/enclosureOpsDrag";
+import type { StripTarget } from "../../../utils/enclosureOpsTerminals";
+import type { BoardTerminals } from "../../../utils/enclosureTerminals";
+import { NO_SKIP } from "../../../utils/schaltplanTerminalRules";
 import { findDevice, neighbourDeviceId } from "../../../utils/schaltplanTopology";
-import type { EnclosureCatalog, UncataloguedArticle } from "../../../types/panelEnclosure";
-import type { PanelDocument } from "../../../types/schaltplan";
+import type { EnclosureCatalog, TerminalCloseup, TerminalPlacement, TerminalSuggestion, UncataloguedArticle } from "../../../types/panelEnclosure";
+import type { PanelDocument, PanelFinding } from "../../../types/schaltplan";
 
 /**
  * The tab's sheets: `EnclosureSheet`, with the catalogue admin carrying the
@@ -43,6 +51,21 @@ import type { PanelDocument } from "../../../types/schaltplan";
 export type TabSheet = Exclude<EnclosureSheet, { kind: "catalog-admin" }> | { kind: "catalog-admin"; create: UncataloguedArticle | null };
 
 export type DeviceEdits = Pick<PanelDocumentEditor, "patchDevice" | "removeDevice" | "duplicateDevice" | "moveDevice" | "editTerminalLabel">;
+
+/** What the terminal close-up and the reserved rails need from the tab (docs/PANEL_ENCLOSURE_R2.md §7.2, §7.4). */
+export interface TerminalSheetContext {
+  terms: BoardTerminals;
+  placement: TerminalPlacement;
+  /** The close-up of every field with terminal rails; [] while no close-up is open. */
+  closeups: readonly TerminalCloseup[];
+  suggestions: readonly TerminalSuggestion[];
+  findings: readonly PanelFinding[];
+  /** The findings' actions, by `${rule}|${scope}`. */
+  actions: ReadonlyMap<string, FindingAction>;
+  onMoveStrip: (stripId: string, target: StripTarget) => void;
+  onResetOrder: (field: number) => void;
+  onRunSuggestion: (suggestion: TerminalSuggestion) => void;
+}
 
 export interface EnclosureSheetHostProps {
   stack: SheetStack<TabSheet>;
@@ -58,12 +81,20 @@ export interface EnclosureSheetHostProps {
   onEdit: EditDocument;
   devices: DeviceEdits;
   onReloadCatalog: () => Promise<void>;
+  /** "Auf andere Hutschiene…" picked a rail and a place: the tab runs the drop (note, Rückgängig). */
+  onDropDevice: (deviceId: string, target: DropTarget) => void;
+  /** Rails reserved for WAGO terminals, offered disabled in the rail picker and marked in RailSheet. */
+  reservedRails?: ReadonlySet<string>;
+  /** The terminal close-up's data; without it the close-up says it has none. */
+  terminals?: TerminalSheetContext | null;
 }
+
+const NO_RAILS: ReadonlySet<string> = new Set();
 
 type Shared = EnclosureSheetHostProps & { onBack?: () => void };
 
 function InspectorSheet({ deviceId, ...props }: Shared & { deviceId: string }) {
-  const { stack, document, index, readOnly, devices } = props;
+  const { stack, document, index, readOnly, devices, terminals } = props;
   const device = findDevice(document, deviceId);
   if (!device) {
     return (
@@ -82,6 +113,7 @@ function InspectorSheet({ deviceId, ...props }: Shared & { deviceId: string }) {
       document={document}
       readOnly={readOnly}
       suppliedBy={suppliedInfo(document, index, deviceId)}
+      terminalBlockedZone={terminalBlockedZone(document, index, terminals?.terms.skip ?? NO_SKIP, deviceId)}
       onChange={(patch) => devices.patchDevice(deviceId, patch)}
       onEditTerminalLabel={devices.editTerminalLabel}
       onDelete={() => {
@@ -131,17 +163,9 @@ function TopSheet(props: Shared & { sheet: TabSheet }) {
         />
       );
     case "rail":
-      return (
-        <RailSheet
-          {...common}
-          moduleId={sheet.moduleId}
-          railKey={sheet.railKey}
-          highlightDeviceId={sheet.deviceId}
-          onEdit={onEdit}
-          onOpenDevice={(deviceId) => stack.push({ kind: "inspector", deviceId })}
-          onChooseDevice={(request) => stack.push({ kind: "palette", request })}
-        />
-      );
+      return <RailSheetEntry {...props} sheet={sheet} />;
+    case "terminals":
+      return <TerminalsSheet {...props} sheet={sheet} />;
     case "inspector":
       return <InspectorSheet {...props} deviceId={sheet.deviceId} />;
     case "palette":
@@ -160,7 +184,19 @@ function TopSheet(props: Shared & { sheet: TabSheet }) {
         />
       );
     case "rail-picker":
-      return <RailPickerSheet {...common} deviceId={sheet.deviceId} onMoved={stack.pop} onClose={stack.pop} />;
+      return (
+        <RailPickerSheet
+          document={document}
+          index={index}
+          readOnly={readOnly}
+          deviceId={sheet.deviceId}
+          onDrop={(target) => props.onDropDevice(sheet.deviceId, target)}
+          reserved={props.reservedRails}
+          setBackHandler={stack.setBackHandler}
+          onBack={onBack}
+          onClose={stack.pop}
+        />
+      );
     case "regroup":
       return (
         <RegroupConfirm
@@ -187,6 +223,64 @@ function TopSheet(props: Shared & { sheet: TabSheet }) {
         />
       );
   }
+}
+
+function RailSheetEntry(props: Shared & { sheet: Extract<TabSheet, { kind: "rail" }> }) {
+  const { sheet, stack, document, index, readOnly, runOp, onEdit, onBack, terminals } = props;
+  const reserved = (props.reservedRails ?? NO_RAILS).has(reservedRailKey(sheet.moduleId, sheet.railKey));
+  const field = reserved ? terminals?.placement.fields.find((entry) => entry.rails.some((rail) => rail.moduleId === sheet.moduleId && rail.railKey === sheet.railKey)) : undefined;
+  const rowId = field?.rails.find((rail) => rail.moduleId === sheet.moduleId && rail.railKey === sheet.railKey)?.rowId ?? null;
+  return (
+    <RailSheet
+      document={document}
+      index={index}
+      readOnly={readOnly}
+      onOp={runOp}
+      onBack={onBack}
+      onClose={stack.close}
+      moduleId={sheet.moduleId}
+      railKey={sheet.railKey}
+      highlightDeviceId={sheet.deviceId}
+      onEdit={onEdit}
+      onOpenDevice={(deviceId) => stack.push({ kind: "inspector", deviceId })}
+      onChooseDevice={(request) => stack.push({ kind: "palette", request })}
+      reserved={reserved}
+      reservedAction={rowId ? terminals?.actions.get(findingKey("encl.terminal_rail_devices", rowId)) ?? null : null}
+      onOpenTerminals={field ? () => stack.push({ kind: "terminals", field: field.field, stripId: null }) : undefined}
+    />
+  );
+}
+
+function TerminalsSheet(props: Shared & { sheet: Extract<TabSheet, { kind: "terminals" }> }) {
+  const { sheet, stack, document, index, readOnly, onBack, terminals } = props;
+  const closeup = terminals?.closeups.find((entry) => entry.field === sheet.field) ?? null;
+  if (!terminals || !closeup) {
+    return (
+      <SheetFrame title={`Reihenklemmen · Feld ${sheet.field + 1}`} onBack={onBack} onClose={stack.close}>
+        <p className="sp-encl-empty">{`Feld ${sheet.field + 1} hat keine Hutschienen für Reihenklemmen.`}</p>
+      </SheetFrame>
+    );
+  }
+  return (
+    <TerminalCloseupSheet
+      document={document}
+      index={index}
+      terms={terminals.terms}
+      closeup={closeup}
+      placement={terminals.placement}
+      suggestions={terminals.suggestions}
+      findings={terminals.findings}
+      readOnly={readOnly}
+      selectedStripId={sheet.stripId}
+      onSelectStrip={(stripId) => stack.replaceTop({ ...sheet, stripId })}
+      onMove={terminals.onMoveStrip}
+      onReset={terminals.onResetOrder}
+      onRunSuggestion={terminals.onRunSuggestion}
+      onOpenRail={(moduleId, railKey, deviceId) => stack.push({ kind: "rail", moduleId, railKey, deviceId })}
+      onBack={onBack}
+      onClose={stack.close}
+    />
+  );
 }
 
 /** The module a sheet is about, so removing that module can drop every sheet on it. */

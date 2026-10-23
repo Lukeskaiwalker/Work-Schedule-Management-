@@ -183,12 +183,13 @@ def admin_id() -> int:
         return int(db.query(User.id).filter(User.email == "admin@example.com").one()[0])
 
 
-def article(name: str, *, stock: int = 0, manufacturer: str | None = None, number: str | None = None) -> int:
+def article(name: str, *, stock: int = 0, manufacturer: str | None = None, number: str | None = None,
+            ean: str | None = None) -> int:
     """A shelf article with ``stock`` pieces booked in through the ledger."""
     with SessionLocal() as db:
         row = WerkstattArticle(
             article_number=number or f"SP-T{next(_ARTICLE_NUMBERS):04d}",
-            item_name=name, manufacturer=manufacturer, unit="Stk",
+            item_name=name, manufacturer=manufacturer, unit="Stk", ean=ean,
         )
         db.add(row)
         db.flush()

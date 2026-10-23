@@ -16,10 +16,13 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { AppContext } from "../context/AppContext";
 import { SchaltplanPage } from "../pages/SchaltplanPage";
 import { resetEnclosureCatalogCache } from "../hooks/useEnclosureCatalog";
+import { pinnedToast } from "../components/schaltplan/enclosure/RegroupConfirm";
 import { makeDevice } from "../utils/schaltplanDevices";
 import type { EnclosureModule } from "../types/panelEnclosure";
 import type { PanelDocument, PanelMaterial, PanelPlan, PanelPlanSummary } from "../types/schaltplan";
 import { makeAppContextStub } from "./appContextStub";
+import { aufbauCatalog, ownerBoard } from "./enclosureAufbauBoards";
+import { boardDocument, FIXTURE_CATALOG } from "./enclosureFixtureBoards";
 import { testCatalog } from "./enclosureTestCatalog";
 
 vi.mock("../utils/schaltplanApi", async (importOriginal) => {
@@ -139,13 +142,14 @@ const MATERIAL: PanelMaterial = {
   last_scanned_at: null,
 };
 
-function renderPage() {
+function renderPage(overrides: Record<string, unknown> = {}) {
   render(
     <AppContext.Provider
       value={
         makeAppContextStub({
           overrides: {
             user: { id: 1, email: "test@example.com", role: "employee", effective_permissions: ["reports:create"] },
+            ...overrides,
           },
         }) as never
       }
@@ -155,9 +159,9 @@ function renderPage() {
   );
 }
 
-async function openBoard(document: PanelDocument) {
+async function openBoard(document: PanelDocument, overrides: Record<string, unknown> = {}) {
   vi.mocked(getPanel).mockResolvedValue(plan(document));
-  renderPage();
+  renderPage(overrides);
   fireEvent.focus(await screen.findByPlaceholderText("Kunde suchen…"));
   fireEvent.mouseDown(await screen.findByText("VT-0007 · UV1 Unterverteiler Keller"));
   await screen.findByRole("heading", { name: "Unterverteiler Keller" });
@@ -269,12 +273,12 @@ describe("SchaltplanPage — a cabinet from scratch to the Materialliste", () =>
     fireEvent.click(within(screen.getByRole("dialog", { name: "Modul für Feld 2" })).getByRole("button", { name: /^ZU37KS,/ }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Feld 2 · ZU37KS" })).getByRole("button", { name: "Schließen" }));
 
-    // A breaker on the Verteilerfeld's first rail, from the drawing.
-    fireEvent.click(screen.getByRole("button", { name: /^Hutschiene F2 · Verteiler 1 · leer/ }));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).getByRole("button", { name: "+ Gerät" }));
+    // A breaker on the Verteilerfeld's first rail below its two terminal rails (R2), from the drawing.
+    fireEvent.click(screen.getByRole("button", { name: /^Hutschiene F2 · Verteiler 3 · leer/ }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).getByRole("button", { name: "+ Gerät" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Gerät hinzufügen" })).getByRole("button", { name: /^Leitungsschutzschalter/ }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).getByRole("button", { name: "Schließen" }));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).getByRole("button", { name: "Schließen" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).getByRole("button", { name: "Schließen" }));
 
     // Take the pre-fitted Hauptschalter out. The new LS hung off it, so the page asks first.
     fireEvent.click(screen.getByRole("button", { name: /^Feld 1 · ZH3EH16/ }));
@@ -298,5 +302,300 @@ describe("SchaltplanPage — a cabinet from scratch to the Materialliste", () =>
     // The meter field's place exists (number still empty), and no meter device.
     expect(saved.enclosure?.modules[0].meters).toEqual([{ place: 0, number: "", label: "" }]);
     expect(kinds).not.toContain("meter");
+  });
+});
+
+describe("SchaltplanPage — Aufbau lists every rail (docs/PANEL_ENCLOSURE_R2.md §9)", () => {
+  const VT_REGION = "Feld 3 · ZU37VT5APZ2 Modul ZU37VT5APZ2";
+  const savedRow = (document: PanelDocument, moduleId: string, railKey: string) => {
+    const rowId = document.enclosure?.modules.find((module) => module.id === moduleId)?.rails[railKey];
+    return document.rows.find((candidate) => candidate.id === rowId);
+  };
+  const addOnRail = (title: string, kind: RegExp) => {
+    fireEvent.click(screen.getByRole("button", { name: `Gerät auf ${title} hinzufügen` }));
+    const palette = screen.getByRole("dialog", { name: "Gerät hinzufügen" });
+    expect(within(palette).getByText(title)).toBeInTheDocument();
+    fireEvent.click(within(palette).getByRole("button", { name: kind }));
+  };
+  /**
+   * A ZB33S with only a ZU37KS in field 2, one LS on its fourth rail —
+   * straight off the Einspeisung. Rails 1 and 2 hold the WAGO terminals (R2).
+   */
+  const fedByEinspeisung = (): PanelDocument => ({
+    ...CABINET_BOARD,
+    rows: [{ id: "v4", label: "F2 · Verteiler 4", slots: 12, devices: [makeDevice("mcb", { id: "b1", designation: "F1.1", circuit: "1" })] }],
+    enclosure: { code: "ZB33S", modules: [mod("m2", "ZU37KS", 1, { r4: "v4" })] },
+  });
+
+  it("puts the first device on the owner's empty ZU37VT5APZ2 and opens its inspector", async () => {
+    vi.mocked(getEnclosureCatalog).mockResolvedValue(aufbauCatalog());
+    await openBoard(ownerBoard());
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    const field = await screen.findByRole("region", { name: VT_REGION });
+    // Rails 1 and 2 hold the WAGO terminals: four rails take a device.
+    expect(within(field).getAllByRole("button", { name: /^Gerät auf F3 · / })).toHaveLength(4);
+
+    addOnRail("F3 · Verteiler 3", /^Leitungsschutzschalter/);
+
+    expect(screen.queryByRole("dialog", { name: "Gerät hinzufügen" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).toBeInTheDocument();
+    const after = screen.getByRole("region", { name: VT_REGION });
+    expect(within(after).getByDisplayValue("F3 · Verteiler 3")).toBeInTheDocument();
+    expect(within(after).getAllByRole("button", { name: /^Gerät auf F3 · / })).toHaveLength(3);
+
+    await waitFor(() => expect(updatePanel).toHaveBeenCalled(), { timeout: 3000 });
+    const added = savedRow(lastSaved(), "m-vt", "r3");
+    expect(added).toEqual(expect.objectContaining({ label: "F3 · Verteiler 3", slots: 12 }));
+    expect(added?.devices.map((device) => device.kind)).toEqual(["mcb"]);
+  });
+
+  it("keeps the SLS → HS link when the SLS goes onto the meter field's empty NAR", async () => {
+    await openBoard(CABINET_BOARD);
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 1 · ZH3EH16/ });
+
+    addOnRail("F1 · NAR", /^SLS-Schalter/);
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await waitFor(() => expect(updatePanel).toHaveBeenCalled(), { timeout: 3000 });
+    const saved = lastSaved();
+    const sls = savedRow(saved, "m1", "nar")?.devices[0];
+    expect(sls?.kind).toBe("sls");
+    const hs = saved.rows.flatMap((candidate) => candidate.devices).find((device) => device.id === "hs1");
+    expect(hs?.parent_id).toBe(sls?.id);
+  });
+
+  it("keeps a circuit's feed with the pinned toast, as on the Schrank tab", async () => {
+    const setNotice = vi.fn();
+    const withCircuit: PanelDocument = {
+      ...CABINET_BOARD,
+      rows: [...CABINET_BOARD.rows, { id: "v4", label: "F2 · Verteiler 4", slots: 12, devices: [makeDevice("mcb", { id: "b1", designation: "F1.1", circuit: "1" })] }],
+      enclosure: { ...CABINET_BOARD.enclosure!, modules: [CABINET_BOARD.enclosure!.modules[0], mod("m2", "ZU37KS", 1, { r4: "v4" })] },
+    };
+    await openBoard(withCircuit, { setNotice });
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+
+    addOnRail("F2 · Verteiler 3", /^FI-Schutzschalter \(RCD\)/);
+
+    expect(setNotice).toHaveBeenCalledWith(pinnedToast(1));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "FI-Schutzschalter (RCD)" })).toBeInTheDocument();
+  });
+
+  it("asks before a circuit changes its feed, and adds nothing on „Abbrechen“", async () => {
+    await openBoard(fedByEinspeisung());
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+
+    addOnRail("F2 · Verteiler 3", /^FI-Schutzschalter \(RCD\)/);
+    const confirm = screen.getByRole("alertdialog", { name: "Stromkreise ändern ihre Einspeisung" });
+    expect(within(confirm).getByText("F1.1: Einspeisung → FI")).toBeInTheDocument();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Abbrechen" }));
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "FI-Schutzschalter (RCD)" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Gerät auf F2 · Verteiler 3 hinzufügen" })).toBeInTheDocument();
+  });
+
+  it("adds the device after „Trotzdem ausführen“ and opens its inspector", async () => {
+    await openBoard(fedByEinspeisung());
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+
+    addOnRail("F2 · Verteiler 3", /^FI-Schutzschalter \(RCD\)/);
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Trotzdem ausführen" }));
+
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "FI-Schutzschalter (RCD)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Gerät auf F2 · Verteiler 3 hinzufügen" })).toBeNull();
+  });
+
+  it("still adds to an existing row as a plain edit and opens the new device", async () => {
+    await openBoard(CABINET_BOARD);
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    const field = await screen.findByRole("region", { name: /^Feld 1 · ZH3EH16/ });
+    fireEvent.click(within(field).getByRole("button", { name: /^\+ ?Gerät$/ }));
+    const palette = screen.getByRole("dialog", { name: "Gerät hinzufügen" });
+    expect(within(palette).getByText("F1 · AAR 1")).toBeInTheDocument();
+    fireEvent.click(within(palette).getByRole("button", { name: /^Leitungsschutzschalter/ }));
+
+    expect(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).toBeInTheDocument();
+    await waitFor(() => expect(updatePanel).toHaveBeenCalled(), { timeout: 3000 });
+    expect(savedRow(lastSaved(), "m1", "aar1")?.devices.map((device) => device.kind)).toEqual(["hauptschalter", "mcb"]);
+  });
+
+  it("offers „Erneut laden“ on Aufbau when the cabinet catalogue failed, above the flat list", async () => {
+    vi.mocked(getEnclosureCatalog).mockRejectedValueOnce(new Error("Netzwerkfehler"));
+    await openBoard(CABINET_BOARD);
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    const alert = await screen.findByText("Schrankkatalog konnte nicht geladen werden.");
+    expect(screen.queryByRole("region")).toBeNull();
+    expect(screen.getByDisplayValue("F1 · AAR 1")).toBeInTheDocument();
+
+    fireEvent.click(within(alert.closest("[role=alert]") as HTMLElement).getByRole("button", { name: "Erneut laden" }));
+    expect(await screen.findByRole("region", { name: /^Feld 1 · ZH3EH16/ })).toBeInTheDocument();
+    expect(screen.queryByText("Schrankkatalog konnte nicht geladen werden.")).toBeNull();
+  });
+});
+
+/**
+ * Round 2, slice W4b (docs/PANEL_ENCLOSURE_R2.md §3.1, §6.7, §9): the page
+ * derives the board's terminals once, with the cabinet's skip set, and every
+ * view numbers alike — Klemmen tab, legend, inspector, bulk switch, Aufbau.
+ * The board is the shared fixture's `terminals_zb34s` (an LS with
+ * „Reihenklemme“ in the AAR, rows on F2's terminal rails, an empty RK field).
+ */
+describe("SchaltplanPage — WAGO terminals on a cabinet board", () => {
+  const terminalsBoard = () => boardDocument("terminals_zb34s");
+  const savedDevice = (id: string) => lastSaved().rows.flatMap((candidate) => candidate.devices).find((device) => device.id === id);
+  const legendRow = (designation: string) =>
+    screen.getAllByRole("row").find((candidate) => within(candidate).queryAllByRole("cell")[1]?.textContent === designation) as HTMLElement;
+
+  beforeEach(() => {
+    vi.mocked(getEnclosureCatalog).mockResolvedValue(FIXTURE_CATALOG);
+  });
+
+  it("numbers the Klemmen tab without the AAR circuit and lists the end plates", async () => {
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: /^Klemmen/ }));
+    expect(await screen.findByText(/Klemmenleisten \(X1–X12\) · .* · 90 von 90 Abgängen$/)).toBeInTheDocument();
+    const bom = screen.getByRole("region", { name: "Stückliste Reihenklemmen" });
+    expect(within(bom).getByText("WAGO 2003-7692")).toBeInTheDocument();
+    expect(within(bom).getByText("WAGO 2016-7691")).toBeInTheDocument();
+
+    // The label sheet lists the same twelve strips.
+    fireEvent.click(screen.getByRole("button", { name: "Klemmen-Etiketten drucken" }));
+    const sheet = screen.getByRole("dialog", { name: "Klemmen-Etiketten drucken" });
+    expect(within(within(sheet).getByRole("list", { name: "Klemmenleisten" })).getAllByRole("checkbox")).toHaveLength(12);
+  });
+
+  it("gives the AAR circuit no X label in the legend, and the Verteilerfeld's circuits theirs", async () => {
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: /^Legende/ }));
+    const terminalsCell = (designation: string) => {
+      const cells = within(legendRow(designation)).getAllByRole("cell");
+      return cells[cells.length - 1];
+    };
+    expect(terminalsCell("F0.1")).toHaveTextContent(/^—$/);
+    expect(terminalsCell("F1.1")).toHaveTextContent(/^X1\./);
+  });
+
+  it("says in the inspector that the AAR gets no terminal, and keeps the checkbox in the Verteilerfeld", async () => {
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 1 · ZH3EH16/ });
+    fireEvent.click(screen.getByTitle("Leitungsschutzschalter — Steuerung SMGW"));
+    expect(screen.getByText("Im AAR keine Reihenklemme — nur in Verteilerfeldern.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Reihenklemme am Abgang (WAGO)")).toBeNull();
+
+    fireEvent.click(screen.getByTitle("Leitungsschutzschalter — Stromkreis 2"));
+    expect(screen.getByLabelText("Reihenklemme am Abgang (WAGO)")).toBeChecked();
+    expect(screen.queryByText(/keine Reihenklemme — nur in Verteilerfeldern/)).toBeNull();
+  });
+
+  it("checks device names against the strips the board really gets (X1–X12, not X13)", async () => {
+    const renamed: Record<string, string> = { "dev-x0": "X13", "dev-q0": "X12" };
+    const board = terminalsBoard();
+    await openBoard({
+      ...board,
+      rows: board.rows.map((candidate) => ({
+        ...candidate,
+        devices: candidate.devices.map((device) => (renamed[device.id] ? { ...device, designation: renamed[device.id] } : device)),
+      })),
+    });
+    fireEvent.click(screen.getByRole("tab", { name: /^Klemmen/ }));
+    await screen.findByText(/Klemmenleisten \(X1–X12\)/);
+    const banner = screen.getByText("Prüfen:").closest("[role=status]") as HTMLElement;
+    expect(within(banner).getByText("X12: so heißt auch eine Klemmleiste — Gerät umbenennen (zwei Teile mit einem BMK).")).toBeInTheDocument();
+    // Only without the skip set would the AAR circuit make a 13th strip.
+    expect(within(banner).queryByText(/^X13: /)).toBeNull();
+  });
+
+  it("leaves the AAR circuit alone when „Alle ohne“ clears the board", async () => {
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: /^Klemmen/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Alle ohne" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalled(), { timeout: 3000 });
+    expect(savedDevice("dev-f1-1")?.terminal_block).toBe(false);
+    expect(savedDevice("dev-aar-ls1")?.terminal_block).toBe(true);
+  });
+
+  it("waits on the Klemmen tab while the cabinet catalogue loads", async () => {
+    vi.mocked(getEnclosureCatalog).mockReturnValue(new Promise(() => undefined));
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: /^Klemmen/ }));
+    expect(screen.getByRole("tab", { name: /^Klemmen/ })).toHaveTextContent(/^Klemmen$/);
+    expect(screen.getByText("Schrankkatalog wird geladen…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Klemmen-Etiketten drucken" })).toBeNull();
+    expect(screen.queryByText(/Klemmenleisten \(X1/)).toBeNull();
+  });
+
+  it("says so on the Klemmen tab when the cabinet catalogue failed, and numbers after „Erneut laden“", async () => {
+    vi.mocked(getEnclosureCatalog).mockRejectedValueOnce(new Error("Netzwerkfehler"));
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: /^Klemmen/ }));
+    const alert = (await screen.findByText("Schrankkatalog konnte nicht geladen werden.")).closest("[role=alert]") as HTMLElement;
+    // Never "wird geladen…" for a fetch that is over.
+    expect(screen.queryByText("Schrankkatalog wird geladen…")).toBeNull();
+    expect(screen.queryByText(/Klemmenleisten \(X1/)).toBeNull();
+
+    fireEvent.click(within(alert).getByRole("button", { name: "Erneut laden" }));
+    expect(await screen.findByText(/Klemmenleisten \(X1–X12\)/)).toBeInTheDocument();
+    expect(screen.queryByText("Schrankkatalog konnte nicht geladen werden.")).toBeNull();
+  });
+
+  const VACATE_SENTENCE = " Vorschlag: Reihen auf F3 · Verteiler 3 und F3 · Verteiler 4 umhängen.";
+  const oldRow = (label: string) => screen.getByDisplayValue(label).closest("section") as HTMLElement;
+  const railsOf = (document: PanelDocument, moduleId: string) => document.enclosure?.modules.find((module) => module.id === moduleId)?.rails;
+  const dropNote = () => window.document.querySelector(".sp-encl-dropnote") as HTMLElement | null;
+
+  it("marks the terminal rails on the Aufbau tab: the finding on the old rows, strips on the empty ones", async () => {
+    await openBoard(terminalsBoard());
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+    const old = oldRow("F2 · Verteiler 1");
+    expect(within(old).getByRole("note")).toHaveTextContent(
+      `F2 · Verteiler 1: Hutschiene ist für Reihenklemmen reserviert — 5 Gerät(e) tiefer setzen.${VACATE_SENTENCE}`,
+    );
+    expect(within(old).getByRole("button", { name: "Vorschlag ausführen" })).toBeInTheDocument();
+    expect(within(old).queryByRole("button", { name: /^\+ ?Gerät$/ })).toBeNull();
+    expect(within(oldRow("F2 · Verteiler 2")).getByRole("note")).toHaveTextContent(
+      `F2 · Verteiler 2: Hutschiene ist für Reihenklemmen reserviert — 3 Gerät(e) tiefer setzen.${VACATE_SENTENCE}`,
+    );
+    expect(screen.getAllByText("für Reihenklemmen reserviert · noch keine")).toHaveLength(2);
+    expect(screen.getByText("für Reihenklemmen reserviert · X7, X8, X10")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gerät auf F3 · Verteiler 3 hinzufügen" })).toBeInTheDocument();
+  });
+
+  it("runs the vacate from the Aufbau banner: both rows move in one edit, and Rückgängig puts them back", async () => {
+    const original = terminalsBoard();
+    await openBoard(original);
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+
+    fireEvent.click(within(oldRow("F2 · Verteiler 1")).getByRole("button", { name: "Vorschlag ausführen" }));
+
+    expect(dropNote()).toHaveTextContent("Vorschlag ausgeführt: Reihen auf F3 · Verteiler 3 und F3 · Verteiler 4 umgehängt.");
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    const moved = lastSaved();
+    expect(railsOf(moved, "mod-rk")).toEqual({ r3: "row-old1", r4: "row-old2" });
+    expect(railsOf(moved, "mod-k")).not.toHaveProperty("r1");
+    expect(railsOf(moved, "mod-k")).not.toHaveProperty("r2");
+    // Nothing is reserved any more on F2's top rails, and the banner went with the rows.
+    expect(screen.queryByRole("button", { name: "Vorschlag ausführen" })).toBeNull();
+
+    fireEvent.click(within(dropNote() as HTMLElement).getByRole("button", { name: "Rückgängig" }));
+    await waitFor(() => expect(updatePanel).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(lastSaved()).toEqual(original);
+    expect(within(oldRow("F2 · Verteiler 1")).getByRole("button", { name: "Vorschlag ausführen" })).toBeInTheDocument();
+  });
+
+  it("offers no „Vorschlag ausführen“ on a board the viewer may not edit", async () => {
+    await openBoard(terminalsBoard(), { user: { id: 2, email: "viewer@example.com", role: "employee", effective_permissions: [] } });
+    fireEvent.click(screen.getByRole("tab", { name: "Aufbau" }));
+    await screen.findByRole("region", { name: /^Feld 2 · ZU37KS/ });
+    expect(within(oldRow("F2 · Verteiler 1")).getByRole("note")).toHaveTextContent(VACATE_SENTENCE.trim());
+    expect(screen.queryByRole("button", { name: "Vorschlag ausführen" })).toBeNull();
   });
 });

@@ -420,3 +420,75 @@ def test_the_copy_of_a_board_forgets_its_meter_numbers(client: TestClient, admin
     assert stored(copied.json()["id"])["enclosure"]["modules"][0]["meters"] == meters
     # The original keeps its number.
     assert stored(panel["id"])["enclosure"]["modules"][0]["meters"][0]["number"] == "1XYZ0000000042"
+
+
+# ── module.terminal_order (docs/PANEL_ENCLOSURE_R2.md §2.1) ──────────────────
+
+
+def _with_order(order: object) -> dict:
+    return {**_module("m1", "ZU37KS", 1), "terminal_order": order}
+
+
+def _dumped_module(order: object) -> dict:
+    return PanelEnclosure.model_validate({"code": "ZB33S", "modules": [_with_order(order)]}).model_dump()["modules"][0]
+
+
+def test_terminal_order_round_trips_and_null_means_absent() -> None:
+    order = {"0": {"strips": ["dev-f2:leiste", "dev-q7:block"], "rail2_from": "dev-q7:block"}}
+    assert _dumped_module(order)["terminal_order"] == order
+    assert _dumped_module({"0": {"strips": ["a"]}})["terminal_order"] == {"0": {"strips": ["a"], "rail2_from": None}}
+    # Absent and null are the same, and neither adds a key to a stored board.
+    assert "terminal_order" not in _dumped_module(None)
+    plain = PanelEnclosure.model_validate({"code": "ZB33S", "modules": [_module("m1", "ZU37KS", 1)]}).model_dump()
+    assert "terminal_order" not in plain["modules"][0]
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        "0", 7, ["dev-f1:leiste"],
+        {"3": {"strips": ["a"]}, "x": {"strips": ["a"]}},
+        {"0": {"strips": "dev-f1:leiste"}},
+        {"0": {"strips": [1, None, ""]}},
+        {"0": {"strips": [f"s{n}" for n in range(1000)], "rail2_from": "s999"}},
+        {"0": {"strips": ["a"], "rail2_from": "b"}},
+    ],
+    ids=["text", "number", "list", "bad keys", "strips text", "non-text ids", "1000 ids", "split not listed"],
+)
+def test_a_garbage_terminal_order_is_dropped_never_refused(client: TestClient, admin_token: str, order: object) -> None:
+    dumped = _dumped_module(order).get("terminal_order")
+    assert dumped is None or (len(dumped["0"]["strips"]) <= 40 and dumped["0"]["rail2_from"] is None)
+    document = cabinet_document()
+    document["enclosure"]["modules"][1]["terminal_order"] = order
+    panel = create_panel(client, admin_token)
+    saved = _patch(client, admin_token, panel["id"], {"document": document})
+    assert saved.status_code == 200, saved.text
+    # Stored by an older image without the parser: the read path parses it too.
+    store_directly(panel["id"], document)
+    got = client.get(f"/api/schaltplan/panels/{panel['id']}", headers=auth(admin_token))
+    assert got.status_code == 200, got.text
+    assert not [f for f in got.json()["findings"] if f["rule"] == "encl.invalid_block"]
+    assert got.json()["document"]["enclosure"]["modules"][1].get("terminal_order") == dumped
+
+
+def test_a_board_from_before_round_2_opens_and_saves_unchanged(client: TestClient, admin_token: str) -> None:
+    """Rows on r1–r2 and r3–r7 of a Verteilerfeld, as v2.15.0 placed them:
+    nothing moves on load, and saving another device leaves rows and links alone."""
+    from scripts.write_enclosure_fixtures import terminals_zb34s
+
+    panel = create_panel(client, admin_token)
+    store_directly(panel["id"], terminals_zb34s())
+    before = stored(panel["id"])
+    got = client.get(f"/api/schaltplan/panels/{panel['id']}", headers=auth(admin_token))
+    assert got.status_code == 200, got.text
+    assert _canonical(got.json()["document"]) == _canonical(before)
+
+    edited = copy.deepcopy(before)
+    target = next(d for r in edited["rows"] if r["id"] == "row-k3" for d in r["devices"] if d["id"] == "dev-f2-1")
+    target["label"] = "Licht Keller"
+    saved = _patch(client, admin_token, panel["id"], {"document": edited})
+    assert saved.status_code == 200, saved.text
+    after = stored(panel["id"])
+    assert _canonical(after["enclosure"]) == _canonical(before["enclosure"])
+    assert _canonical(after["rows"]) == _canonical(edited["rows"])
+    assert [r["id"] for r in after["rows"]] == [r["id"] for r in before["rows"]]

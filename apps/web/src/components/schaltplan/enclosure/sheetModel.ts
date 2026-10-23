@@ -3,14 +3,15 @@
  * ModuleSheet, RailSheet and RailPickerSheet so the three never disagree on
  * what a rail is called or how full it is (docs/PANEL_ENCLOSURE.md §2.3, §4).
  *
- * Fullness is measured as the drawing measures it (`enclosureDeviceWidthMm`):
- * an SLS on a busbar is 4.5 PLE, not its 3 TE, so "frei" here matches the
- * overflow flag in the drawing and the `encl.rail_overflow` finding.
+ * Fullness is measured as the drawing measures it (`railUsedMm`, shared with
+ * the drag's drop label): an SLS on a busbar is 4.5 PLE, not its 3 TE, so
+ * "frei" here matches the overflow flag in the drawing and the
+ * `encl.rail_overflow` finding.
  */
+import { railUsedMm } from "./enclosureDropTargets";
 import { enclosureModules, type CatalogIndex } from "../../../utils/enclosureCatalog";
 import {
   catalogFittings,
-  enclosureDeviceWidthMm,
   generatedRowLabel,
   linkedRows,
   railRowId,
@@ -57,7 +58,7 @@ function info(
   rowId: string | null,
 ): RailInfo {
   const row = rowId ? document.rows.find((candidate) => candidate.id === rowId) ?? null : null;
-  const usedMm = (row?.devices ?? []).reduce((total, device) => total + enclosureDeviceWidthMm(device, ref.rail), 0);
+  const usedMm = railUsedMm(ref.rail, row?.devices ?? []);
   const usedPle = tenth(usedMm / MODULE_WIDTH_MM);
   return {
     moduleId: module.id,

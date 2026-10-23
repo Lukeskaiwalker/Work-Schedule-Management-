@@ -521,6 +521,108 @@ def test_a_broken_row_never_breaks_the_catalogue(client: TestClient, admin_token
         assert not catalog.known("ZX99NOPE")
 
 
+# ── built-in fittings reach every override (docs/PANEL_ENCLOSURE_R2.md §10) ──
+
+
+def _keys(spec: dict) -> list[str]:
+    return [fitting["key"] for fitting in spec["fittings"]]
+
+
+def _store_row(code: str, spec: dict) -> None:
+    with SessionLocal() as db:
+        db.add(PanelCatalogEntry(code=code, entry_type="module", spec=spec))
+        db.commit()
+
+
+def _stored_spec(code: str) -> dict:
+    with SessionLocal() as db:
+        return copy.deepcopy(db.scalars(select(PanelCatalogEntry).where(PanelCatalogEntry.code == code)).one().spec)
+
+
+def test_an_override_saved_without_u84t_is_served_with_it(client: TestClient, admin_token: str) -> None:
+    """A ZU37RK override saved under v2.15.0 predates the fitting: the served
+    spec still says the rails are insulated, and an admin edit stores it."""
+    old = _builtin("ZU37RK")
+    old["fittings"] = [f for f in old["fittings"] if f["key"] != "u84t"]
+    old["name"] = "Verteilerfeld 7 Reihen für Reihenklemmen (Werkstatt)"
+    _store_row("ZU37RK", old)
+
+    with SessionLocal() as db:
+        served = load_catalog(db).entry("ZU37RK")
+    assert (served.source, served.spec["name"]) == ("override", old["name"])
+    assert _keys(served.spec) == ["u84t"]
+    assert served.spec["fittings"][0] == builtin_catalog().module("ZU37RK")["fittings"][-1]
+    assert _keys(_entry(_get(client, admin_token), "ZU37RK")["spec"]) == ["u84t"]
+    assert "u84t" not in _keys(_stored_spec("ZU37RK"))  # reading never writes
+
+    saved = _put(client, admin_token, "ZU37RK", copy.deepcopy(served.spec))
+    assert saved.status_code == 200, saved.text
+    assert _keys(_stored_spec("ZU37RK")) == ["u84t"]
+    refused = _put(client, admin_token, "ZU37RK", old)
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == KEY_KEPT.format(key="u84t")
+
+
+def test_missing_built_in_fittings_are_appended_in_built_in_order(client: TestClient, admin_token: str) -> None:
+    own = {"key": "label_holder", "label": "Beschriftungsträger", "article_no": None,
+           "removable": False, "device": None, "verified": True}
+    lacking = _builtin("ZH53XSRK")
+    lacking["fittings"] = [own]
+    _store_row("ZH53XSRK", lacking)
+    relabelled = _builtin("ZU59RK")
+    relabelled["fittings"][-1]["label"] = "U84T ab Werk (2 Sätze, geprüft)"
+    _store_row("ZU59RK", relabelled)
+
+    with SessionLocal() as db:
+        catalog = load_catalog(db)
+    assert _keys(catalog.module("ZH53XSRK")) == ["label_holder", "busbar", "u84t"]
+    # An override that has the key keeps its own version of it, once.
+    assert _keys(catalog.module("ZU59RK")) == ["u84t"]
+    assert catalog.module("ZU59RK")["fittings"][0]["label"] == "U84T ab Werk (2 Sätze, geprüft)"
+    # Enclosure overrides have no fittings and are served as saved.
+    cabinet = _builtin("ZB33S")
+    cabinet["name"] = "Zählerschrank 3 Felder (Werkstatt)"
+    with SessionLocal() as db:
+        db.add(PanelCatalogEntry(code="ZB33S", entry_type="enclosure", spec=cabinet))
+        db.commit()
+        assert load_catalog(db).enclosure("ZB33S") == cabinet
+
+
+def test_a_custom_row_for_a_new_built_in_code_becomes_its_override(client: TestClient, admin_token: str) -> None:
+    """Created on v2.15.0 through "Eintrag anlegen", before ZH3ES5RK was built
+    in: its own zone stack stays, the built-in fittings are appended."""
+    custom = custom_module_spec(code="ZH3ES5RK", name="Sammelschienenfeld RK (eigener Eintrag)")
+    _store_row("ZH3ES5RK", custom)
+
+    with SessionLocal() as db:
+        entry = load_catalog(db).entry("ZH3ES5RK")
+    assert (entry.source, entry.archived, entry.invalid) == ("override", False, False)
+    assert entry.spec["name"] == "Sammelschienenfeld RK (eigener Eintrag)"
+    assert [rail["key"] for zone in entry.spec["zones"] for rail in zone["rails"]] == ["r1", "r2"]
+    assert _keys(entry.spec) == ["pe_n", "busbar", "u84t"]
+    listed = _entry(_get(client, admin_token), "ZH3ES5RK")
+    assert (listed["source"], _keys(listed["spec"])) == ("override", ["pe_n", "busbar", "u84t"])
+
+
+def test_an_override_that_cannot_take_the_built_in_fittings_is_served_as_saved(
+    client: TestClient, admin_token: str
+) -> None:
+    """Appending must not make a spec the schema refuses (16 fittings at most):
+    an admin could then never save the entry again."""
+    full = _builtin("ZU37RK")
+    full["fittings"] = [
+        {"key": f"part{n}", "label": f"Teil {n}", "article_no": None, "removable": False, "device": None,
+         "verified": True}
+        for n in range(16)
+    ]
+    _store_row("ZU37RK", full)
+
+    with SessionLocal() as db:
+        served = load_catalog(db).entry("ZU37RK")
+    assert served.source == "override"
+    assert _keys(served.spec) == [f"part{n}" for n in range(16)]
+
+
 def test_the_answer_reads_back_as_a_catalogue(client: TestClient, admin_token: str) -> None:
     """What the parity fixtures and the web client hold is the API answer."""
     with SessionLocal() as db:

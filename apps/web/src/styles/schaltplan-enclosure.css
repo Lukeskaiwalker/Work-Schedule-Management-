@@ -28,6 +28,10 @@
 /* ── Drawing ─────────────────────────────────────────────────────────────── */
 
 .sp-encl-scroll {
+  /* The drawing scrolls here, never widens the page: WebKit counts a scroll
+     container's content in the app shell's 1fr column, and fit-to-width
+     would then zoom to the wider page. */
+  contain: inline-size;
   max-width: 100%;
   max-height: 75vh;
   max-height: 75dvh;
@@ -341,6 +345,8 @@
 .sp-encl-fieldbar {
   display: flex;
   gap: 12px;
+  /* Scrolls sideways inside the tab; its buttons must not widen the page (see .sp-encl-scroll). */
+  contain: inline-size;
   overflow-x: auto;
   padding: 2px 2px 8px;
   scroll-snap-type: x proximity;

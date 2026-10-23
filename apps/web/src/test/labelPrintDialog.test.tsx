@@ -394,6 +394,14 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
     expect(onPrint).toHaveBeenCalledWith(["f2:leiste"], "wago-2009-110", { target: "reihenklemmen" });
   });
 
+  // The server refuses a strip it does not derive (409, "neu laden"): a tick
+  // left on a strip that went away while the sheet was open is not sent.
+  it("sends only the ticked strips the board still derives", () => {
+    const { onPrint } = renderTerminalDialog({ initialRowIds: ["f1:leiste", "gone:leiste", "f2:leiste"] });
+    fireEvent.click(screen.getByRole("button", { name: "Drucken" }));
+    expect(onPrint).toHaveBeenCalledWith(["f1:leiste", "f2:leiste"], "wago-2009-110", { target: "reihenklemmen" });
+  });
+
   it("shows strip metadata: terminals, unlabelled ones and the strip length", () => {
     renderTerminalDialog({ document: { ...terminalBoard(), terminal_labels: { "a:1": "" } } });
     const row = screen.getByRole("checkbox", { name: "X1 · FI F1 · Reihe 1 drucken" }).closest("li");

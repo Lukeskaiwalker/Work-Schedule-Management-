@@ -24,6 +24,9 @@ from fastapi.testclient import TestClient
 from app.services.schaltplan_layout import build_legend, font_size_for_fits, validate_document
 from app.services.schaltplan_pdf_terminals import _COLUMNS, column_titles, row_values
 from app.services.schaltplan_terminal_rules import (
+    END_PLATE_PART_IDS,
+    RAIL_PART_IDS,
+    TERMINAL_PART_ORDER,
     TERMINAL_PARTS,
     is_block_device,
     is_terminal_eligible,
@@ -405,6 +408,72 @@ def test_device_labels_for_the_legend_list_x_numbers():
     assert rows["F1.3"] == "X1.3, X1.4"
     assert rows["F1.4"] == "X2"
     assert rows["F1.5"] == ""
+
+
+# ── Round 2: the skip set and the rail parts (docs/PANEL_ENCLOSURE_R2.md §3.1, §5.3) ──
+
+
+def _skip_board() -> dict:
+    return _rows(
+        ("r1", "Reihe 1", [_device("f1", "rcd", designation="F1", poles=4), _tb("a", "mcb", designation="F1.1"), _tb("b", "mcb", designation="F1.2")]),
+        ("r2", "Reihe 2", [_device("f2", "rcd", designation="F2", poles=4), _tb("c", "mcb", designation="F2.1")]),
+    )
+
+
+def test_skipped_devices_get_no_terminal_and_the_x_numbers_close_up():
+    document = _skip_board()
+    assert [[s["x_label"] for s in g["strips"]] for g in derive_terminals(document)] == [["X1"], ["X2"]]
+    groups = derive_terminals(document, skip=frozenset({"a", "b"}))
+    assert [g["group_id"] for g in groups] == ["f2"]
+    assert _labels(groups) == ["X1", "1.1", ""]
+    [first, _second] = derive_terminals(document, skip=frozenset({"a"}))
+    assert [t["device_id"] for t in first["terminals"]] == ["f1", "b", None]
+    assert derive_terminals(document, skip=frozenset()) == derive_terminals(document)
+
+
+def test_the_skip_set_reaches_the_legend_the_group_finding_and_the_name_check():
+    document = _rows(("r1", "Reihe 1", [
+        _device("q1", "hauptschalter", designation="Q1", poles=3), _tb("a", "mcb", designation="F1"),
+        _device("x", "mcb", designation="X1")]))
+    assert {row["designation"]: row["terminals"] for row in build_legend(document)}["F1"] == "X1.1"
+    assert {row["designation"]: row["terminals"] for row in build_legend(document, terminal_skip=frozenset({"a"}))}["F1"] == ""
+    messages = [f["message"] for f in validate_document(document)]
+    assert any("ohne FI" in m for m in messages)
+    assert "X1: so heißt auch eine Klemmleiste — Gerät umbenennen (zwei Teile mit einem BMK)." in messages
+    skipped = [f["message"] for f in validate_document(document, terminal_skip=frozenset({"a"}))]
+    assert not any("ohne FI" in m or "Klemmleiste" in m for m in skipped)
+
+
+def test_the_end_plates_are_parts_and_every_terminal_names_its_plate():
+    assert RAIL_PART_IDS == END_PLATE_PART_IDS == frozenset({"2003-7692", "2016-7691"})
+    # No WAGO 249-116 end stops (owner, 2026-10-22).
+    assert "249-116" not in TERMINAL_PARTS
+    plates = {part_id: TERMINAL_PARTS[part_id] for part_id in RAIL_PART_IDS}
+    assert {(p.part_no, p.width_mm, p.role, p.marker, p.verified) for p in plates.values()} == {
+        ("WAGO 2003-7692", 0.8, "rail_part", False, True), ("WAGO 2016-7691", 1.0, "rail_part", False, True)}
+    assert plates["2003-7692"].name == "Abschluss- und Zwischenplatte, 0,8 mm, orange"
+    assert plates["2016-7691"].name == "Abschlussplatte, 1 mm, grau"
+    assert {part.id: part.end_plate for part in TERMINAL_PARTS.values()} == {
+        "2003-7641": "2003-7692", "2003-7642": "2003-7692", "2003-7692": None, "2009-305": None,
+        "2016-7601": "2016-7691", "2016-7604": "2016-7691", "2016-7607": "2016-7691", "2016-7691": None,
+        "2016-7714": None,
+    }
+    assert TERMINAL_PART_ORDER == (
+        "2003-7641", "2003-7642", "2003-7692", "2009-305", "2016-7601", "2016-7604", "2016-7607", "2016-7691", "2016-7714")
+
+
+def test_bom_takes_the_rail_parts_in_part_order():
+    rows = terminal_bom(derive_terminals(_standard_board()), extra={"2016-7691": 1, "2003-7692": 2, "2009-305": 0})
+    assert [(row["part_no"], row["count"]) for row in rows] == [
+        ("WAGO 2003-7641", 3), ("WAGO 2003-7642", 1), ("WAGO 2003-7692", 2), ("WAGO 2009-305", 1),
+        ("WAGO 2016-7601", 3), ("WAGO 2016-7604", 1), ("WAGO 2016-7607", 1), ("WAGO 2016-7691", 1),
+        ("WAGO 2016-7714", 1),
+    ]
+    assert terminal_bom([], extra={"2003-7692": 1}) == [{
+        "part_id": "2003-7692", "part_no": "WAGO 2003-7692", "name": "Abschluss- und Zwischenplatte, 0,8 mm, orange",
+        "count": 1, "width_mm": 0.8, "verified": True}]
+    assert terminal_bom([], extra={"2003-7692": 0}) == terminal_bom([]) == []
+    assert terminal_bom(derive_terminals(_standard_board()), extra=None) == terminal_bom(derive_terminals(_standard_board()))
 
 
 # ── Strips ────────────────────────────────────────────────────────────────────

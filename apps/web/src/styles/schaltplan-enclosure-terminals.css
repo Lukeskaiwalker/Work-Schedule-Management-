@@ -1,0 +1,350 @@
+/* ── Schrank: WAGO terminals (docs/PANEL_ENCLOSURE_R2.md §7.2, §8) ───────────
+ *
+ * Page-local sheet like schaltplan-enclosure.css, imported by the terminal
+ * components themselves, scoped under .sp-term-* (the close-up) and
+ * .sp-encl-* (the cabinet drawing, the field bar, the findings). Theme
+ * colours come from the --sp-* tokens of styles.css; the WAGO housings keep
+ * their physical colours (grey, blue, green-yellow, orange), drawn with a
+ * dark outline so they read on both themes.
+ *
+ * Workshop tablets and gloves: every button is 56 px (.sp-encl-target). The
+ * close-up scrolls sideways in its own container, because the app root
+ * clips overflow-x.
+ *
+ * Sections: cabinet drawing · close-up · banners and tools · field bar,
+ * findings.
+ */
+
+:root {
+  --sp-term-grey: #c9ced4;
+  --sp-term-blue: #6d9fd6;
+  --sp-term-pe-green: #4f9a4a;
+  --sp-term-pe-yellow: #e6cf3a;
+  --sp-term-orange: #ea8a32;
+  --sp-term-outline: #2d3a48;
+  --sp-term-device: #d9dde2;
+  --sp-term-reserved: rgba(234, 138, 50, 0.16);
+}
+
+/* ── Cabinet drawing (EnclosureFrontBoxes) ───────────────────────────────── */
+
+.sp-encl-strip-body {
+  fill: var(--sp-term-grey);
+  stroke: var(--sp-term-outline);
+  stroke-width: 1px;
+}
+
+.sp-encl-text--strip {
+  fill: var(--sp-term-outline);
+  font-weight: 700;
+}
+
+/* A rail reserved for terminals: tinted and hatched, drawn even when empty. */
+.sp-encl-rail--terminals .sp-encl-rail-body {
+  fill: var(--sp-term-reserved);
+}
+
+.sp-encl-terminal-hatch {
+  opacity: 0.55;
+}
+
+/* ── Close-up ────────────────────────────────────────────────────────────── */
+
+.sp-term-scroll {
+  /* A flex item of the sheet body's column; as a scroll container its
+     automatic minimum height is 0, so without this it shrinks to its border. */
+  flex: none;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+  touch-action: manipulation;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sp-term-svg {
+  display: block;
+  font-family: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.sp-term-svg text {
+  fill: var(--sp-ink);
+  pointer-events: none;
+}
+
+.sp-term-svg rect:not(.sp-term-hit):not(.sp-term-strip-hit) {
+  pointer-events: none;
+}
+
+.sp-term-heading {
+  font-weight: 700;
+}
+
+.sp-term-chip rect {
+  fill: var(--surface-2, #eef2f6);
+  stroke: var(--sp-line);
+}
+
+.sp-term-chip--factory rect {
+  fill: var(--sp-tint, #e6f0fb);
+  stroke: var(--sp-accent);
+}
+
+.sp-term-railbar {
+  fill: var(--sp-term-device);
+  stroke: var(--sp-line);
+}
+
+.sp-term-railend {
+  stroke: var(--sp-warn, #b35c00);
+  stroke-width: 2px;
+  stroke-dasharray: 6 4;
+}
+
+.sp-term-device rect {
+  fill: var(--sp-term-device);
+  stroke: var(--sp-term-outline);
+  stroke-dasharray: 4 3;
+}
+
+.sp-term-body {
+  stroke: var(--sp-term-outline);
+  stroke-width: 1px;
+}
+
+.sp-term-item--grey .sp-term-body {
+  fill: var(--sp-term-grey);
+}
+
+.sp-term-item--blue .sp-term-body {
+  fill: var(--sp-term-blue);
+}
+
+.sp-term-item--orange .sp-term-body {
+  fill: var(--sp-term-orange);
+}
+
+.sp-term-item--pe .sp-term-body {
+  fill: var(--sp-term-pe-green);
+  stroke: var(--sp-term-pe-yellow);
+  stroke-width: 3px;
+}
+
+.sp-term-svg .sp-term-item text,
+.sp-term-svg .sp-term-device text {
+  fill: #13202d;
+}
+
+.sp-term-marker {
+  font-weight: 700;
+}
+
+.sp-term-level rect {
+  fill: rgba(255, 255, 255, 0.82);
+  stroke: var(--sp-term-outline);
+  stroke-width: 0.75px;
+}
+
+.sp-term-hit,
+.sp-term-strip-hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.sp-term-hit:focus-visible,
+.sp-term-strip-hit:focus-visible {
+  outline: none;
+  stroke: var(--sp-accent);
+  stroke-width: 3px;
+}
+
+.sp-term-item.is-selected .sp-term-body {
+  stroke: var(--sp-accent-deep);
+  stroke-width: 3px;
+}
+
+.sp-term-strip-outline {
+  fill: none;
+  stroke: var(--sp-accent);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+.sp-term-strip.is-dragging {
+  opacity: 0.45;
+}
+
+.sp-term-drop-bar {
+  fill: var(--sp-accent-deep);
+}
+
+.sp-term-drop-bar.is-refused {
+  fill: var(--sp-warn, #b35c00);
+}
+
+/* The drag label floats in a fixed layer on the page (.sp-encl-drag-label);
+   .sp-term-drag-label is only its polite echo, kept .visually-hidden. */
+
+/* ── Banners, tools, details, Ohne Platz, cards ──────────────────────────── */
+
+.sp-term-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface-2, #eef2f6);
+  color: var(--sp-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sp-term-banner p {
+  margin: 0;
+}
+
+.sp-term-banner small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.sp-term-banner--warn {
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+.sp-term-banner-actions,
+.sp-term-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sp-term-tools {
+  margin: 10px 0;
+}
+
+.sp-term-hint {
+  margin: 0;
+  align-self: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.sp-term-detail {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-accent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.sp-term-detail dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 14px;
+}
+
+.sp-term-detail dt {
+  color: var(--muted);
+}
+
+.sp-term-detail dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sp-term-unplaced-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.sp-term-unplaced-strip {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+
+.sp-term-sentence {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sp-term-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sp-term-card.is-selected .sp-terminal-group {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 2px;
+}
+
+.sp-term-cards tr.is-selected,
+.sp-term-cards .sp-terminal-row.is-selected {
+  background: var(--sp-tint, #e6f0fb);
+}
+
+.sp-term-legend {
+  margin: 12px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ── Field bar, findings, sheets ─────────────────────────────────────────── */
+
+.sp-encl-fieldbar-btn--terminals {
+  border-style: dashed;
+}
+
+.sp-encl-finding-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.sp-encl-badge--u84t {
+  border: 1px solid var(--sp-accent);
+  background: var(--sp-tint, #e6f0fb);
+  color: var(--sp-ink);
+}
+
+.sp-encl-reserved {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-warn-line);
+  border-radius: 10px;
+  background: var(--sp-warn-bg);
+  color: var(--sp-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sp-encl-reserved p {
+  margin: 0;
+}
+
+/* A finding with an action wraps its button under the text on a narrow sheet. */
+.sp-encl-findings-list .sp-encl-finding {
+  flex-wrap: wrap;
+}

@@ -12,6 +12,11 @@
  * stale document over a newer one. Pinned circuits get the toast, and the
  * sheet's follow-up (`then`: open the placed module, the new device…) runs
  * last, only for an op that really applied.
+ *
+ * `onCommitted(before, after)` hears of every op that applied — after its
+ * confirmation, with the board it applied on and the board it made — so
+ * an action (a finding's "Vorschlag ausführen") can offer the same one-step
+ * Rückgängig as a drag (docs/PANEL_ENCLOSURE_R2.md §6.5, `useDropUndo`).
  */
 import { useCallback, useLayoutEffect, useRef } from "react";
 
@@ -37,9 +42,11 @@ export interface EnclosureOpRunnerOptions {
   confirmRegroup: (request: RegroupRequest) => void;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
+  /** An op applied: the board it ran on and the board it left. */
+  onCommitted?: (before: PanelDocument, after: PanelDocument) => void;
 }
 
-type Outcome = { applied?: AppliedOp; refusal?: string };
+type Outcome = { applied?: AppliedOp; refusal?: string; before?: PanelDocument };
 
 export function useEnclosureOpRunner(options: EnclosureOpRunnerOptions): RunEnclosureOp {
   // The latest board and callbacks, so the runner keeps its identity across renders.
@@ -49,7 +56,7 @@ export function useEnclosureOpRunner(options: EnclosureOpRunnerOptions): RunEncl
   });
 
   return useCallback<RunEnclosureOp>((op: EnclosureOp, then) => {
-    const { document: before, index, mutate, confirmRegroup, onError, onNotice } = latest.current;
+    const { document: before, index, mutate, confirmRegroup, onError, onNotice, onCommitted } = latest.current;
     if (!before || !index) return;
     const first = op(before, index);
     if (!first.ok) {
@@ -65,11 +72,13 @@ export function useEnclosureOpRunner(options: EnclosureOpRunnerOptions): RunEncl
           return current;
         }
         outcome.applied = result;
+        outcome.before = current;
         return result.document;
       });
       if (outcome.refusal) onError(outcome.refusal);
       const applied = outcome.applied;
       if (!applied) return;
+      if (outcome.before && outcome.before !== applied.document) onCommitted?.(outcome.before, applied.document);
       if (applied.pinned.length > 0) onNotice(pinnedToast(applied.pinned.length));
       then?.(applied);
     };

@@ -2,10 +2,11 @@
  * The Schrank tab's one sheet stack (docs/PANEL_ENCLOSURE.md §11).
  *
  * RailSheet → DeviceInspector → Palette / RailPicker open on top of each
- * other, and closing one returns to the one below — the fitter who tapped a
- * rail, fixed a breaker and closed the inspector wants the rail again, not
- * the bare drawing. So there is exactly one stack, the tab renders its top
- * sheet only, behind exactly one backdrop (`SheetBackdrop`), and every way
+ * other (as does the terminal close-up → RailSheet), and closing one
+ * returns to the one below — the fitter who tapped a rail, fixed a breaker
+ * and closed the inspector wants the rail again, not the bare drawing. So
+ * there is exactly one stack, the tab renders its top sheet only, behind
+ * exactly one backdrop (`SheetBackdrop`), and every way
  * out — the sheet's ‹ button, Escape, a tap on the backdrop — goes back one
  * step (`back`). × closes the stack.
  *
@@ -74,6 +75,8 @@ export type EnclosureSheet =
   | { kind: "inspector"; deviceId: string }
   | { kind: "palette"; request: DeviceChoiceRequest }
   | { kind: "rail-picker"; deviceId: string }
+  /** The close-up of a field's terminal rails (R2 §7.2); `stripId` = the selected strip. */
+  | { kind: "terminals"; field: number; stripId: string | null }
   | { kind: "regroup"; before: PanelDocument; after: PanelDocument; regrouped: Regroup[]; apply: () => void }
   | { kind: "catalog-admin" };
 

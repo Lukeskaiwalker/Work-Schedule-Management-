@@ -877,19 +877,20 @@ def _device_poles(device: dict[str, Any], catalog: dict[str, Any]) -> int:
     return poles if poles > 0 else int(catalog.get("poles", 1))
 
 
-def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
+def build_legend(document: dict[str, Any], *, terminal_skip: frozenset[str] = frozenset()) -> list[dict[str, str]]:
     """The Stromkreisliste: one row per circuit, in physical device order.
 
     This is the artefact that gets glued inside the panel door, so the column
     set matches what an electrician reads off it in the dark: which breaker,
     what it feeds, which room, how it is protected, what cable runs to it.
+    ``terminal_skip``: the cabinet's skip set (docs/PANEL_ENCLOSURE_R2.md §3.1).
     """
 
     # Local import: the terminal derivation needs build_topology from here.
     from app.services.schaltplan_terminals import derive_terminals, device_terminal_labels
 
     topology = build_topology(document)
-    terminal_labels = device_terminal_labels(derive_terminals(document))
+    terminal_labels = device_terminal_labels(derive_terminals(document, skip=terminal_skip))
     rows: list[dict[str, str]] = []
     groups_by_head = {
         str(group["device"].get("id") or ""): group for group in topology["groups"] if group["device"] is not None
@@ -981,7 +982,7 @@ def document_stats(document: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
+def validate_document(document: dict[str, Any], *, terminal_skip: frozenset[str] = frozenset()) -> list[dict[str, str]]:
     """Non-blocking plausibility findings shown as warnings in the editor.
 
     Deliberately advisory, never an error: a board captured mid-refurbishment
@@ -1110,49 +1111,13 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
 
-    # Reihenklemmen: a group without an FI that still wants terminals, and
-    # pole counts the Etagenklemmen round. Imported here, not at the top:
-    # the rules module reads DEVICE_CATALOG from this one.
+    # Reihenklemmen: a group without an FI that still wants terminals, pole
+    # counts the Etagenklemmen round, and a BMK a Klemmleiste also carries.
+    # Imported here, not at the top: both modules read this one.
+    from app.services.schaltplan_terminal_checks import strip_name_clashes
     from app.services.schaltplan_terminal_rules import terminal_findings
 
-    findings.extend(terminal_findings(topology["groups"]))
-    findings.extend(_strip_name_clashes(document))
+    findings.extend(terminal_findings(topology["groups"], terminal_skip))
+    findings.extend(strip_name_clashes(document, terminal_skip))
 
     return findings
-
-
-# Rail devices that may carry a Klemmleiste's name: a "terminal" device IS
-# the strip's rail space, a blank has nothing printed on it.
-_STRIP_NAMED_KINDS = {"terminal", "blank"}
-
-
-def _strip_name_clashes(document: dict[str, Any]) -> list[dict[str, str]]:
-    """A device whose BMK a derived Klemmleiste also carries ("X1").
-
-    X is the Verteilerblock's natural letter (Hensel KKL 54, owner
-    2026-10-09) and the letter the strips count in, so one label would end up
-    on two different parts. Same case-blind compare a printed label gets.
-    """
-    # Local import, as in build_legend: the derivation needs this module.
-    from app.services.schaltplan_terminals import derive_terminals
-
-    strip_names = {
-        str(strip.get("x_label") or "").strip().upper()
-        for group in derive_terminals(document)
-        for strip in group["strips"]
-    }
-    strip_names.discard("")
-    clashes: list[dict[str, str]] = []
-    for _row, device in iter_devices(document):
-        designation = _text(device.get("designation"))
-        if not designation or str(device.get("kind") or "") in _STRIP_NAMED_KINDS:
-            continue
-        if designation.upper() in strip_names:
-            clashes.append(
-                {
-                    "level": "warn",
-                    "scope": str(device.get("id") or ""),
-                    "message": f"{designation}: so heißt auch eine Klemmleiste — Gerät umbenennen (zwei Teile mit einem BMK).",
-                }
-            )
-    return clashes

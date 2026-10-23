@@ -14,11 +14,18 @@ guessed constant would be worse than a visible warning. If a measured
 carrier disagrees with a row, that row's ``width_mm`` is the one number to
 change (same policy as ``CAP_TOP_RATIO`` in werkstatt_labels.py).
 
-Marking. All seven parts are TOPJOB S; their marker is the 2009-110 strip
-(11 mm, continuous, snapped into the terminal's marker slot) — the same
-stock the BMK strip uses, so one strip is printed per FI group and slid
-along the row. Feed and Etagenklemmen carry a marker; the two end elements
-do not (``marker=False``) and therefore never get a segment on the strip.
+Marking. All seven terminals are TOPJOB S; their marker is the 2009-110
+strip (11 mm, continuous, snapped into the terminal's marker slot) — the
+same stock the BMK strip uses, so one strip is printed per FI group and slid
+along the row. Feed and Etagenklemmen carry a marker; the end elements do
+not (``marker=False``) and therefore never get a segment on the strip.
+
+Rail parts (docs/PANEL_ENCLOSURE_R2.md §5.3, round 2). On a cabinet board
+every terminal rail that holds a strip is closed by one end plate matching
+its last terminal block (``TerminalPart.end_plate``). They are counted by
+the placement (``panel_enclosure_terminals``), never by a group, so a
+legacy Stückliste is unchanged. No end stops: the owner ruled the WAGO
+249-116 out on 2026-10-22.
 """
 
 from __future__ import annotations
@@ -47,6 +54,10 @@ class TerminalPart:
     # The width was confirmed on a WAGO or distributor page (see ``source``).
     verified: bool
     source: str
+    # The end plate that closes a rail whose last terminal block is this part;
+    # None for parts that never end a rail's terminal row (feed, end clamp,
+    # the plates themselves).
+    end_plate: str | None = None
 
 
 TERMINAL_PARTS: dict[str, TerminalPart] = {
@@ -62,6 +73,9 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         marker=True,
         verified=True,
         source="https://www.bauhaus.info/installationsklemmen/wago-topjob-installationsetagenklemme-s-2003-7641/p/27588879",
+        # Verified: the 2003-7641 datasheet (Stand 28.05.2026) lists 2003-7692
+        # as "Notwendiges Zubehör".
+        end_plate="2003-7692",
     ),
     "2003-7642": TerminalPart(
         id="2003-7642",
@@ -76,6 +90,8 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         marker=True,
         verified=True,
         source="https://www.elektroland24.de/Elektroinstallation/Verteilungseinbau/Reihenklemmen/WAGO/Wago-2003-7642-Installations-Etagenklemme-L-L.html",
+        # UNVERIFIED: the same 2003-76xx housing as 2003-7641 is assumed.
+        end_plate="2003-7692",
     ),
     "2016-7714": TerminalPart(
         id="2016-7714",
@@ -115,6 +131,8 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         marker=True,
         verified=True,
         source="https://www.elektroland24.de/elektroinstallation/verteilungseinbau/reihenklemmen/wago/wago-2016-7604-2-leiter-n-verteilereinspeiseklemme.html",
+        # UNVERIFIED: the same 2016-76xx housing as 2016-7601 is assumed.
+        end_plate="2016-7691",
     ),
     "2016-7601": TerminalPart(
         id="2016-7601",
@@ -127,6 +145,9 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         marker=True,
         verified=True,
         source="https://heizung-billiger.de/770206-wago-verteiler-einspeiseklemme-2016-2016-7601-16mm2-800v-76a-12mm-grau-wago-2016-7601-4045454725082.html",
+        # Verified: the 2016-7601 datasheet (Stand 03.06.2026), "Notwendiges
+        # Zubehör: 2016-7691 Abschlussplatte; 1 mm dick; grau".
+        end_plate="2016-7691",
     ),
     "2016-7607": TerminalPart(
         id="2016-7607",
@@ -142,6 +163,33 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         marker=True,
         verified=True,
         source="https://www.wago.com/de/reihenklemmen/2-leiter-schutzleiterklemme/p/2016-7607",
+        # UNVERIFIED: the same 2016-76xx housing as 2016-7601 is assumed.
+        end_plate="2016-7691",
+    ),
+    # 2016-7714 has no end plate: it is never a rail's last terminal block (a
+    # Leiste with a feed ends in an outgoing and the 2009-305). Its series
+    # plate would be 2016-7792 (unverified), which is not modelled. The
+    # 2009-305 is skipped when looking for the last terminal block: its
+    # break-out plate closes the N busbar, not the terminal's open side.
+    "2003-7692": TerminalPart(
+        id="2003-7692",
+        part_no="WAGO 2003-7692",
+        name="Abschluss- und Zwischenplatte, 0,8 mm, orange",
+        role="rail_part",
+        width_mm=0.8,
+        marker=False,
+        verified=True,
+        source="https://www.wago.com/gb/10001/p/2003-7692",
+    ),
+    "2016-7691": TerminalPart(
+        id="2016-7691",
+        part_no="WAGO 2016-7691",
+        name="Abschlussplatte, 1 mm, grau",
+        role="rail_part",
+        width_mm=1.0,
+        marker=False,
+        verified=True,
+        source="https://www.wago.com/nl/rijgklemmen/afsluitplaat/p/2016-7691",
     ),
 }
 
@@ -149,16 +197,21 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
 TERMINAL_PART_ORDER: tuple[str, ...] = (
     "2003-7641",
     "2003-7642",
+    "2003-7692",
     "2009-305",
     "2016-7601",
     "2016-7604",
     "2016-7607",
+    "2016-7691",
     "2016-7714",
 )
 
 FEED_PART_IDS: frozenset[str] = frozenset({"2016-7714", "2016-7604"})
 OUTGOING_PART_IDS: frozenset[str] = frozenset({"2003-7641", "2003-7642", "2016-7601"})
 END_PART_IDS: frozenset[str] = frozenset({"2009-305"})
+END_PLATE_PART_IDS: frozenset[str] = frozenset({"2003-7692", "2016-7691"})
+# What closes a terminal rail. Only the end plates: no end stops (owner, 2026-10-22).
+RAIL_PART_IDS: frozenset[str] = END_PLATE_PART_IDS
 
 # Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits, and
 # a Neozed module that goes straight on to the 16 mm² block (owner,
@@ -234,9 +287,17 @@ def is_block_device(device: dict[str, Any]) -> bool:
     return device_poles(device) >= 3 and amps is not None and amps > BLOCK_MIN_AMPS_EXCLUSIVE
 
 
-def terminal_children(group: dict[str, Any]) -> list[dict[str, Any]]:
-    """The children of a group that end on a terminal, in physical order."""
-    return [device for device in group.get("children") or [] if isinstance(device, dict) and has_terminal(device)]
+def terminal_children(group: dict[str, Any], skip: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """The children of a group that end on a terminal, in physical order.
+
+    ``skip``: device ids that get no terminal whatever their flag says — on
+    a cabinet board, everything on an AAR, NAR, RfZ or APZ rail
+    (docs/PANEL_ENCLOSURE_R2.md §3.1).
+    """
+    return [
+        device for device in group.get("children") or []
+        if isinstance(device, dict) and has_terminal(device) and str(device.get("id") or "") not in skip
+    ]
 
 
 def terminal_variant(group: dict[str, Any], children: list[dict[str, Any]]) -> str | None:
@@ -273,7 +334,7 @@ def _device_label(device: dict[str, Any]) -> str:
     return _text(device.get("designation")) or _text(device.get("label")) or "Abgang"
 
 
-def terminal_findings(groups: list[dict[str, Any]]) -> list[dict[str, str]]:
+def terminal_findings(groups: list[dict[str, Any]], skip: frozenset[str] = frozenset()) -> list[dict[str, str]]:
     """The two advisory findings the terminal rules add to ``validate_document``.
 
     A group without an FI whose outgoings still want terminals (rule 4), and
@@ -283,7 +344,7 @@ def terminal_findings(groups: list[dict[str, Any]]) -> list[dict[str, str]]:
     """
     findings: list[dict[str, str]] = []
     for group in groups:
-        children = terminal_children(group)
+        children = terminal_children(group, skip)
         variant = terminal_variant(group, children)
         if variant is None:
             continue

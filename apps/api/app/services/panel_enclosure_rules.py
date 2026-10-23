@@ -28,6 +28,10 @@ What both twins keep identical beyond the table in §5:
   ``encl.stale_rail``, not also ``encl.row_unlinked``;
 * ``encl.row_order`` compares the whole stored order with
   ``physical_row_order`` (rows outside the cabinet included, which belong last).
+
+Round 2 (docs/PANEL_ENCLOSURE_R2.md §4.1) replaced the one ``encl.terminals``
+note with ten WAGO terminal rules (``panel_enclosure_terminal_rules``), which
+read the board's precomputed terminals and placement.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from app.schemas.panel_enclosure import METER_FAMILIES
 from app.services.panel_enclosure_catalog import EnclosureCatalog
-from app.services.panel_enclosure_geometry import round1
+from app.services.panel_enclosure_geometry import mm_text
 from app.services.panel_enclosure_layout import (
     PLE_MM,
     as_int,
@@ -63,16 +67,17 @@ from app.services.panel_enclosure_layout import (
     text,
     zone_field,
 )
+from app.services.panel_enclosure_terminal_rules import TERMINAL_RULE_ORDER, terminal_findings
+from app.services.panel_enclosure_terminals import BoardTerminals
 from app.services.schaltplan_layout import DEVICE_CATALOG, build_topology
-from app.services.schaltplan_terminals import derive_terminals
 
 logger = logging.getLogger(__name__)
 
 RULE_ORDER: tuple[str, ...] = (
     "encl.unknown_code", "encl.out_of_bounds", "encl.overlap", "encl.height_mismatch", "encl.field_gap",
     "encl.row_unlinked", "encl.stale_rail", "encl.row_order", "encl.rail_overflow", "encl.supplied_dangling",
-    "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid", "encl.terminals",
-    "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
+    "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid",
+    *TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
     "vde.3p_main_switch", "vde.rfz_devices", "vde.apz_missing", "vde.apz_position", "vde.meter_place_empty",
 )
 _RANK = {rule: index for index, rule in enumerate(RULE_ORDER)}
@@ -209,12 +214,6 @@ def rating(device: Mapping[str, Any]) -> float | None:
     """The last number in the rating ("B16" → 16, "E35" → 35); None if none."""
     numbers = _NUMBER.findall(text(device.get("rating")))
     return float(numbers[-1].replace(",", ".")) if numbers else None
-
-
-def mm_text(value: float) -> str:
-    """"29,9", "1050": a length as a sentence shows it."""
-    rounded = round1(value)
-    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:.1f}".replace(".", ",")
 
 
 def _occupied(module: _Module) -> list[int]:
@@ -411,24 +410,6 @@ def _meter_place_invalid(board: _Board) -> Iterator[Finding]:
                                f"{module.art}: Zählerplatz {place + 1} gibt es nicht — Eintrag wird ignoriert.")
 
 
-def _terminals(board: _Board) -> Iterator[Finding]:
-    row_of = _row_of_device(board)
-    per_field: dict[int, tuple[int, float]] = {}
-    for group in derive_terminals(dict(board.document)):
-        head = group.get("head_device")
-        rail = board.rail_of_row(row_of.get(id(head))) if head is not None else None
-        if rail is None:
-            continue  # the supply group, or a head outside the cabinet: no field to name
-        count, length = per_field.get(rail.field, (0, 0.0))
-        terminals = group["terminals"]
-        per_field[rail.field] = (count + len(terminals), length + sum(float(t["width_mm"]) for t in terminals))
-    for field in sorted(per_field):
-        count, length = per_field[field]
-        yield _finding("encl.terminals", "info", "",
-                       f"Feld {field + 1}: Reihenklemmen {count} Stück, {mm_text(length)} mm Hutschiene — "
-                       "im Schrankbild nicht gezeichnet.")
-
-
 # ── vde.* (VDE-AR-N 4100:2026-04) ────────────────────────────────────────────
 
 
@@ -589,18 +570,24 @@ def _meter_place_empty(board: _Board) -> Iterator[Finding]:
 _CHECKS: tuple[Callable[[_Board], Iterator[Finding]], ...] = (
     _unknown_codes, _bounds, _overlaps, _height, _field_gaps, _unlinked, _stale_rails, _row_order,
     _rail_overflow, _supplied_dangling, _cross_module_feed, _unverified, _meter_device, _meter_place_invalid,
-    _terminals, _nar_sls, _nar_contents, _sls_rating, _aar_contents, _aar_circuits, _main_switch_3p,
+    _nar_sls, _nar_contents, _sls_rating, _aar_contents, _aar_circuits, _main_switch_3p,
     _rfz_devices, _apz_missing, _apz_position, _meter_place_empty,
 )
 
 
-def enclosure_findings(document: Any, catalog: EnclosureCatalog) -> list[Finding]:
-    """Every cabinet finding of a board, sorted; [] without a cabinet. Never raises."""
+def enclosure_findings(document: Any, catalog: EnclosureCatalog, terms: BoardTerminals | None = None,
+                       placement: Mapping[str, Any] | None = None) -> list[Finding]:
+    """Every cabinet finding of a board, sorted; [] without a cabinet. Never raises.
+
+    ``terms``/``placement``: the board's ``board_terminals`` and
+    ``place_terminals``, when the caller already has them.
+    """
     try:
         board = _read_board(document, catalog)
         if board is None:
             return []
         findings = [finding for check in _CHECKS for finding in check(board)]
+        findings += terminal_findings(document, catalog, terms, placement)
     except Exception:  # noqa: BLE001 — a finding must never take a board's page down
         # Last resort only: the readers above are tolerant by construction, and
         # the tests assert this line is never reached on garbage documents.

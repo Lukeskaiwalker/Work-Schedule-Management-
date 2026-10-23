@@ -1947,3 +1947,36 @@
 - Tradeoffs:
   - Pros: every period and custom range is complete, a truncated list is visibly truncated, and no response envelope changed: without parameters the endpoint still answers the newest 300 rows as a plain list.
   - Cons: each filter change is a request (search is debounced by 250 ms); the search matches the full name as well as the nickname, a superset of what the tab displays.
+
+## 2026-10-22 - WAGO terminals in the cabinet are derived; only a per-field strip order is stored
+- Status: accepted (owner answers of 2026-10-22; built 2026-10-23, ships in v2.15.1). Contract: `docs/PANEL_ENCLOSURE_R2.md` §1.3, R1–R8.
+- Context: v2.15.0 drew no WAGO Reihenklemmen in the Schrank view; an info finding only stated their length per field.
+- Decision:
+  - The placement is a pure function (`place_terminals` ⇄ `placeTerminals`) of the document and the catalogue. The only new stored key is `module.terminal_order`: one sequence of whole strips per field, plus an optional "rail 2 starts here" marker that is written only when the requested layout needs it. Which strip sits on which rail is never stored, and a stored split that no longer fits is ignored with an info finding.
+  - The terminal rails are the top two VT rails of every Verteilerfeld, with no per-board opt-out. A strip is never split across fields; a field without terminal rails sends its strips to the nearest field that has them. On overflow, findings suggest vacating the reserved rails first, then moving a group.
+  - No WAGO for circuits on AAR, NAR, RfZ or APZ rails; the SAS of a Verteilerfeld keeps them. The skip set is applied by every caller (Klemmen tab, legend, label print, Plan PDF, Materialliste), so all of them number alike.
+  - Rail parts: one end plate per rail, matching its last terminal (2003-7692 / 2016-7691). No WAGO 249-116 end stops. One U84T set per WAGO rail on KS-type fields, none on RK fields (catalogue fitting `u84t`, no spec-schema change).
+  - Manual order moves whole strips only; the order inside a Leiste follows the MCBs.
+- Tradeoffs:
+  - Pros: nothing can drift between a stored layout and the circuits; no migration, and an image-only rollback to v2.15.0 keeps the new key; the Materialliste follows the plan.
+  - Cons: the usable rail length (210 mm) and the U84T sets per RK box are unverified until the Werkstatt measures; existing boards show warnings for devices on the now-reserved rails and renumber where AAR circuits had terminals.
+
+## 2026-10-22 - Drag & drop in the cabinet drawing is positional, and a group head travels with its group
+- Status: accepted (owner answers of 2026-10-22; built 2026-10-23). Contract: `docs/PANEL_ENCLOSURE_R2.md` R9, R10, R18, §6.
+- Decision:
+  - A hand-written Pointer Events hook, not `@dnd-kit`: touch and pen arm after a 450 ms long press, a mouse after 6 px, and a long press released in place is still a tap (the one-tap rule holds for gloved hands). The hook swallows exactly one following click near the release, because Mobile Safari sends one about 40 ms after a long press.
+  - A dropped device follows its position: one rule (`followPosition`) for the drag, "Auf andere Hutschiene…" and the inspector arrows. Every feed and terminal change is listed in a note with one-step Rückgängig.
+  - Dragging an FI or other group head moves it with every circuit it feeds in its own field. Circuits of the group in other fields stay.
+- Tradeoffs:
+  - Pros: the drawing behaves as the installer sees it, and a group's Klemmleiste stays whole.
+  - Cons: changed shipped behaviour ("Auf andere Hutschiene…" no longer pins). A circuit pinned to the FI from another run in the same field moves next to the FI and loses its pin. The real-iPad glove check is still owed.
+
+## 2026-10-23 - Every route reads a stored panel through the same cleaning
+- Status: accepted (fix pass of round 2, review findings WAGO-3/sec-1 and UPG-5).
+- Context: the detail route dropped a stored cabinet block that the types refuse (written while Slice P was live, or after a rollback), while the label print, the Plan PDF and the Materialliste read the raw block. The screen and the printed labels then disagreed by one X number.
+- Decision:
+  - `terminal_view`, `board_terminal_skip`, `material_lines` and `aufbau_pdf` first run `readable_blocks` (`panel_enclosure_readable.py`), the cleaning the detail route uses. Such a block is numbered as a board without a cabinet everywhere, and its Aufbau PDF answers 409.
+  - The Reihenklemmen label print answers 409 when the selection names a strip the board no longer derives (a tab or iOS app from before the skip set), instead of silently dropping it. The dialog sends only current ids.
+- Tradeoffs:
+  - Pros: one numbering for screen, print, PDF and Materialliste; a stale client cannot print wrong markers.
+  - Cons: a stale client has to reload before it can print; a board with a refused block gets no Aufbau PDF, just as the Schrank tab already shows no cabinet for it.

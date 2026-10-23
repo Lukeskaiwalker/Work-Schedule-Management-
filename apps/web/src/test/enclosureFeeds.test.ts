@@ -142,11 +142,12 @@ describe("every cabinet op keeps feeds", () => {
     const doc = deepFreeze(adopted.document);
     const moduleId = adopted.moduleId!;
     const target = doc.rows.find((r) => r.id === "b")!.devices[0].id;
+    // The adopted rows sit on r3/r4: r1/r2 are the field's terminal rails (R2 §3.6).
     expectFeedsKept(doc, ok(moveDeviceToRail(doc, INDEX, target, moduleId, "r5")));
-    expectFeedsKept(doc, ok(fillRailFromTemplate(doc, INDEX, moduleId, "r4", "mcb-12")));
-    expectFeedsKept(doc, ok(addDeviceToRail(doc, INDEX, moduleId, "r6", "rcd")));
+    expectFeedsKept(doc, ok(fillRailFromTemplate(doc, INDEX, moduleId, "r6", "mcb-12")));
+    expectFeedsKept(doc, ok(addDeviceToRail(doc, INDEX, moduleId, "r7", "rcd")));
     const extra = deepFreeze({ ...doc, rows: [...doc.rows, row("c", [dev("mcb")], "Reihe 3")] });
-    expectFeedsKept(extra, ok(assignRowToRail(extra, INDEX, moduleId, "r3", "c")));
+    expectFeedsKept(extra, ok(assignRowToRail(extra, INDEX, moduleId, "r5", "c")));
   });
 
   it("removing the HS fitting reports its circuits as regrouped", () => {

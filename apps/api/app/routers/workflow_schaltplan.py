@@ -79,6 +79,11 @@ from app.services.schaltplan_pdf import build_panel_plan_pdf
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
 
+STALE_TERMINALS_DETAIL = (
+    "Die Klemmenleisten dieses Plans sind neu nummeriert — nichts gedruckt. "
+    "Bitte die Seite neu laden (in der iOS-App: App aktualisieren) und erneut drucken."
+)
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -160,14 +165,17 @@ def _detail(db: Session, plan: PanelPlan) -> PanelPlanOut:
     summary = _summary(plan, names)
     # Tolerant of a cabinet block Slice P stored and the feature's types refuse (D14).
     document, typed, unreadable = enclosure.readable_document(plan.document or empty_document())
+    # One skip set and one placement for legend, findings and Stückliste (R2 §3.1, §5.1).
+    terminals = enclosure.terminal_view(db, document)
     return PanelPlanOut(
         **summary.model_dump(),
         document=typed,
         notes=plan.notes,
-        legend=build_legend(document),  # type: ignore[arg-type]
+        legend=build_legend(document, terminal_skip=terminals.skip),  # type: ignore[arg-type]
         # The cabinet's findings (docs/PANEL_ENCLOSURE.md §5) after the board's own.
-        findings=[*validate_document(document), *enclosure.detail_findings(db, document), *unreadable],  # type: ignore[arg-type]
-        terminal_bom=[PanelTerminalBomRow(**row) for row in terminal_bom(derive_terminals(document))],
+        findings=[*validate_document(document, terminal_skip=terminals.skip),
+                  *enclosure.detail_findings(db, document, terminals), *unreadable],  # type: ignore[arg-type]
+        terminal_bom=[PanelTerminalBomRow(**row) for row in terminal_bom(terminals.groups, extra=terminals.rail_parts)],
         created_at=plan.created_at,
         created_by_name=names["users"].get(plan.created_by),
     )
@@ -443,7 +451,7 @@ def _bmk_print_plan(document: dict[str, Any], payload: PanelLabelsPrintRequest, 
 
 
 def _terminal_print_plan(
-    document: dict[str, Any], payload: PanelLabelsPrintRequest, profile: MaterialProfile
+    document: dict[str, Any], payload: PanelLabelsPrintRequest, profile: MaterialProfile, skip: frozenset[str]
 ) -> _PrintPlan:
     """The Reihenklemmen markers of the selected FI groups, one strip per group.
 
@@ -460,7 +468,13 @@ def _terminal_print_plan(
     # the whole board.
     if payload.strip_ids is not None and not payload.strip_ids:
         raise HTTPException(status_code=400, detail="Keine Klemmenleiste ausgewählt — mindestens eine wählen.")
-    groups = derive_terminals(document)
+    groups = derive_terminals(document, skip=skip)  # the cabinet's numbers (R2 §3.1)
+    # A strip the board no longer derives means the sender numbered another
+    # board (a tab or app from before round 2's skip set): the strips left
+    # would print under X numbers its screen does not show (review UPG-5).
+    derived = {strip["strip_id"] for group in groups for strip in group["strips"]}
+    if payload.strip_ids is not None and not set(payload.strip_ids) <= derived:
+        raise HTTPException(status_code=409, detail=STALE_TERMINALS_DETAIL)
     if not groups:
         raise HTTPException(
             status_code=400,
@@ -523,7 +537,8 @@ def print_panel_labels(
     being the strip id and ``skipped_without_bmk`` the Leiste terminals of
     the selected strips whose text was blanked — a Leiste with no text at
     all gets no strip, but its terminals are counted. ``strip_ids`` null =
-    every strip; an explicit empty list is refused, not read as "all".
+    every strip; an explicit empty list is refused, not read as "all"; one
+    naming a strip the board does not derive is a stale screen: 409.
     """
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
@@ -535,7 +550,7 @@ def print_panel_labels(
         raise HTTPException(status_code=400, detail=f"Unbekanntes Etikettenmaterial: {exc}")
 
     if payload.target == "reihenklemmen":
-        print_plan = _terminal_print_plan(document, payload, profile)
+        print_plan = _terminal_print_plan(document, payload, profile, enclosure.board_terminal_skip(db, document))
     else:
         print_plan = _bmk_print_plan(document, payload, profile)
 
@@ -743,6 +758,7 @@ def panel_pdf(
     project = db.get(Project, plan.project_id) if plan.project_id else None
     feeder = db.get(PanelPlan, plan.fed_from_panel_id) if plan.fed_from_panel_id else None
     settings = get_company_settings(db)
+    terminals = enclosure.terminal_view(db, plan.document or {})
 
     pdf = build_panel_plan_pdf(
         plan=plan,
@@ -755,6 +771,8 @@ def panel_pdf(
         company_name=settings.get("company_name"),
         legend_only=legend_only,
         terminals_only=terminals_only,
+        terminal_skip=terminals.skip,
+        rail_parts=terminals.rail_parts,
     )
     suffix = "Reihenklemmen" if terminals_only else ("Legende" if legend_only else "Schaltplan")
     file_name = f"{suffix}_{plan.designation}_{datetime.now():%Y-%m-%d}.pdf".replace(" ", "_")

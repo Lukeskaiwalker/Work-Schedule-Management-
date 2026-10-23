@@ -184,7 +184,7 @@ describe("the part table", () => {
     expect(TERMINAL_PARTS["2016-7607"].marker).toBe(true);
     const verified = Object.values(TERMINAL_PARTS).filter((part) => part.verified).map((part) => part.id);
     expect(verified.sort()).toEqual(
-      ["2003-7641", "2003-7642", "2009-305", "2016-7601", "2016-7604", "2016-7607", "2016-7714"].sort(),
+      ["2003-7641", "2003-7642", "2003-7692", "2009-305", "2016-7601", "2016-7604", "2016-7607", "2016-7691", "2016-7714"].sort(),
     );
     for (const part of Object.values(TERMINAL_PARTS)) {
       expect(part.source).toMatch(/^https:\/\//);

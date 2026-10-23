@@ -12,7 +12,11 @@
  *
  * The Schrank tab (docs/PANEL_ENCLOSURE.md §11) is its own component; the
  * page only decides when it opens (a board with a cabinet opens on it) and
- * loads the cabinet catalogue once something needs it.
+ * loads the cabinet catalogue once something needs it. The board's WAGO
+ * terminals are derived here once (`useBoardTerminals`, PANEL_ENCLOSURE_R2.md
+ * §6.7) and handed to the Schrank tab, the Klemmen tab, the label sheet, the
+ * legend and the findings, so they all number with the cabinet's skip set;
+ * the Klemmen tab and the label sheet wait for the catalogue to do so.
  *
  * Fresh reads
  * -----------
@@ -40,17 +44,28 @@ import { RailEditor } from "../components/schaltplan/RailEditor";
 import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
 import { TerminalList } from "../components/schaltplan/TerminalList";
 import { useLabelPrinting } from "../components/schaltplan/useLabelPrinting";
+import { useSchaltplanPalette } from "../components/schaltplan/useSchaltplanPalette";
 import { useTypeLabelPrinting } from "../components/schaltplan/useTypeLabelPrinting";
 import { EnclosureTab } from "../components/schaltplan/enclosure/EnclosureTab";
 import type { TabSheet } from "../components/schaltplan/enclosure/EnclosureSheetHost";
-import { cabinetChoices, enclosureChipText, suppliedInfo, warnCount } from "../components/schaltplan/enclosure/enclosureEditorModel";
+import { useAufbauTerminalActions } from "../components/schaltplan/enclosure/useAufbauTerminalActions";
+import {
+  cabinetChoices,
+  enclosureChipText,
+  setAllTerminalsOnBoard,
+  suppliedInfo,
+  terminalBlockedZone,
+  warnCount,
+} from "../components/schaltplan/enclosure/enclosureEditorModel";
+import { useBoardTerminals } from "../hooks/useBoardTerminals";
 import { useEnclosureCatalog } from "../hooks/useEnclosureCatalog";
 import { usePanelDocumentEditor } from "../hooks/usePanelDocumentEditor";
 import { enclosureFindings } from "../utils/enclosureRules";
 import { savedPdfClick } from "../utils/openAfterSave";
 import { emptyDocument } from "../utils/schaltplanDevices";
 import type { RowTemplateId } from "../utils/schaltplanDocumentOps";
-import { deriveTerminals, terminalCounts } from "../utils/schaltplanTerminals";
+import { NO_SKIP } from "../utils/schaltplanTerminalRules";
+import { terminalCounts } from "../utils/schaltplanTerminals";
 import { buildLegend, findDevice, neighbourDeviceId, validateDocument } from "../utils/schaltplanTopology";
 import {
   createPanel,
@@ -62,7 +77,7 @@ import {
   panelPdfUrl,
   updatePanel,
 } from "../utils/schaltplanApi";
-import type { DeviceKind, PanelDocument, PanelPlan, PanelPlanSummary } from "../types/schaltplan";
+import type { PanelDocument, PanelPlan, PanelPlanSummary } from "../types/schaltplan";
 // Own sheet, not styles.css — see the header of that file.
 import "../styles/schaltplan-terminals.css";
 
@@ -145,7 +160,6 @@ export function SchaltplanPage() {
   const tabRequest = useRef(0);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const typeLabel = useTypeLabelPrinting({ panel, token, setNotice, setError });
-  const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [newPanelOpen, setNewPanelOpen] = useState(false);
   // A sheet the Schrank tab opens on arrival ("Auf andere Hutschiene…" from this page's inspector).
@@ -233,6 +247,10 @@ export function SchaltplanPage() {
   }, [needsCatalog]);
   const enclosureCatalog = useEnclosureCatalog(needsCatalog || catalogWanted ? token : null);
   const enclosureIndex = enclosureCatalog.index;
+  // A cabinet board whose catalogue did not load: Aufbau and Klemmen say so and offer "Erneut laden".
+  const catalogFailed = Boolean(document?.enclosure) && !enclosureIndex && Boolean(enclosureCatalog.error);
+  // "+ Gerät" on a row, or on an empty cabinet rail of the Aufbau tab (R2 §9).
+  const palette = useSchaltplanPalette({ document, index: enclosureIndex, editor, onAdded: setSelectedDeviceId, setNotice, setError });
 
   const showTab = useCallback((next: EditorTab) => {
     tabRequest.current += 1;
@@ -300,14 +318,6 @@ export function SchaltplanPage() {
   usePendingPanelHandoff(pickRecent, panel?.id ?? null);
 
   // ── Device operations (selection and sheets; the edits live in the hook) ─
-
-  const addDevice = (rowId: string, kind: DeviceKind) => {
-    const deviceId = editor.addDevice(rowId, kind);
-    setPaletteRowId(null);
-    // Straight into the inspector: adding a device is never the whole
-    // intent — the next thing is always naming what it feeds.
-    if (deviceId) setSelectedDeviceId(deviceId);
-  };
 
   const removeDevice = (deviceId: string) => {
     editor.removeDevice(deviceId);
@@ -419,16 +429,24 @@ export function SchaltplanPage() {
 
   // ── Derived ──────────────────────────────────────────────────────────────
 
-  const legend = useMemo(() => (document ? buildLegend(document) : []), [document]);
-  const findings = useMemo(() => (document ? validateDocument(document) : []), [document]);
-  const terminalGroups = useMemo(() => (document ? deriveTerminals(document) : []), [document]);
+  // Once per document (R2 §6.7): the skip set leaves AAR/NAR/RfZ/APZ circuits without terminals everywhere alike.
+  const boardTerms = useBoardTerminals(document, enclosureIndex);
+  const skip = boardTerms.terms?.skip ?? NO_SKIP;
+  const legend = useMemo(() => (document ? buildLegend(document, skip) : []), [document, skip]);
+  const findings = useMemo(() => (document ? validateDocument(document, skip) : []), [document, skip]);
+  const terminalGroups = boardTerms.terms?.groups ?? [];
   const terminalCount = terminalCounts(terminalGroups).terminals;
   const warnings = findings.filter((finding) => finding.level === "warn");
   // The cabinet's own findings are listed on the Schrank tab; the banner sums their warnings in one chip.
-  const cabinetFindings = useMemo(
-    () => (document?.enclosure && enclosureIndex ? enclosureFindings(document, enclosureIndex) : []),
-    [document, enclosureIndex],
-  );
+  const cabinetFindings = useMemo(() => {
+    if (!document?.enclosure || !enclosureIndex) return [];
+    const { terms, placement } = boardTerms;
+    return enclosureFindings(document, enclosureIndex, terms && placement ? { terms, placement } : undefined);
+  }, [document, enclosureIndex, boardTerms]);
+  // A reserved rail's row on the Aufbau tab runs its finding's suggestion, with the drop note's Rückgängig.
+  const aufbauTerminals = useAufbauTerminalActions({
+    document, index: enclosureIndex, boardTerminals: boardTerms, readOnly, mutate: editor.mutate, onError: setError, onNotice: setNotice,
+  });
   const cabinetWarnings = warnCount(cabinetFindings);
   const suppliedBanner = document && enclosureIndex ? suppliedInfo(document, enclosureIndex, selectedDeviceId) : null;
   // A row outside the cabinet is not drawn on Schrank, so its devices reach a rail from here.
@@ -450,8 +468,6 @@ export function SchaltplanPage() {
     const target = direction < 0 ? previousDeviceId : nextDeviceId;
     if (target) setSelectedDeviceId(target);
   };
-  const activeRowLabel =
-    document?.rows.find((row) => row.id === paletteRowId)?.label ?? "Reihe";
   const customerName = customers.find((customer) => customer.id === customerId)?.name ?? "";
   const projectLabel = (() => {
     const project = projects.find((entry) => entry.id === projectId);
@@ -586,7 +602,17 @@ export function SchaltplanPage() {
               onError={setError}
               openSheet={schrankSheet}
               onSheetOpened={() => setSchrankSheet(null)}
+              boardTerminals={boardTerms}
             />
+          )}
+
+          {(tab === "aufbau" || tab === "klemmen") && catalogFailed && (
+            <div className="sp-encl-tab-state" role="alert">
+              <p>Schrankkatalog konnte nicht geladen werden.</p>
+              <button type="button" className="sp-btn sp-encl-target" onClick={() => void enclosureCatalog.reload()}>
+                Erneut laden
+              </button>
+            </div>
           )}
 
           {tab === "aufbau" && (
@@ -597,7 +623,10 @@ export function SchaltplanPage() {
               selectedDeviceId={selectedDeviceId}
               readOnly={readOnly}
               onSelectDevice={setSelectedDeviceId}
-              onAddDevice={(rowId) => setPaletteRowId(rowId)}
+              onAddDevice={palette.openRow}
+              onAddDeviceToRail={palette.openRail}
+              findings={cabinetFindings}
+              findingActions={aufbauTerminals.actions}
               onAddRowFromTemplate={() => setTemplateSheetOpen(true)}
               onAddRow={editor.addRow}
               onRemoveRow={editor.removeRow}
@@ -606,11 +635,12 @@ export function SchaltplanPage() {
             />
           )}
 
-          {tab === "klemmen" && (
+          {tab === "klemmen" && !catalogFailed && (
             <TerminalList
               document={document}
+              boardTerminals={boardTerms}
               readOnly={readOnly}
-              onSetAllTerminals={editor.setAllTerminals}
+              onSetAllTerminals={(flag) => editor.mutate((current) => setAllTerminalsOnBoard(current, enclosureIndex, flag))}
               onPrint={() =>
                 labels.open(
                   terminalGroups.flatMap((group) => group.strips.map((strip) => strip.stripId)),
@@ -663,13 +693,9 @@ export function SchaltplanPage() {
         </section>
       )}
 
-      <DevicePalette
-        open={paletteRowId != null}
-        document={document}
-        targetRowLabel={activeRowLabel}
-        onPick={(kind) => paletteRowId && addDevice(paletteRowId, kind)}
-        onClose={() => setPaletteRowId(null)}
-      />
+      <DevicePalette document={document} {...palette.sheet} />
+      {palette.confirm}
+      {tab === "aufbau" && aufbauTerminals.overlay}
 
       <RowTemplateSheet
         open={templateSheetOpen}
@@ -684,6 +710,7 @@ export function SchaltplanPage() {
           document={document}
           suppliedBy={suppliedBanner}
           onMoveToRail={moveToRail}
+          terminalBlockedZone={terminalBlockedZone(document, enclosureIndex, skip, selectedDeviceId)}
           readOnly={readOnly}
           onChange={(patch) => selectedDevice && editor.patchDevice(selectedDevice.id, patch)}
           onEditTerminalLabel={editor.editTerminalLabel}
@@ -702,6 +729,7 @@ export function SchaltplanPage() {
           open={labels.dialog.open}
           mode={labels.dialog.mode}
           document={document}
+          boardTerminals={boardTerms}
           initialRowIds={labels.dialog.ids}
           busy={labels.printing}
           readOnly={readOnly}

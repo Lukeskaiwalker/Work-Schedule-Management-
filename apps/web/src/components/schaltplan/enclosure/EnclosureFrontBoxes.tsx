@@ -7,8 +7,12 @@
  * and the label rule (`fitBoxLabel`) can decide against real px. Nothing
  * here is interactive — the hit layer in `EnclosureFrontSvg` lies on top —
  * and nothing computes a position the geometry did not hand over.
+ *
+ * WAGO terminals (docs/PANEL_ENCLOSURE_R2.md §8): a placed strip is a
+ * light-grey block with its X label; a rail reserved for terminals is tinted
+ * and hatched (flag `terminals`), even when empty.
  */
-import type { ReactNode } from "react";
+import { memo, type ReactElement } from "react";
 
 import type { SceneBox } from "../../../types/panelEnclosure";
 import {
@@ -21,6 +25,7 @@ import {
   type FittedLabel,
   type GapRun,
 } from "./enclosureFrontLayout";
+import "../../../styles/schaltplan-enclosure-terminals.css";
 
 /** Room left above a zone's first rail band for its label (U/2 − half a device), mm. */
 const ZONE_LABEL_STRIP_MM = 30;
@@ -147,13 +152,22 @@ function RailShape({ box, state }: { box: SceneBox; state: ShapeState }) {
   const label = state.emptyRails.has(box.id)
     ? boxLabel(box, box.label, state.zoom, "sp-encl-text sp-encl-text--rail", SMALL_FONT_PX)
     : null;
+  const terminals = box.flags.includes("terminals");
   return (
     <g
       data-box-id={box.id}
       data-kind={box.kind}
-      className={cls(busbar ? "sp-encl-busbar" : "sp-encl-rail", box.flags.includes("retired") && "sp-encl-rail--retired", active && "is-active")}
+      className={cls(
+        busbar ? "sp-encl-busbar" : "sp-encl-rail",
+        box.flags.includes("retired") && "sp-encl-rail--retired",
+        terminals && "sp-encl-rail--terminals",
+        active && "is-active",
+      )}
     >
       <Rect box={box} className="sp-encl-rail-body" />
+      {terminals ? (
+        <rect className="sp-encl-hatch sp-encl-terminal-hatch" x={box.x} y={box.y} width={box.w} height={box.h} fill={`url(#${state.patternId}-hatch)`} />
+      ) : null}
       {lines.map((y) => (
         <line key={y} className="sp-encl-rail-line" x1={box.x} x2={box.x + box.w} y1={y} y2={y} />
       ))}
@@ -178,6 +192,16 @@ function DeviceShape({ box, state }: { box: SceneBox; state: ShapeState }) {
     >
       <Rect box={box} className="sp-encl-device-body" />
       {boxLabel(box, box.label, state.zoom, "sp-encl-text sp-encl-text--device")}
+    </g>
+  );
+}
+
+/** A placed WAGO strip (open view): its extent on the rail, the 2003-7641 body height, the X label. */
+function TerminalStripShape({ box, state }: { box: SceneBox; state: ShapeState }) {
+  return (
+    <g data-box-id={box.id} data-kind={box.kind} className="sp-encl-strip">
+      <Rect box={box} className="sp-encl-strip-body" />
+      {boxLabel(box, box.label, state.zoom, "sp-encl-text sp-encl-text--strip", SMALL_FONT_PX)}
     </g>
   );
 }
@@ -233,14 +257,19 @@ function PlainShape({ box, className }: { box: SceneBox; className: string }) {
 /** Kinds a view does not show: doors in the open view (§4), what the covers hide in the closed one. */
 const SKIPPED: Readonly<Record<"open" | "closed", ReadonlySet<string>>> = {
   open: new Set(["door", "handle"]),
-  closed: new Set(["zone", "rail", "busbar", "device", "meter", "meter_place"]),
+  closed: new Set(["zone", "rail", "busbar", "device", "meter", "meter_place", "terminal_strip"]),
 };
 
 export function isDrawn(box: SceneBox, view: "open" | "closed"): boolean {
   return !SKIPPED[view].has(box.kind);
 }
 
-export function BoxShape({ box, state }: { box: SceneBox; state: ShapeState }): ReactNode {
+/**
+ * One box. Memoised (R2 §6.7): with a memoised `ShapeState` a box re-draws
+ * only when it or the drawing's state changes — not while a drag moves,
+ * which only the drag layer follows.
+ */
+export const BoxShape = memo(function BoxShape({ box, state }: { box: SceneBox; state: ShapeState }): ReactElement | null {
   switch (box.kind) {
     case "shell":
       return <PlainShape box={box} className="sp-encl-shell" />;
@@ -256,6 +285,8 @@ export function BoxShape({ box, state }: { box: SceneBox; state: ShapeState }): 
     case "device":
     case "device_front":
       return <DeviceShape box={box} state={state} />;
+    case "terminal_strip":
+      return <TerminalStripShape box={box} state={state} />;
     case "meter":
     case "meter_front":
       return <MeterShape box={box} state={state} />;
@@ -276,7 +307,7 @@ export function BoxShape({ box, state }: { box: SceneBox; state: ShapeState }): 
     default:
       return null;
   }
-}
+});
 
 /** A stretch of free units: hatched, "frei · {mm}". */
 export function GapShape({ run, state }: { run: GapRun; state: ShapeState }) {

@@ -6,6 +6,10 @@
  * this is the path a gloved finger can always hit. Scrolls sideways on a
  * five-field cabinet instead of wrapping, so the order stays left → right
  * like the fields themselves.
+ *
+ * Fields with terminal rails also get "Klemmen Feld {n}" (R2 §7.2), with
+ * " · {k} ohne Platz" while strips fit neither rail: the close-up, also on
+ * a board the viewer may only read.
  */
 import { useMemo } from "react";
 
@@ -13,6 +17,7 @@ import { enclosureModules, FAMILY_LABELS, freeRuns, moduleArticle, type CatalogI
 import type { EnclosureModule } from "../../../types/panelEnclosure";
 import type { PanelDocument } from "../../../types/schaltplan";
 import "../../../styles/schaltplan-enclosure.css";
+import "../../../styles/schaltplan-enclosure-terminals.css";
 
 export interface EnclosureFieldBarProps {
   document: PanelDocument;
@@ -24,6 +29,14 @@ export interface EnclosureFieldBarProps {
   readOnly: boolean;
   /** The module whose sheet is open (`aria-current`). */
   selectedModuleId?: string | null;
+  /** Fields with terminal rails (0-based) and how many strips there have no place. */
+  terminals?: readonly { field: number; unplaced: number }[];
+  /** "Klemmen Feld {n}": the field's close-up. */
+  onOpenTerminals?: (field: number) => void;
+}
+
+function terminalsLabel(field: number, unplaced: number): string {
+  return unplaced > 0 ? `Klemmen Feld ${field + 1} · ${unplaced} ohne Platz` : `Klemmen Feld ${field + 1}`;
 }
 
 interface FieldGroup {
@@ -58,8 +71,10 @@ function moduleSubline(module: EnclosureModule, index: CatalogIndex): string {
   return spec ? FAMILY_LABELS[spec.family] ?? spec.name : "Code unbekannt";
 }
 
-export function EnclosureFieldBar({ document, index, onOpenModule, onAddModule, readOnly, selectedModuleId = null }: EnclosureFieldBarProps) {
+export function EnclosureFieldBar(props: EnclosureFieldBarProps) {
+  const { document, index, onOpenModule, onAddModule, readOnly, selectedModuleId = null, terminals = [], onOpenTerminals } = props;
   const groups = useMemo(() => fieldGroups(document, index), [document, index]);
+  const terminalFields = new Map(terminals.map((entry) => [entry.field, entry.unplaced] as const));
   const visible = groups.filter((group) => group.modules.length > 0 || (!readOnly && group.freeMm > 0));
   if (!document.enclosure || visible.length === 0) return null;
 
@@ -83,6 +98,19 @@ export function EnclosureFieldBar({ document, index, onOpenModule, onAddModule, 
               </button>
             );
           })}
+          {onOpenTerminals && terminalFields.has(group.field) ? (
+            <button
+              type="button"
+              className="sp-encl-fieldbar-btn sp-encl-fieldbar-btn--terminals"
+              onClick={() => onOpenTerminals(group.field)}
+              aria-label={terminalsLabel(group.field, terminalFields.get(group.field) ?? 0)}
+            >
+              <span className="sp-encl-fieldbar-title">{`Klemmen Feld ${group.field + 1}`}</span>
+              {(terminalFields.get(group.field) ?? 0) > 0 ? (
+                <span className="sp-encl-fieldbar-sub">{`${terminalFields.get(group.field)} ohne Platz`}</span>
+              ) : null}
+            </button>
+          ) : null}
           {!readOnly && group.freeMm > 0 && (
             <button type="button" className="sp-encl-fieldbar-btn sp-encl-fieldbar-btn--add" onClick={() => onAddModule(group.field)}>
               <span className="sp-encl-fieldbar-title">{`+ Modul in Feld ${group.field + 1}`}</span>

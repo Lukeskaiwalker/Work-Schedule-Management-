@@ -125,6 +125,12 @@ type Props = {
   suppliedBy?: SuppliedBanner | null;
   /** "Auf andere Hutschiene…" (cabinet boards). Without it the action is not offered. */
   onMoveToRail?: () => void;
+  /**
+   * The zone ("AAR", "NAR", "RfZ", "APZ") when the cabinet gives this device
+   * no WAGO terminal (docs/PANEL_ENCLOSURE_R2.md §3.1, R3): a note instead
+   * of the checkbox. Null or absent: the checkbox as everywhere else.
+   */
+  terminalBlockedZone?: string | null;
   /** Inside a sheet stack that renders the one backdrop itself. */
   embedded?: boolean;
 };
@@ -199,6 +205,7 @@ export function DeviceInspector({
   onNavigate,
   suppliedBy = null,
   onMoveToRail,
+  terminalBlockedZone = null,
   embedded = false,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -237,7 +244,10 @@ export function DeviceInspector({
   const fuseFeedsCircuits = device.kind === "fuse" && opensGroup(device, document);
   // Only a fuse that is an outgoing of its own can end on the 2016 block
   // (owner, 2026-10-09); the Klemmen tab's bulk switch asks the same rule.
-  const terminalIsOffered = terminalOffered(device, document);
+  // In a meter field's AAR/NAR/RfZ/APZ the cabinet gives no terminal at all:
+  // the note takes the checkbox's place (R2 §3.1).
+  const terminalWanted = terminalOffered(device, document);
+  const terminalIsOffered = terminalWanted && terminalBlockedZone === null;
   // Only the catalogue groups (FI/SLS/Hauptschalter) — fuses are listed
   // separately below, so a fuse that already heads a group is not shown twice.
   const groups = buildTopology(document).filter(
@@ -406,6 +416,12 @@ export function DeviceInspector({
                   ? "Mindestens ein Abgang ist bereits auf diese Sicherung eingestellt — sie bildet deshalb schon eine eigene Gruppe."
                   : "Für FI/LS-Kombis oder eine LS-Reihe ohne FI: die Sicherung steht dann in der Legende als Vorsicherung dieser Stromkreise."}
               </small>
+            </div>
+          )}
+
+          {terminalWanted && terminalBlockedZone !== null && (
+            <div className="sp-field">
+              <small className="sp-field-hint">{`Im ${terminalBlockedZone} keine Reihenklemme — nur in Verteilerfeldern.`}</small>
             </div>
           )}
 

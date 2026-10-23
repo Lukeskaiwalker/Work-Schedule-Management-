@@ -1,0 +1,197 @@
+/* ── Schrank: device drag (docs/PANEL_ENCLOSURE_R2.md §6.5, §6.6) ─────────────
+ *
+ * Page-local sheet like schaltplan-enclosure.css, imported by the drag
+ * components themselves, scoped under .sp-encl-*, colours from the --sp-*
+ * tokens of the Schaltplan block in styles.css.
+ *
+ * Workshop tablets and gloves: the note's buttons are 56 px (.sp-encl-target),
+ * the ghost is at least 44 px and floats above the finger, and the label is
+ * a fixed bar that no scroller can clip.
+ *
+ * Sections: drawing · drag layer (SVG) · ghost and label · drop note ·
+ * sheets while a note is up.
+ */
+
+:root {
+  --sp-encl-drag-ink: #12263a;
+  --sp-encl-drag-refused: #a32020;
+  --sp-encl-drag-refused-tint: rgba(163, 32, 32, 0.12);
+  --sp-encl-drag-target-tint: rgba(47, 112, 183, 0.14);
+}
+
+/* ── Drawing ─────────────────────────────────────────────────────────────── */
+
+/* A long press must not open iOS's callout or select text; Android's context menu is prevented in script. */
+.sp-encl-svg {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* An auto-scroll at the scroller's end must not drag the page along with a bounce. */
+.sp-encl-scroll {
+  overscroll-behavior: contain;
+}
+
+@media (hover: hover) {
+  .sp-encl-svg--draggable .sp-encl-hit--device {
+    cursor: grab;
+  }
+}
+
+/* ── Drag layer (inside the SVG, above the hit layer) ────────────────────── */
+
+.sp-encl-drag-layer,
+.sp-encl-drag-layer * {
+  pointer-events: none;
+}
+
+/* The dragged devices stay where they are, dimmed: the picture itself never re-renders. */
+.sp-encl-drag-source {
+  fill: rgba(255, 255, 255, 0.68);
+  stroke: var(--sp-accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+}
+
+.sp-encl-drop-band.is-drop-target {
+  fill: var(--sp-encl-drag-target-tint);
+  stroke: var(--sp-accent);
+  stroke-width: 2px;
+}
+
+.sp-encl-drop-band.is-refused {
+  fill: var(--sp-encl-drag-refused-tint);
+  stroke: var(--sp-encl-drag-refused);
+  stroke-width: 2px;
+  stroke-dasharray: 6 4;
+}
+
+.sp-encl-drop-bar {
+  fill: var(--sp-accent-deep);
+}
+
+/* ── Ghost and label (portaled, fixed) ───────────────────────────────────── */
+
+.sp-encl-drag-ghost {
+  position: fixed;
+  z-index: var(--z-toast);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 2px solid var(--sp-accent);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--sp-encl-drag-ink);
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 8px 22px rgba(12, 28, 45, 0.28);
+  pointer-events: none;
+}
+
+.sp-encl-drag-label {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  z-index: var(--z-toast);
+  width: fit-content;
+  max-width: calc(100vw - 16px);
+  margin: 0 auto;
+  box-sizing: border-box;
+  padding: 8px 14px;
+  border-radius: 10px;
+  background: var(--sp-encl-drag-ink);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(12, 28, 45, 0.25);
+  pointer-events: none;
+}
+
+.sp-encl-drag-label.is-tight {
+  background: var(--sp-warn);
+}
+
+.sp-encl-drag-label.is-refused {
+  background: var(--sp-encl-drag-refused);
+}
+
+/* ── Drop note ───────────────────────────────────────────────────────────── */
+
+/* Over the sheet backdrop and the sheets themselves: a note must be seen and its Rückgängig reachable. */
+.sp-encl-dropnote {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: env(safe-area-inset-bottom, 0px);
+  z-index: calc(var(--z-modal) + 1);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--sp-encl-drag-ink);
+  color: #fff;
+  box-shadow: 0 -6px 24px rgba(12, 28, 45, 0.3);
+}
+
+.sp-encl-dropnote-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.sp-encl-dropnote-undo,
+.sp-encl-dropnote-close {
+  flex: none;
+  min-width: 56px;
+  min-height: 56px;
+}
+
+.sp-encl-dropnote-close {
+  font-size: 22px;
+  line-height: 1;
+}
+
+@media (max-width: 520px) {
+  .sp-encl-dropnote {
+    flex-wrap: wrap;
+  }
+
+  .sp-encl-dropnote-text {
+    flex-basis: 100%;
+  }
+}
+
+/* ── Sheets while a note is up ───────────────────────────────────────────── */
+
+/* DropNote sets data-sp-dropnote and --sp-dropnote-h (the bar's height) on
+   <html> while a note is shown. Every sheet then ends above the bar, so a
+   sheet opened after a drop keeps its last actions reachable: RegroupConfirm's
+   „Trotzdem ausführen“, RailSheet's „+ Gerät“, the palette's last tiles.
+   Higher specificity than the base .sp-sheet rules, so the order in which the
+   stylesheets load does not matter. */
+html[data-sp-dropnote] .sp-sheet {
+  bottom: calc(var(--sp-dropnote-h, 0px) + env(safe-area-inset-bottom, 0px));
+  max-height: calc(88vh - var(--sp-dropnote-h, 0px));
+  /* The bar already clears the home indicator. */
+  padding-bottom: 0;
+}
+
+@media (min-width: 768px) {
+  /* The centred dialog moves up by half the bar and gives up its height. */
+  html[data-sp-dropnote] .sp-sheet {
+    bottom: auto;
+    top: calc(50% - var(--sp-dropnote-h, 0px) / 2);
+    max-height: calc(84vh - var(--sp-dropnote-h, 0px));
+  }
+}

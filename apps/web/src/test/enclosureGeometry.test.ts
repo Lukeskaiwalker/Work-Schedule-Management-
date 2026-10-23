@@ -6,8 +6,10 @@
 import { describe, expect, it } from "vitest";
 
 import { buildEnclosureScene, round1 } from "../utils/enclosureGeometry";
+import { placeTerminals } from "../utils/enclosureTerminals";
 import type { EnclosureModule, SceneBox } from "../types/panelEnclosure";
-import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX } from "./enclosureFixtureBoards";
+import type { PanelDocument } from "../types/schaltplan";
+import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX, boardDocument } from "./enclosureFixtureBoards";
 import { board, dev, INDEX, row } from "./enclosureTestCatalog";
 
 // A hand-made module: no fitting snapshot, so the derivations read the catalogue.
@@ -141,5 +143,74 @@ describe("buildEnclosureScene", () => {
     };
     const boxes = buildEnclosureScene(base, retiredCatalog, "open")!.boxes.filter((box) => box.kind === "rail");
     expect(boxes.map((box) => [box.id, box.flags])).toEqual([["rail:d:r1", ["retired"]]]);
+  });
+});
+
+// ── WAGO terminal strips (docs/PANEL_ENCLOSURE_R2.md §8) ─────────────────────
+
+describe("terminal strips", () => {
+  const boxesOf = (document: PanelDocument, view: "open" | "closed", kind?: SceneBox["kind"]) =>
+    byId(buildEnclosureScene(document, FIXTURE_INDEX, view)!.boxes.filter((box) => !kind || box.kind === kind));
+
+  it("draws each placed strip as one box on its terminal rail in the open view", () => {
+    const boxes = boxesOf(boardDocument("meter_dist_zb33s"), "open");
+    const rail = boxes.get("rail:mod-v:r1")!;
+    const strip = boxes.get("terminal:dev-f1:leiste")!;
+    // x from the rail's left end; 96 × 42.3 mm is the 2003-7641 body, a drawing approximation.
+    expect(strip).toMatchObject({ kind: "terminal_strip", x: rail.x, y: round1(rail.y + 17.5 - 48), z: 47.5, w: 30.7, h: 96, d: 42.3, label: "X1" });
+    expect([strip.moduleId, strip.railKey, strip.rowId, strip.deviceId, strip.zoneType, strip.flags]).toEqual(["mod-v", "r1", null, null, "VT", []]);
+    expect([...boxes.values()].filter((box) => box.kind === "terminal_strip").map((box) => box.id).sort()).toEqual([
+      "terminal:dev-f1:leiste", "terminal:dev-f3:leiste",
+    ]);
+  });
+
+  it("marks the reserved rails in both views and draws no strip behind the cover", () => {
+    const document = boardDocument("meter_dist_zb33s");
+    for (const view of ["open", "closed"] as const) {
+      const rails = boxesOf(document, view, "rail");
+      expect(rails.get("rail:mod-v:r1")!.flags).toEqual(["terminals"]);
+      expect(rails.get("rail:mod-v:r2")!.flags).toEqual(["terminals"]);
+      expect(rails.get("rail:mod-v:r3")!.flags).toEqual([]);
+      expect(rails.get("rail:mod-z:aar1")!.flags).toEqual([]);
+    }
+    expect(boxesOf(document, "closed", "terminal_strip").size).toBe(0);
+  });
+
+  it("puts strips after the devices left on a reserved rail and does not draw the placeholders", () => {
+    const document = boardDocument("terminals_zb34s");
+    for (const view of ["open", "closed"] as const) {
+      const ids = boxesOf(document, view);
+      expect(ids.has("device:dev-pl1") || ids.has("front:dev-pl1")).toBe(false);
+    }
+    const boxes = boxesOf(document, "open");
+    const rail = boxes.get("rail:mod-k:r2")!;
+    expect(boxes.get("device:dev-f1-7")!.x).toBe(round1(rail.x + 35));
+    expect(boxes.get("terminal:dev-f2:leiste")!.x).toBe(round1(rail.x + 52.5));
+    expect(boxes.get("terminal:dev-f3:leiste")!.w).toBe(61.9); // the end plate sits inside X3, before its 2009-305
+    expect(boxes.has("terminal:dev-f4:leiste")).toBe(false); // unplaced strips get no box
+  });
+
+  it("draws a placeholder that is not on a terminal rail as before", () => {
+    const document = boardDocument("terminals_zb34s");
+    const k3 = document.rows.find((candidate) => candidate.id === "row-k3")!;
+    k3.devices = [...k3.devices, { ...k3.devices[1], id: "dev-pl9", kind: "terminal" }];
+    expect(boxesOf(document, "open").has("device:dev-pl9")).toBe(true);
+  });
+
+  it("gives the same scene with a precomputed placement", () => {
+    const document = boardDocument("tall_zb54s");
+    const placement = placeTerminals(document, FIXTURE_INDEX);
+    for (const view of ["open", "closed"] as const) {
+      expect(buildEnclosureScene(document, FIXTURE_INDEX, view, placement)).toEqual(buildEnclosureScene(document, FIXTURE_INDEX, view));
+    }
+  });
+
+  it("draws what the passed placement says", () => {
+    const document = boardDocument("meter_dist_zb33s");
+    const placement = placeTerminals(document, FIXTURE_INDEX);
+    const without = { ...placement, fields: [] };
+    const boxes = byId(buildEnclosureScene(document, FIXTURE_INDEX, "open", without)!.boxes);
+    expect([...boxes.values()].some((box) => box.kind === "terminal_strip")).toBe(false);
+    expect(boxes.get("rail:mod-v:r1")!.flags).toEqual([]);
   });
 });

@@ -43,6 +43,7 @@ import {
   withRow,
   type OpResult,
 } from "./enclosureOpsCore";
+import { terminalRailKey, terminalRailKeys } from "./enclosureTerminals";
 import type { EnclosureMeter, EnclosureModule, FittingSpec, ModuleSpec } from "../types/panelEnclosure";
 import type { PanelDevice, PanelDocument } from "../types/schaltplan";
 
@@ -138,13 +139,19 @@ function meterEntries(doc: PanelDocument, spec: ModuleSpec, claimed: PanelDevice
   return [{ ...entries[0], number: clampText(seed, METER_NUMBER_MAX) }, ...entries.slice(1)];
 }
 
-/** Empty VT/VF rails top → bottom take the rows that are not in the cabinet, in their order. */
+/**
+ * Empty VT/VF rails top → bottom take the rows that are not in the cabinet,
+ * in their order — never the field's terminal rails, which are reserved for
+ * the WAGO terminals (docs/PANEL_ENCLOSURE_R2.md R2, §3.6).
+ */
 function adoptRows(doc: PanelDocument, index: CatalogIndex, moduleId: string): PanelDocument {
   const module = findModule(doc, moduleId);
   if (!module) return doc;
   const links = linkedRows(doc, index);
+  const reserved = terminalRailKeys(doc, index);
   const rails = [...resolvableRails(module, index).entries()]
     .filter(([key, ref]) => (ref.zone.type === "VT" || ref.zone.type === "VF") && !ref.rail.retired && !railRowId(links, module, key))
+    .filter(([key]) => !reserved.has(terminalRailKey(moduleId, key)))
     .sort(([, a], [, b]) => a.zone.unit + a.rail.unit - (b.zone.unit + b.rail.unit) || a.zone.field - b.zone.field);
   const rows = doc.rows.filter((row) => !links.has(row.id) && row.devices.length > 0);
   let next = doc;
@@ -162,7 +169,7 @@ function adoptRows(doc: PanelDocument, index: CatalogIndex, moduleId: string): P
  * non-retired fittings; rows are created only for rails that receive a
  * fitting device (D15). `claim` (default on) takes over matching devices and
  * meters outside the cabinet; `adoptRows` hangs the remaining outside rows
- * onto empty VT/VF rails.
+ * onto empty VT/VF rails, skipping the field's terminal rails (R2 §3.6).
  */
 export function placeModule(
   doc: PanelDocument,

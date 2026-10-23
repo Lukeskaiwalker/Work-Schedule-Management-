@@ -14,6 +14,7 @@ import pytest
 
 from app.services.panel_enclosure_catalog import EnclosureCatalog, builtin_catalog
 from app.services.panel_enclosure_geometry import build_enclosure_scene, round1
+from app.services.panel_enclosure_terminals import place_terminals
 from scripts.write_enclosure_fixtures import (
     FIXTURE_PATH,
     dev,
@@ -26,6 +27,7 @@ from scripts.write_enclosure_fixtures import (
     row,
     supplied,
     tall_zb54s,
+    terminals_zb34s,
 )
 
 
@@ -251,3 +253,51 @@ def test_the_order_is_deterministic_and_flags_are_sorted() -> None:
     assert keys == sorted(keys)
     assert all(b["flags"] == sorted(b["flags"]) for b in scene["boxes"])
     assert scene == _open(doc)
+
+
+# ── WAGO terminal strips (docs/PANEL_ENCLOSURE_R2.md §8) ─────────────────────
+
+
+def test_each_placed_strip_is_one_box_on_its_terminal_rail_in_the_open_view() -> None:
+    doc = meter_dist_zb33s()
+    boxes = _boxes(_open(doc))
+    rail = boxes["rail:mod-v:r1"]
+    strip = boxes["terminal:dev-f1:leiste"]
+    # x from the rail's left end; 96 × 42.3 mm is the 2003-7641 body, a drawing approximation.
+    assert {k: strip[k] for k in ("kind", "x", "y", "z", "w", "h", "d", "label")} == {
+        "kind": "terminal_strip", "x": rail["x"], "y": round1(rail["y"] + 17.5 - 48), "z": 47.5,
+        "w": 30.7, "h": 96.0, "d": 42.3, "label": "X1"}
+    assert (strip["moduleId"], strip["railKey"], strip["rowId"], strip["deviceId"], strip["zoneType"], strip["flags"]) == (
+        "mod-v", "r1", None, None, "VT", [])
+    assert sorted(b["id"] for b in boxes.values() if b["kind"] == "terminal_strip") == [
+        "terminal:dev-f1:leiste", "terminal:dev-f3:leiste"]
+
+
+def test_the_closed_view_has_no_strips_but_both_views_mark_the_reserved_rails() -> None:
+    doc = meter_dist_zb33s()
+    for scene in (_open(doc), _closed(doc)):
+        rails = _boxes(scene, "rail")
+        assert rails["rail:mod-v:r1"]["flags"] == ["terminals"] and rails["rail:mod-v:r2"]["flags"] == ["terminals"]
+        assert rails["rail:mod-v:r3"]["flags"] == [] and rails["rail:mod-z:aar1"]["flags"] == []
+    assert not _boxes(_closed(doc), "terminal_strip")
+
+
+def test_strips_follow_devices_left_on_a_reserved_rail_and_placeholders_are_not_drawn() -> None:
+    doc = terminals_zb34s()
+    for scene in (_open(doc), _closed(doc)):
+        ids = set(_boxes(scene))
+        assert "device:dev-pl1" not in ids and "front:dev-pl1" not in ids
+    boxes = _boxes(_open(doc))
+    rail = boxes["rail:mod-k:r2"]
+    assert boxes["device:dev-f1-7"]["x"] == round1(rail["x"] + 35.0)
+    assert boxes["terminal:dev-f2:leiste"]["x"] == round1(rail["x"] + 52.5)
+    assert boxes["terminal:dev-f3:leiste"]["w"] == 61.9  # the end plate sits inside X3, before its 2009-305
+    assert "terminal:dev-f4:leiste" not in boxes  # unplaced strips get no box
+
+
+def test_a_precomputed_placement_gives_the_same_scene() -> None:
+    doc = tall_zb54s()
+    placement = place_terminals(doc, builtin_catalog())
+    for view in ("open", "closed"):
+        assert build_enclosure_scene(doc, builtin_catalog(), view=view, placement=placement) == build_enclosure_scene(
+            doc, builtin_catalog(), view=view)

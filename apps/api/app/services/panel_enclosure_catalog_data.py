@@ -132,9 +132,14 @@ def _ehz_1350(places: int) -> list[dict[str, Any]]:
 # ── Fittings ─────────────────────────────────────────────────────────────────
 
 
-def _part(key: str, label: str, article_no: str | None = None) -> dict[str, Any]:
+def _part(
+    key: str, label: str, article_no: str | None = None, *, verified: bool = True, note: str = ""
+) -> dict[str, Any]:
     """A fitting with no device of its own: fixed in the field kit."""
-    return {"key": key, "label": label, "article_no": article_no, "removable": False, "device": None, "verified": True}
+    return {
+        "key": key, "label": label, "article_no": article_no, "removable": False, "device": None,
+        "verified": verified, "note": note,
+    }
 
 
 def _device_part(key: str, label: str, kind: str, rail: str, te: int, poles: int, note: str) -> dict[str, Any]:
@@ -151,6 +156,14 @@ _SAS_BUSBAR = _part("busbar", "Sammelschiene 5-polig 12×5 mm (Sammelschienenzon
 _BKE = _part("bke", "BKE-I Zählerplatz")
 _PE_N = _part("pe_n", "PE/N-Klemmen waagerecht")
 _RJ45 = _part("rj45", "RJ45-Buchse ZZ45WAN2PP", "ZZ45WAN2PP")
+# The RK fields ship their rails insulated (docs/PANEL_ENCLOSURE_R2.md §2.2,
+# §10). Only the set count is unverified, so the caveat stays on the fitting
+# and the module itself keeps its own ``verified``.
+_U84T = _part(
+    "u84t", "Hutschienen-Isolierung U84T (ab Werk)", "U84T", verified=False,
+    note="Lieferform RK: U84T statt PE/N-Klemmblöcken (Hager-Flyer 21DE0246); "
+         "Anzahl der Sätze ab Werk nicht angegeben (Foto: 1 Satz ZU37RK, 2 Sätze ZU59RK)",
+)
 
 
 def _hlak(note: str) -> dict[str, Any]:
@@ -170,6 +183,8 @@ _NO_WIRING = "Feldverdrahtung (mm²) nicht angegeben"
 _SAS_POSITION = "Lage der Sammelschienenzone aus Rechnung abgeleitet"
 _SAS_SEALED = "Sammelschienenzone als plombierbar angenommen"
 _COVER_ONLY = "als Füllung ohne Einbausatz angenommen"
+_APZ_LIKE_VT5 = "APZ-Höhe wie ZU37VT5APZ2 angenommen"
+_APZ_LIKE_VT7 = "APZ-Höhe wie ZU59VT7APZ2 angenommen"
 
 
 def _module(
@@ -229,14 +244,16 @@ def _distribution(code: str, name: str, field_height: int, rows: int, fittings: 
                    fittings=fittings)
 
 
-def _with_apz(code: str, name: str, field_height: int, rows: int) -> dict[str, Any]:
+def _with_apz(code: str, name: str, field_height: int, rows: int, *,
+              fittings: tuple[dict[str, Any], ...] = (_RJ45,), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
     zones = [_zone("vt", "VT", 0, rows, _numbered("r", rows)), _apz(rows)]
-    return _module(code, "distribution_apz", name, field_height, zones, fittings=(_RJ45,))
+    return _module(code, "distribution_apz", name, field_height, zones, fittings=fittings, unverified=unverified)
 
 
-def _with_busbars(code: str, name: str, field_height: int, rows: int) -> dict[str, Any]:
+def _with_busbars(code: str, name: str, field_height: int, rows: int, *,
+                  fittings: tuple[dict[str, Any], ...] = (_SAS_BUSBAR, _PE_N)) -> dict[str, Any]:
     zones = [_sas(0), _zone("vt", "VT", 2, rows, _numbered("r", rows))]
-    return _module(code, "busbar", name, field_height, zones, fittings=(_SAS_BUSBAR, _PE_N),
+    return _module(code, "busbar", name, field_height, zones, fittings=fittings,
                    unverified=(_SAS_POSITION, _SAS_SEALED))
 
 
@@ -275,7 +292,7 @@ BUILTIN_MODULES: list[dict[str, Any]] = [
         unverified=("Trennvorrichtung von Hager nicht benannt — als Hauptschalter im AAR angenommen",),
     ),
     _distribution("ZU37KS", "Verteilerfeld, 7 Reihen, PE/N-Klemmen waagerecht, 1050 mm", 1050, 7, (_PE_N,)),
-    _distribution("ZU37RK", "Verteilerfeld, 7 Reihen, für Reihenklemmen, 1050 mm", 1050, 7, ()),
+    _distribution("ZU37RK", "Verteilerfeld, 7 Reihen, für Reihenklemmen, 1050 mm", 1050, 7, (_U84T,)),
     _with_apz("ZU37VT5APZ2", "Verteilerfeld, 5 Reihen, APZ 300 mm unten, 1050 mm", 1050, 5),
     _module(
         "ZU37VT4APZ2", "distribution_apz", "Verteilerfeld, 4 Reihen, RfZ, APZ 300 mm, 1050 mm", 1050,
@@ -293,7 +310,7 @@ BUILTIN_MODULES: list[dict[str, Any]] = [
     ),
     _three_point("ZH53X3", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), 1350 mm", 1350),
     _distribution("ZU59KS", "Verteilerfeld, 9 Reihen, PE/N-Klemmen waagerecht, 1350 mm", 1350, 9, (_PE_N,)),
-    _distribution("ZU59RK", "Verteilerfeld, 9 Reihen, für Reihenklemmen, 1350 mm", 1350, 9, ()),
+    _distribution("ZU59RK", "Verteilerfeld, 9 Reihen, für Reihenklemmen, 1350 mm", 1350, 9, (_U84T,)),
     _with_apz("ZU59VT7APZ2", "Verteilerfeld, 7 Reihen, APZ 300 mm unten, 1350 mm", 1350, 7),
     _with_busbars("ZH53XS", "Verteilerfeld mit Sammelschienen, 7 Reihen, 1350 mm", 1350, 7),
     _communication("ZH55SAR2", "Kommunikationsfeld: APZ oben, 5 × RfZ, Sammelschienen, 1350 mm", 1350, 5),
@@ -301,4 +318,18 @@ BUILTIN_MODULES: list[dict[str, Any]] = [
     _cover("ZU62A", 1),
     _cover("ZU79A", 2),
     _cover("ZU93A", 3),
+    # Round 2 (docs/PANEL_ENCLOSURE_R2.md §10, R15): the RK siblings of the
+    # APZ and busbar fields. Rows, height, "APZ unten", "mit SaS 12x5mm" and
+    # "ohne QC-Klemmen" are on the hager.com catalogue pages (2026-10-22),
+    # which mark all four "Auslaufprodukt". No RJ45 socket is named there, so
+    # none is listed (fitting keys are append-only; leaving it out is the
+    # reversible choice). Appended: codes and keys never move (§3.5).
+    _with_apz("ZU37V5RKAPZ2", "Verteilerfeld, 5 Reihen, für Reihenklemmen, APZ unten, 1050 mm", 1050, 5,
+              fittings=(_U84T,), unverified=(_APZ_LIKE_VT5,)),
+    _with_apz("ZU59V7RKAPZ2", "Verteilerfeld, 7 Reihen, für Reihenklemmen, APZ unten, 1350 mm", 1350, 7,
+              fittings=(_U84T,), unverified=(_APZ_LIKE_VT7,)),
+    _with_busbars("ZH3ES5RK", "Verteilerfeld mit Sammelschienen, 5 Reihen, für Reihenklemmen, 1050 mm", 1050, 5,
+                  fittings=(_SAS_BUSBAR, _U84T)),
+    _with_busbars("ZH53XSRK", "Verteilerfeld mit Sammelschienen, 7 Reihen, für Reihenklemmen, 1350 mm", 1350, 7,
+                  fittings=(_SAS_BUSBAR, _U84T)),
 ]

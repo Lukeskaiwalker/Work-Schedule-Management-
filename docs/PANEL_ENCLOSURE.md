@@ -13,6 +13,8 @@ decisions of 2026-10-21 are binding and quoted as **D1–D8**. Two reviews were
 folded in; §18 maps every finding to its fix or to the reason it was
 rejected. The repo is public: every example below is invented data.
 
+Round 2: see `PANEL_ENCLOSURE_R2.md`.
+
 ---
 
 ## 1. Decisions
@@ -34,14 +36,15 @@ rejected. The repo is public: every example below is invented data.
 | 13 | New device kind `hlak` ("Hauptleitungsabzweigklemme"): not a circuit, not a group. It is offered in the palette only on boards with a cabinet. | Several fields come with an HLAK fitted, and the AAR rule must recognise it. |
 | 14 | Codes: the read path never fails on one. The write path rejects only codes that are **newly introduced** by the request (400). A code the stored board already carries always saves. | A catalogue change or a downgrade must never make a board unsaveable. |
 | 15 | Rail rows are created **lazily** (a rail gets a row when it first holds something). `MAX_ROWS` rises from 60 to 120 in Python and TS; ops refuse before the cap with German copy. | A full ZB55S has ≈ 45 rails; eager empty rows plus legacy rows would break autosave at 60. |
-| 16 | One tap rule in the 2D view at every zoom: a tap on a rail opens **RailSheet** (56 px tiles), and a tile opens the DeviceInspector. Module entry points are HTML buttons (≥ 56 px) above the drawing. | A 1-TE device is 23 px at the largest zoom, too small for gloves; the same tap must always do the same thing. |
+| 16 | One tap rule in the 2D view at every zoom: a tap on a rail opens **RailSheet** (56 px tiles), and a tile opens the DeviceInspector. Module entry points are HTML buttons (≥ 56 px) above the drawing. **Round 2:** a tap, short or slow, still does this; a tap on a WAGO terminal rail or strip opens the close-up, and a long press then move (mouse: drag) moves a device (R2 R9, §6). | A 1-TE device is 23 px at the largest zoom, too small for gloves; the same tap must always do the same thing. |
 | 17 | Rollout in two releases: **Slice P** (migration 0104, tolerant schemas, ledger types, `hlak`, `MAX_ROWS`) is live before the feature release, so the feature can be rolled back image-only (§16). | An older API returns 500 on an HLAK board and drops `enclosure` on save; an older image cannot start against an unknown Alembic head. |
 
 Non-goals (D5): flush mounting, Blendrahmen, Sockel, IP54 `…W` cabinets,
 1-field cabinets, Komplettschränke. The model keeps `mounting` and the
 module grid generic so they can be added as catalogue data later. WAGO
 Reihenklemmen strips are not placed on rails in v1: an info finding states
-their length per field (Q3).
+their length per field (Q3). **Round 2:** they are placed on the top two
+rails of every Verteilerfeld, with end plates and U84T (R2 R1–R8, §3).
 
 ---
 
@@ -216,6 +219,14 @@ explicit already and are untouched. Device edits outside the enclosure ops
 (adding an FI from the palette, "Nach links/rechts") keep today's positional
 behaviour, which is deliberate.
 
+**Round 2:** "Nach links/rechts" now runs `followPosition`: a circuit pinned
+with `parent_id` that crosses into another head's run follows that head.
+"Auf andere Hutschiene…" no longer goes through `moveDeviceToRail` and its
+pinning. It drops the device by position, like the drag, with a position
+step, a note and Rückgängig. On an FI, Hauptschalter or group fuse it moves
+the head with the circuits it feeds in its field (R2 R10, R18, §6.4).
+`moveDeviceToRail` itself is unchanged.
+
 ---
 
 ## 3. Catalogue
@@ -362,6 +373,11 @@ module has T95L (both `verified: false`).
 | ZH55SAR2 | communication | 1350 | APZ 0–1 · RFZ 2–6 (rfz1…rfz5) · SAS 7–8 (sas, busbar) | — | — | busbar |
 | ZY150RFZ | communication | any | RFZ 0 (rfz) | — | — | — |
 | ZU62A / ZU79A / ZU93A | cover | any | COVER 0 (1 / 2 / 3 units) | — | — | — (unverified "als Füllung ohne Einbausatz angenommen") |
+
+**Round 2:** ZU37RK and ZU59RK now carry the non-device fitting `u84t`
+("Hutschienen-Isolierung U84T (ab Werk)") and stay verified, and four RK
+built-ins are appended: ZU37V5RKAPZ2, ZU59V7RKAPZ2, ZH3ES5RK and ZH53XSRK
+(R2 R15, §10).
 
 `mm²` = `wiring_mm2` from the research (ZH3EL27, ZH31X7NT: 10; ZH3EL16,
 ZH5EL16: 16); "—" = null, so `vde.sls_rating` stays silent rather than guess
@@ -560,7 +576,7 @@ with an entry; *need(m)* = max(1, occupied(m)).
 | `encl.unverified` | info | a used catalogue entry has `verified: false` (once per code) | `{art}: Katalogdaten ungeprüft — {unverified[0]}.` | module |
 | `encl.meter_device` | info | a `meter` device on a board whose cabinet has meter places | `{bmk}: Zwischenzähler auf der Hutschiene — eHZ/3-Punkt gehören auf den Zählerplatz.` | device |
 | `encl.meter_place_invalid` | info | `meters[].place` ≥ the module's places | `{art}: Zählerplatz {p} gibt es nicht — Eintrag wird ignoriert.` | module |
-| `encl.terminals` | info | a field whose FI groups derive WAGO strips (group attributed to the field of its head device) | `Feld {n}: Reihenklemmen {k} Stück, {mm} mm Hutschiene — im Schrankbild nicht gezeichnet.` | "" |
+| `encl.terminals` | info | a field whose FI groups derive WAGO strips (group attributed to the field of its head device) | `Feld {n}: Reihenklemmen {k} Stück, {mm} mm Hutschiene — im Schrankbild nicht gezeichnet.` **Round 2:** replaced by ten terminal rules with new texts (R2 §4.1). | "" |
 | `vde.nar_sls` | warn | meter module m: #`sls` on m's NAR rails + SAS credit < need(m). SAS credit: `sls` on SAS rails in m's field or an adjacent one, each SLS credited once, to meter modules in field order | `Feld {n} ({art}): {have} SLS-Schalter für {need} Zählerplatz/-plätze im NAR.` | module |
 | `vde.nar_contents` | warn | on a NAR rail: a `fuse`; or an `rcd`, `rcbo` or circuit kind other than an `mcb` rated ≤ 10 A (Spannungsabgriff) | `NAR {art}: NH/Neozed ist nicht als Trennvorrichtung zulässig — SLS verwenden.` / `NAR {art}: {short} gehört nicht in den NAR.` | device |
 | `vde.sls_rating` | warn | module `wiring_mm2` set and an SLS on its NAR rated > 35 A (10 mm²) or > 50 A (16 mm²) | `Feld {n} ({art}): SLS {rating} zu groß für {mm2} mm² Feldverdrahtung (max. E{max}).` | device |
@@ -595,6 +611,13 @@ an enclosure the output is byte-identical to today (golden test).
 | 7 | `manual` | unchanged | | | |
 | 8 | `removed` | `salvage:{article_id}` (orphan) | article name | `eingelagert, im Plan nicht mehr als entfernt geführt` | 0 |
 | 9 | `extra` | unchanged | | | |
+
+**Round 2** (R2 §5): on a cabinet board, row 3 gains the derived
+`accessory:U84T` line (one set per WAGO rail on KS-type fields, none on RK
+fields), and row 5 is no longer "unchanged". Circuits on AAR, NAR, RfZ and
+APZ rails no longer count terminals, and the end plates `part:2003-7692` /
+`part:2016-7691` are added. There are no end stops. Boards without a cabinet
+stay byte-identical.
 
 * Meter places never produce lines (D7); free places produce cover lines.
 * Article resolution: explicit mapping on the key, else auto-match (§3.4) on
@@ -1088,7 +1111,8 @@ Behaviour:
   ModulePickerSheet for that field and places at the tapped unit if the
   module fits there, else at the top of the free run. There is no "+" inside
   the SVG; RailSheet has "+ Gerät". All targets have `role="button"` with an
-  `aria-label`.
+  `aria-label`. **Round 2:** see D16 above; terminal rails reserved for WAGO
+  offer no "+ Gerät" (R2 §3.6).
 * **Sheet stack** (`useSheetStack`): RailSheet → DeviceInspector → (Palette /
   RailPicker) stack with one backdrop; closing the inspector returns to
   RailSheet. On the Schrank tab the inspector is rendered inside the stack;
@@ -1102,7 +1126,9 @@ Behaviour:
   Seite, Tür auf/zu, +, −, 2D); `OrbitControls` as an extra. View-only.
 * **RailEditor** groups: "Feld {n} · {art} {name}" per module (rails in
   position order), then "Nicht im Schrank". Linked rows: slots shown, not
-  editable, no remove, no row move.
+  editable, no remove, no row move. **Round 2:** every module gets a group
+  and every rail an entry, empty rails with "+ Gerät"; a module without rows
+  no longer vanishes (R2 §9).
 * **ModulePickerSheet** hides modules of the wrong field height and says how
   many; shows `ungeprüft` badges, stock counts, the claim preview ("Übernimmt:
   …") with the switch "Vorhandene Geräte übernehmen", and (managers) the
@@ -1186,7 +1212,10 @@ article, date, plan status), per-field module list, pre-fitted parts,
 4100) — Prüfhilfe, ersetzt keine Abnahme". Each list stops at the column
 bottom with "… und {n} weitere" (the full findings follow on the Materialliste
 pages' last page). Then the Materialliste pages (portrait) via
-`draw_material_pages`. Text only via `canvas.drawString` (never Paragraph
+`draw_material_pages`. **Round 2:** one WAGO close-up page per field with
+placed terminals (plus legend pages) comes between page 1 and the
+Materialliste pages, and a stored cabinet block the types refuse answers 409
+(R2 §7.3, §3.1). Text only via `canvas.drawString` (never Paragraph
 markup). Shared style from `schaltplan_pdf_style.py`.
 
 ---
@@ -1366,7 +1395,10 @@ recommended answer until told otherwise.
    *Recommended:* v1 states their length per field (`encl.terminals`). v2 puts
    them on their own rail at the bottom of the FI's distribution field (a
    `…RK` field where planned), stored as `enclosure.terminal_rails`, drawn and
-   counted against rail capacity.
+   counted against rail capacity. **Round 2:** superseded. The strips sit on
+   the top two rails of every Verteilerfeld and are derived; only a manual
+   strip order per field is stored (`module.terminal_order`; R2 decisions
+   R1 and R2).
 4. **Should a part returned "ins Lager" reduce the project's material?**
    Today the project Material tab counts consumption only, so it overstates
    the module by the returned part. *Recommended:* yes, as a negative line
@@ -1407,7 +1439,7 @@ now covers the finding.
 | R2-1 (blocker) | Any employee can book stock in via salvage | Fixed: `werkstatt:manage` for salvage and `removed:` mapping, serialized/archived refused (D6, D11, §7) |
 | R2-2 | Size-dependent tap routing; tiny targets | Fixed: one tap rule, field bar ≥ 56 px, no SVG "+", `onOpenRail(moduleId, railKey, deviceId)` (D16, §11) |
 | R2-8 | Material tab / PDF read stale saves | Fixed: `settleSaves` on tab switch, `openAfterSave`, list keyed on revision (Slice 0) |
-| R2-9 | Reihenklemmen ignored in rail capacity | Partly: `encl.terminals` info in v1; placement is Q3 |
+| R2-9 | Reihenklemmen ignored in rail capacity | Partly: `encl.terminals` info in v1; placement is Q3. **Round 2:** closed (R2 §3) |
 | R2-10 | Filling rails one device at a time | Fixed: `fillRailFromTemplate` + RailSheet action |
 | R2-11 | Failed 3D chunk kills the app | Fixed: `Enclosure3DBoundary` + retry (§12), test |
 | R2-12 | Test gaps, no browser proof | Fixed: §14 additions + Playwright proof at tablet sizes in Done |

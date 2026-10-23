@@ -8,6 +8,7 @@
  * RailSheet. Kept apart from the component so each rule has its own test
  * and the SVG stays a plain map from boxes to shapes.
  */
+import { reservedRailKey } from "../../../utils/enclosureOpsDrag";
 import type { EnclosureScene, SceneBox } from "../../../types/panelEnclosure";
 
 // ── Zoom ─────────────────────────────────────────────────────────────────────
@@ -218,6 +219,12 @@ export interface RailBand {
   rowId: string | null;
   label: string;
   deviceCount: number;
+  /** The cabinet field the rail sits in (its centre); null outside every field. */
+  field: number | null;
+  /** The rail is retired (drawn only while its row still holds devices): nothing new goes on it. */
+  retired: boolean;
+  /** Reserved for WAGO terminals (R2 §3.2): no device drops here. */
+  reserved: boolean;
   x: number;
   y: number;
   w: number;
@@ -225,9 +232,15 @@ export interface RailBand {
 }
 
 const DEVICE_KINDS = new Set(["device", "device_front"]);
+const NO_RAILS: ReadonlySet<string> = new Set();
 
-/** One tap target per rail (open and closed view alike): the rail and every device on it, ± half a device height. */
-export function railBands(scene: EnclosureScene): RailBand[] {
+/**
+ * One tap target per rail (open and closed view alike): the rail and every
+ * device on it, ± half a device height. `reserved` holds the terminal rails
+ * as `reservedRailKey(moduleId, railKey)` — empty until the terminal slice
+ * passes `terminalRailKeys`.
+ */
+export function railBands(scene: EnclosureScene, reserved: ReadonlySet<string> = NO_RAILS): RailBand[] {
   const devices = scene.boxes.filter((box) => DEVICE_KINDS.has(box.kind));
   return scene.boxes
     .filter((box) => (box.kind === "rail" || box.kind === "busbar") && box.moduleId !== null && box.railKey !== null)
@@ -236,13 +249,18 @@ export function railBands(scene: EnclosureScene): RailBand[] {
       const left = Math.min(rail.x, ...own.map((device) => device.x)) - BAND_PAD_MM;
       const right = Math.max(rail.x + rail.w, ...own.map((device) => device.x + device.w)) + BAND_PAD_MM;
       const cy = rail.y + rail.h / 2;
+      const moduleId = rail.moduleId as string;
+      const railKey = rail.railKey as string;
       return {
         boxId: rail.id,
-        moduleId: rail.moduleId as string,
-        railKey: rail.railKey as string,
+        moduleId,
+        railKey,
         rowId: rail.rowId,
         label: rail.label,
         deviceCount: own.length,
+        field: fieldIndexAt(scene, rail.x + rail.w / 2),
+        retired: rail.flags.includes("retired"),
+        reserved: reserved.has(reservedRailKey(moduleId, railKey)),
         x: left,
         y: cy - BAND_HALF_MM,
         w: right - left,

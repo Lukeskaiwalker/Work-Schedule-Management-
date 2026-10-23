@@ -31,7 +31,10 @@ from app.services.panel_enclosure_material import (
     removed_fittings,
     supplied_device_ids,
 )
+from app.services.panel_enclosure_terminals import place_terminals
 from app.services.schaltplan_material import planned_lines
+from app.services.schaltplan_terminals import derive_terminals, terminal_bom
+from scripts.write_enclosure_fixtures import meter_dist_zb33s, terminals_rk_zb53s, terminals_zb34s
 from tests.panel_enclosure_helpers import article, auth, cabinet_document, create_panel, device, employee
 
 MAPPING = "/api/schaltplan/material/mapping"
@@ -396,3 +399,123 @@ def test_consumption_never_ticks_a_removed_line_and_shows_as_not_planned(client:
     # (the extra counts as scanned, as any unplanned booking does).
     assert (body["planned_total"], body["scanned_total"], body["open_lines"]) == (6, 1, 6)
     assert body["returns_open"] == 1
+
+
+# ── Round 2: WAGO terminals on the cabinet's rails (docs/PANEL_ENCLOSURE_R2.md §5) ──
+
+U84T = "accessory:U84T"
+U84T_LABEL = "Isolierstück univ. Z, mit Schrauben, Satz=2 St."
+U84T_DETAIL = "Hutschienen-Isolierung je Klemmen-Hutschiene · Hager U84T"
+U84T_EAN = "4010330552465"
+RAIL_PART_KEYS = ("part:2003-7692", "part:2016-7691", "part:249-116")
+
+
+def _terminal_lines(lines) -> list[tuple[str, int]]:
+    return [(line.key, line.planned) for line in lines if line.kind == "terminal"]
+
+
+def _bom_lines(rows) -> list[tuple[str, int]]:
+    return [(f"part:{row['part_id']}", row["count"]) for row in rows]
+
+
+def test_a_legacy_board_with_terminals_lists_exactly_its_old_terminal_lines() -> None:
+    document = terminals_zb34s()
+    document["enclosure"] = None
+    lines = planned_lines(document)
+    # The old derivation: no skip set, no rail parts, no U84T.
+    assert _terminal_lines(lines) == _bom_lines(terminal_bom(derive_terminals(document)))
+    assert not any(line.key in (U84T, *RAIL_PART_KEYS) for line in lines)
+
+
+def test_u84t_is_one_set_per_terminal_rail_holding_a_strip_among_the_accessories() -> None:
+    lines = planned_lines(meter_dist_zb33s(), builtin_catalog())
+    by_key = _by_key(lines)
+    u84t = by_key[U84T]
+    # Fields 2 and 3 each hold one strip on their top terminal rail.
+    assert (u84t.kind, u84t.label, u84t.detail, u84t.planned) == ("enclosure", U84T_LABEL, U84T_DETAIL, 2)
+    keys = _keys(lines)
+    first_device = next(index for index, line in enumerate(lines) if line.kind == "device")
+    assert keys.index("module:ZU37VT5APZ2") < keys.index(U84T) < first_device
+    assert line_article_numbers(meter_dist_zb33s(), builtin_catalog())[U84T] == "U84T"
+
+
+def test_rk_fields_need_no_u84t_and_no_strip_means_no_u84t_and_no_plate() -> None:
+    assert U84T not in _by_key(planned_lines(terminals_rk_zb53s(), builtin_catalog()))
+    # The empty ZU37RK adds nothing; fields 2 and 4 hold strips on both terminal rails.
+    assert _by_key(planned_lines(terminals_zb34s(), builtin_catalog()))[U84T].planned == 4
+    keys = _keys(planned_lines(cabinet_document(), builtin_catalog()))
+    assert not any(key in keys for key in (U84T, *RAIL_PART_KEYS))
+
+
+def test_an_admin_u84t_accessory_means_the_same_sets_so_the_larger_count_wins() -> None:
+    def catalog_with_admin_u84t(qty: int) -> EnclosureCatalog:
+        accessory = {"article_no": "U84T", "label": "Isolierung (Admin)", "qty": qty, "verified": False}
+        return _catalog_with("ZU37KS", accessories=[accessory])
+
+    for qty, expected in ((1, 2), (5, 5)):
+        lines = planned_lines(meter_dist_zb33s(), catalog_with_admin_u84t(qty))
+        u84t = [line for line in lines if line.key == U84T]
+        assert [(line.label, line.detail, line.planned) for line in u84t] == [(U84T_LABEL, U84T_DETAIL, expected)]
+
+
+def test_each_terminal_rail_gets_the_end_plate_of_its_last_terminal_block_and_no_end_stop() -> None:
+    lines = _by_key(planned_lines(terminals_rk_zb53s(), builtin_catalog()))
+    orange, grey = lines["part:2003-7692"], lines["part:2016-7691"]
+    assert (orange.kind, orange.label, orange.detail, orange.planned) == (
+        "terminal", "WAGO 2003-7692", "Abschluss- und Zwischenplatte, 0,8 mm, orange", 2)
+    # Field 3's rail ends in the wallbox Block: a 2016-76xx terminal, the grey plate.
+    assert (grey.kind, grey.label, grey.detail, grey.planned) == (
+        "terminal", "WAGO 2016-7691", "Abschlussplatte, 1 mm, grau", 1)
+    assert "part:249-116" not in lines  # owner, 2026-10-22: no end stops
+    assert [key for key in lines if key.startswith("part:")] == [
+        "part:2003-7641", "part:2003-7692", "part:2009-305", "part:2016-7601", "part:2016-7604", "part:2016-7607",
+        "part:2016-7691", "part:2016-7714",
+    ]
+
+
+def test_an_aar_circuit_with_terminal_block_is_not_counted_and_unplaced_strips_are() -> None:
+    document = terminals_zb34s()
+    lines = _by_key(planned_lines(document, builtin_catalog()))
+    unskipped = dict(_bom_lines(terminal_bom(derive_terminals(document))))
+    # F0.1 sits on the AAR: its 2003-7641 is gone from the list.
+    assert lines["part:2003-7641"].planned == unskipped["part:2003-7641"] - 1
+    placement = place_terminals(document, builtin_catalog())
+    assert [entry["xLabel"] for field in placement["fields"] for entry in field["unplaced"]] == ["X4", "X5", "X6"]
+    # X4–X6 have no place but must be bought: all eleven FI feeds are counted.
+    assert lines["part:2016-7714"].planned == 11
+    # Plates only for rails that hold a strip: field 2 r1/r2, field 4 r2 (orange) and r1 (ends in the Block).
+    assert (lines["part:2003-7692"].planned, lines["part:2016-7691"].planned) == (3, 1)
+
+
+def test_the_u84t_line_finds_its_article_by_ean_before_a_name_match(client: TestClient, admin_token: str) -> None:
+    by_name = article("Hager U84T Isolierstück univ. Z (Testartikel)", stock=1)
+    by_ean = article("Isolierstück Satz 2 Stück (Testartikel)", stock=4, ean=U84T_EAN)
+    panel = create_panel(client, admin_token, meter_dist_zb33s())
+    line = _line(_material(client, admin_token, panel["id"]), U84T)
+    assert (line["article"]["id"], line["article_source"], line["planned"]) == (by_ean, "auto", 2)
+    assert by_name != by_ean
+
+
+def test_a_mapping_beats_the_ean_and_u84tx_never_matches(client: TestClient, admin_token: str) -> None:
+    article("Hager U84TX Sonderteil (Testartikel)", stock=1)
+    panel = create_panel(client, admin_token, meter_dist_zb33s())
+    assert _line(_material(client, admin_token, panel["id"]), U84T)["article"] is None
+
+    article("Isolierstück mit EAN (Testartikel)", stock=1, ean=U84T_EAN)
+    mapped = article("Isolierung, wie die Werkstatt sie nennt (Testartikel)", stock=1)
+    resp = client.put(MAPPING, headers=auth(admin_token), json={"key": U84T, "article_id": mapped})
+    assert resp.status_code == 200, resp.text
+    line = _line(_material(client, admin_token, panel["id"]), U84T)
+    assert (line["article"]["id"], line["article_source"]) == (mapped, "mapping")
+
+
+def test_consumption_ticks_an_end_plate_line(client: TestClient, admin_token: str) -> None:
+    plate = article("WAGO 2003-7692 - Abschlussplatte orange (Testartikel)", stock=10)
+    panel = create_panel(client, admin_token, meter_dist_zb33s())
+    booked = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/material/book", headers=auth(admin_token),
+        json={"article_id": plate, "quantity": 1},
+    )
+    assert booked.status_code == 200, booked.text
+    line = _line(booked.json(), "part:2003-7692")
+    assert (line["article"]["id"], line["planned"], line["scanned"], line["status"]) == (plate, 2, 1, "open")

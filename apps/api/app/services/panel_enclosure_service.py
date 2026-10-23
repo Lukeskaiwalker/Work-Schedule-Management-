@@ -4,6 +4,12 @@ docs/PANEL_ENCLOSURE.md §2.2, §5, §7, §13. Kept out of
 ``routers/workflow_schaltplan.py`` so that file stays a plan router (and
 under 800 lines): the detail findings, the write-path code check, the copy
 that forgets meter numbers, and the Aufbau PDF are each one call from there.
+So is the board's WAGO view (docs/PANEL_ENCLOSURE_R2.md §3.1, §5.1): on a
+cabinet board the legend, the Stückliste, the label print and the Plan PDF
+number the terminals with the same skip set, and every Stückliste carries
+the rail parts. Each reads the board through ``readable_blocks`` (D14): a
+stored cabinet block the types refuse is left out everywhere, not only on
+the screen.
 
 The catalogue is loaded only for a board that has a cabinet: a legacy board
 must cost exactly what it cost before (one query fewer per detail read).
@@ -11,103 +17,86 @@ must cost exactly what it cost before (one query fewer per detail read).
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 from fastapi import HTTPException, status
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.models.customer import Customer
 from app.models.entities import Project
 from app.models.schaltplan import PanelPlan
-from app.schemas.panel_enclosure import DeviceSuppliedBy
-from app.schemas.schaltplan import PanelDocument
 from app.services import schaltplan_material
-from app.services.panel_enclosure_catalog import assert_known_codes, load_catalog
+from app.services.panel_enclosure_catalog import EnclosureCatalog, assert_known_codes, load_catalog
 from app.services.panel_enclosure_layout import dicts, enclosure_of
 from app.services.panel_enclosure_pdf import build_aufbau_pdf
+from app.services.panel_enclosure_readable import INVALID_BLOCK, readable_blocks, readable_document
 from app.services.panel_enclosure_rules import enclosure_findings
+from app.services.panel_enclosure_terminals import (
+    BoardTerminals,
+    board_terminals,
+    place_terminals,
+    terminal_rail_parts,
+    terminal_skip,
+)
 from app.services.runtime_settings import get_company_settings
+from app.services.schaltplan_terminals import derive_terminals
 
 NO_CABINET = "Für diesen Verteiler ist kein Schrank geplant."
-INVALID_BLOCK = (
-    "Schrankdaten fehlerhaft gespeichert — ausgeblendet und beim nächsten Speichern entfernt; "
-    "Reihen und Geräte bleiben."
-)
 
 __all__ = [
-    "INVALID_BLOCK", "NO_CABINET", "assert_known_codes", "aufbau_pdf", "detail_findings", "readable_document",
-    "without_meter_numbers",
+    "INVALID_BLOCK", "NO_CABINET", "TerminalView", "assert_known_codes", "aufbau_pdf", "board_terminal_skip",
+    "detail_findings", "readable_blocks", "readable_document", "terminal_view", "without_meter_numbers",
 ]
 
 
-def readable_document(document: Any) -> tuple[Any, PanelDocument, list[dict[str, str]]]:
-    """(the document to derive from, its typed form, findings) for the read path.
+@dataclass(frozen=True)
+class TerminalView:
+    """A board's WAGO terminals as every plan route reads them (R2 §3.1, §5.1).
 
-    Slice P stored ``enclosure`` and ``supplied_by`` as opaque JSON, so a
-    board may hold a block the feature's types refuse — written while P was
-    live, or after a rollback to it. Such a board must still open (D14): the
-    block is left out, with one finding, and the next save drops it for
-    good. Rows and devices stay. Anything else that fails validation fails
-    as it always did; this is no general repair.
+    ``skip`` and ``groups`` give every caller the same X numbers; the
+    Stückliste is ``terminal_bom(groups, extra=rail_parts)``, equal to the
+    Materialliste's terminal lines. Without a cabinet: no skip, no rail
+    parts, the groups as before — and no catalogue read.
     """
-    try:
-        return document, PanelDocument.model_validate(document), []
-    except ValidationError:
-        cleaned = _without_unreadable_blocks(document)
-        if cleaned is document:
-            raise
-    finding = {"level": "warn", "scope": "", "message": INVALID_BLOCK, "rule": "encl.invalid_block"}
-    return cleaned, PanelDocument.model_validate(cleaned), [finding]
+
+    skip: frozenset[str]
+    groups: tuple[dict[str, Any], ...]
+    rail_parts: Mapping[str, int] = field(default_factory=dict)
+    catalog: EnclosureCatalog | None = None
+    terms: BoardTerminals | None = None
+    placement: Mapping[str, Any] | None = None
 
 
-def _without_unreadable_blocks(document: Any) -> Any:
-    """A copy without the cabinet blocks that do not validate; the input itself when every one does."""
-    if not isinstance(document, dict):
-        return document
-    out = document
-    if document.get("enclosure") is not None and not _readable_enclosure(document["enclosure"]):
-        out = {**out, "enclosure": None}
-    rows = document.get("rows")
-    if isinstance(rows, list):
-        cleaned = [_row_without_bad_claims(row) for row in rows]
-        if any(new is not old for new, old in zip(cleaned, rows)):
-            out = {**out, "rows": cleaned}
-    return out
+def terminal_view(db: Session, document: Any) -> TerminalView:
+    """The board's terminals, placed once; the catalogue is loaded only for a
+    cabinet. A stored block the types refuse is left out, as on the screen."""
+    document = readable_blocks(document)
+    if enclosure_of(document) is None:
+        return TerminalView(frozenset(), tuple(derive_terminals(document)))
+    catalog = load_catalog(db)
+    terms = board_terminals(document, catalog)
+    placement = place_terminals(document, catalog, terms)
+    return TerminalView(terms.skip, terms.groups, terminal_rail_parts(placement), catalog, terms, placement)
 
 
-def _row_without_bad_claims(row: Any) -> Any:
-    if not isinstance(row, dict) or not isinstance(row.get("devices"), list):
-        return row
-    devices = [_device_without_bad_claim(device) for device in row["devices"]]
-    return {**row, "devices": devices} if any(new is not old for new, old in zip(devices, row["devices"])) else row
+def board_terminal_skip(db: Session, document: Any) -> frozenset[str]:
+    """The devices that get no Reihenklemme on this board (R2 §3.1); empty
+    without a cabinet, and with a stored block the types refuse."""
+    document = readable_blocks(document)
+    if enclosure_of(document) is None:
+        return frozenset()
+    return terminal_skip(document, load_catalog(db))
 
 
-def _device_without_bad_claim(device: Any) -> Any:
-    if not isinstance(device, dict) or device.get("supplied_by") is None:
-        return device
-    try:
-        DeviceSuppliedBy.model_validate(device["supplied_by"])
-    except ValidationError:
-        return {**device, "supplied_by": None}
-    return device
-
-
-def _readable_enclosure(enclosure: Any) -> bool:
-    # Through the document, so the 64 KB ceiling (measured with defaults
-    # filled in, unlike Slice P's raw measure) is part of the check.
-    try:
-        PanelDocument.model_validate({"enclosure": enclosure})
-    except ValidationError:
-        return False
-    return True
-
-
-def detail_findings(db: Session, document: Any) -> list[dict[str, str]]:
-    """The cabinet findings appended to ``validate_document``'s; [] without a cabinet."""
+def detail_findings(db: Session, document: Any, view: TerminalView | None = None) -> list[dict[str, str]]:
+    """The cabinet findings appended to ``validate_document``'s; [] without a cabinet.
+    ``view``: the board's ``terminal_view``, so nothing is placed twice."""
     if enclosure_of(document) is None:
         return []
-    return enclosure_findings(document, load_catalog(db))
+    if view is None or view.catalog is None:
+        return enclosure_findings(document, load_catalog(db))
+    return enclosure_findings(document, view.catalog, view.terms, view.placement)
 
 
 def without_meter_numbers(document: Any) -> Any:
@@ -132,19 +121,25 @@ def without_meter_numbers(document: Any) -> Any:
 
 
 def aufbau_pdf(db: Session, plan: PanelPlan) -> bytes:
-    """The Aufbau sheet plus the Materialliste pages (§13); 409 without a cabinet."""
+    """The Aufbau sheet, the WAGO close-up pages (R2 §7.3) and the Materialliste
+    pages (§13); 409 without a cabinet — also when the stored block is one the
+    types refuse, which the Schrank tab and the Materialliste leave out (D14)."""
     document = plan.document or {}
-    if enclosure_of(document) is None:
+    if enclosure_of(readable_blocks(document)) is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=NO_CABINET)
     catalog = load_catalog(db)
+    terms = board_terminals(document, catalog)
+    placement = place_terminals(document, catalog, terms)
     customer = db.get(Customer, plan.customer_id)
     project = db.get(Project, plan.project_id) if plan.project_id else None
     return build_aufbau_pdf(
         plan=plan,
         catalog=catalog,
-        material=schaltplan_material.panel_material(db, plan),
-        findings=enclosure_findings(document, catalog),
+        material=schaltplan_material.panel_material(db, plan, catalog),
+        findings=enclosure_findings(document, catalog, terms, placement),
         customer_name=getattr(customer, "name", None),
         project_label=f"{project.project_number} · {project.name}" if project is not None else None,
         company_name=get_company_settings(db).get("company_name"),
+        terms=terms,
+        placement=placement,
     )

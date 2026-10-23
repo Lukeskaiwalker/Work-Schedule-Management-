@@ -13,26 +13,43 @@
  * whose Python twin prints the strip and the PDF; a part whose width could
  * not be confirmed is said out loud above the list, because a wrong pitch
  * shifts every following marker on the strip.
+ *
+ * On a board with a cabinet (docs/PANEL_ENCLOSURE_R2.md §3.1, §5.1) the
+ * groups are the page's `useBoardTerminals` answer — derived with the skip
+ * set, so a circuit in the AAR gets no terminal and no X number — and the
+ * Stückliste carries the placement's end plates. Until the catalogue is
+ * there the tab waits instead of showing numbers that would shift.
  */
 import { useMemo, type MouseEvent } from "react";
 
 import { TerminalStripCard } from "./TerminalGroupCard";
+import { boardTerminalsState, type BoardTerminalsState } from "../../hooks/useBoardTerminals";
+import { terminalRailParts } from "../../utils/enclosureTerminals";
 import { OWN_OPENER_PROPS } from "../../utils/openAfterSave";
 import { formatMm } from "../../utils/schaltplanStrip";
 import { isTerminalEligible, terminalFindings } from "../../utils/schaltplanTerminalRules";
 import {
-  deriveTerminals,
   terminalBom,
   terminalCounts,
   unverifiedTerminalParts,
   type TerminalBomRow,
   type TerminalCounts,
+  type TerminalGroup,
 } from "../../utils/schaltplanTerminals";
 import { allDevices, buildTopology } from "../../utils/schaltplanTopology";
 import type { PanelDocument } from "../../types/schaltplan";
 
+export const CATALOG_LOADING = "Schrankkatalog wird geladen…";
+
+const NO_RAIL_PARTS: Readonly<Record<string, number>> = Object.freeze({});
+
 type Props = {
   document: PanelDocument;
+  /**
+   * The page's one derivation (`useBoardTerminals`). Absent: derived here,
+   * which on a cabinet board means waiting — never numbers without the skip set.
+   */
+  boardTerminals?: BoardTerminalsState;
   readOnly: boolean;
   /** Flag (true) or clear (false) `terminal_block` on every eligible outgoing. Absent = no bulk switches. */
   onSetAllTerminals?: (flag: boolean) => void;
@@ -89,16 +106,48 @@ function TerminalBom({ bom, counts }: { bom: TerminalBomRow[]; counts: TerminalC
   );
 }
 
-export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, pdfHref, onPdfClick, printing = false }: Props) {
-  const groups = useMemo(() => deriveTerminals(document), [document]);
-  const bom = useMemo(() => terminalBom(groups), [groups]);
+function CatalogLoading() {
+  return (
+    <div className="sp-terminal-list">
+      <header className="sp-terminal-head">
+        <h4>Reihenklemmen</h4>
+      </header>
+      <p className="sp-terminal-empty" role="status">
+        {CATALOG_LOADING}
+      </p>
+    </div>
+  );
+}
+
+export function TerminalList(props: Props) {
+  const { document, boardTerminals } = props;
+  // Without the page's answer, derived here against no catalogue: a cabinet board then waits.
+  const own = useMemo(() => boardTerminalsState(boardTerminals ? null : document, null), [boardTerminals, document]);
+  const state = boardTerminals ?? own;
+  const { placement } = state;
+  const railParts = useMemo(() => (placement ? terminalRailParts(placement) : NO_RAIL_PARTS), [placement]);
+  if (!state.ready || !state.terms) return <CatalogLoading />;
+  return <ReadyTerminalList {...props} groups={state.terms.groups} skip={state.terms.skip} railParts={railParts} />;
+}
+
+type ReadyProps = Props & {
+  groups: readonly TerminalGroup[];
+  skip: ReadonlySet<string>;
+  /** The placement's end plates (part id → count), added to the Stückliste. */
+  railParts: Readonly<Record<string, number>>;
+};
+
+function ReadyTerminalList(props: ReadyProps) {
+  const { document, readOnly, onSetAllTerminals, onPrint, pdfHref, onPdfClick, printing = false, groups, skip, railParts } = props;
+  const bom = useMemo(() => terminalBom(groups, railParts), [groups, railParts]);
   // The same info findings `validateDocument` reports. Shown here because
   // the page's Prüfen block lists warnings only, and "no FI in this group"
   // is exactly what someone reading the terminal list needs to see.
-  const hints = useMemo(() => terminalFindings(buildTopology(document)), [document]);
+  const hints = useMemo(() => terminalFindings(buildTopology(document), skip), [document, skip]);
   const counts = terminalCounts(groups);
   const unverified = unverifiedTerminalParts(groups);
-  const eligible = allDevices(document).filter(isTerminalEligible);
+  // A circuit in a no-WAGO zone is no Abgang of the bulk switch: it leaves those alone.
+  const eligible = allDevices(document).filter((device) => isTerminalEligible(device) && !skip.has(device.id));
   const flagged = eligible.filter((device) => device.terminal_block === true);
   const hasTerminals = groups.length > 0;
 

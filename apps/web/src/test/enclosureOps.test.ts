@@ -158,7 +158,7 @@ describe("placeModule", () => {
     expect(second.enclosure!.modules[1].meters).toEqual([{ place: 0, number: "", label: "" }]);
   });
 
-  it("adopts rows only into empty VT/VF rails, top to bottom, sized when they fit", () => {
+  it("adopts rows only into empty VT/VF rails, top to bottom, sized when they fit — never the terminal rails (R2 §3.6)", () => {
     const legacy = cabinetBoard([
       row("a", [dev("rcd"), dev("mcb")], "Reihe 1", 14),
       row("b", Array.from({ length: 14 }, () => dev("mcb")), "Reihe 2", 14),
@@ -166,7 +166,8 @@ describe("placeModule", () => {
     const meter = place(legacy, "ZH3EH16", 0, 0, { claim: false, adoptRows: true });
     expect(Object.keys(meter.doc.enclosure!.modules[0].rails).sort()).toEqual(["aar1", "aar2"]);
     const dist = place(meter.doc, "ZU37KS", 1, 0, { adoptRows: true });
-    expect(dist.doc.enclosure!.modules[1].rails).toEqual({ r1: "a", r2: "b" });
+    // r1/r2 are the field's terminal rails (docs/PANEL_ENCLOSURE_R2.md R2).
+    expect(dist.doc.enclosure!.modules[1].rails).toEqual({ r3: "a", r4: "b" });
     expect(dist.doc.rows.find((r) => r.id === "a")!.slots).toBe(12);
     // 14 TE do not fit on 12 PLE: kept, and the overflow finding says so.
     expect(dist.doc.rows.find((r) => r.id === "b")!.slots).toBe(14);

@@ -22,7 +22,7 @@ the legend it follows.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas as pdfcanvas
@@ -45,17 +45,18 @@ from app.services.schaltplan_pdf_style import (
     wrap,
 )
 from app.services.schaltplan_terminal_rules import (
-    END_PART_IDS,
-    FEED_PART_IDS,
     VARIANT_NO_RCD,
     VARIANT_STANDARD,
 )
+# The "für" rule lives next to the derivation: the WAGO close-up uses it too.
 from app.services.schaltplan_terminals import (
     STRIP_KIND_BLOCK,
     terminal_bom,
     terminal_counts,
     unverified_terminal_parts,
 )
+from app.services.schaltplan_terminals import rcd_detail as _rcd_detail
+from app.services.schaltplan_terminals import terminal_for_text as _for_text
 
 VARIANT_LABELS: dict[str, str] = {
     VARIANT_STANDARD: "Standard",
@@ -81,31 +82,6 @@ _BOM_COLUMNS: list[tuple[str, str, float]] = [
 _ROW_H = 13.0
 _FOOT_Y = 56.0
 _FONT_SIZE = 7.5
-
-
-def _rcd_detail(head: dict[str, Any] | None) -> str:
-    """"30 mA / Typ A" for an FI head, "" for anything else."""
-    if head is None or str(head.get("kind") or "") != "rcd":
-        return ""
-    parts = [p for p in (text_of(head.get("residual_current")), text_of(head.get("rcd_type"))) if p]
-    if len(parts) == 2:
-        return f"{parts[0]} / Typ {parts[1]}"
-    return parts[0] if parts else ""
-
-
-def _for_text(terminal: dict[str, Any], device_by_id: dict[str, dict[str, Any]], head: dict[str, Any] | None) -> str:
-    part_id = str(terminal["part_id"])
-    if part_id in END_PART_IDS:
-        return "—"
-    if part_id in FEED_PART_IDS:
-        parts = [f"FI {text_of(head.get('designation')) or '?'}" if head else "", _rcd_detail(head)]
-        return " · ".join(p for p in parts if p) or "—"
-    device = device_by_id.get(str(terminal.get("device_id") or ""))
-    if device is None:
-        return "—"
-    circuit = text_of(device.get("circuit"))
-    parts = [text_of(device.get("designation")), text_of(device.get("label")), f"Nr. {circuit}" if circuit else ""]
-    return " · ".join(p for p in parts if p) or "—"
 
 
 def _strip_heading_text(group: dict[str, Any], strip: dict[str, Any]) -> str:
@@ -201,8 +177,14 @@ def draw_terminal_sheets(
     customer_name: str | None,
     project_label: str | None,
     company: str,
+    rail_parts: Mapping[str, int] | None = None,
 ) -> None:
-    """Append the Reihenklemmen sheet(s) to the canvas and end the page."""
+    """Append the Reihenklemmen sheet(s) to the canvas and end the page.
+
+    ``rail_parts``: on a cabinet board, the end plates of the terminal rails
+    (docs/PANEL_ENCLOSURE_R2.md §5.1); the Stückliste lists them with the
+    terminals, so it equals the Materialliste's terminal lines.
+    """
     width, height = A4
     total = sum(col[2] for col in _COLUMNS)
     x0 = (width - total) / 2
@@ -272,7 +254,7 @@ def draw_terminal_sheets(
         y -= 12
 
     # ── Stückliste ──────────────────────────────────────────────────────────
-    bom = terminal_bom(groups)
+    bom = terminal_bom(groups, extra=rail_parts)
     y = ensure_room(y, 20 + 16 + _ROW_H * (len(bom) + 1))
     c.setFillColor(INK)
     c.setFont(FONT_BOLD, 9)

@@ -355,27 +355,28 @@ describe("EnclosureTab — feeds", () => {
 });
 
 describe("EnclosureTab — sheet stack", () => {
+  // On r3: r1 and r2 of a Verteilerfeld are its terminal rails since round 2 (PANEL_ENCLOSURE_R2.md R2), where nothing new goes.
   function distributionBoard(): PanelDocument {
     return board(
-      [row("vt1", [dev("rcd", { id: "fi1", designation: "F1" }), dev("mcb", { id: "ls1", designation: "F1.1" })], "F2 · Verteiler 1")],
-      { code: "ZB33S", modules: [mod("m2", "ZU37KS", 1, { r1: "vt1" })] },
+      [row("vt1", [dev("rcd", { id: "fi1", designation: "F1" }), dev("mcb", { id: "ls1", designation: "F1.1" })], "F2 · Verteiler 3")],
+      { code: "ZB33S", modules: [mod("m2", "ZU37KS", 1, { r3: "vt1" })] },
     );
   }
 
   it("opens the rail from the drawing, the inspector on top, and closing the inspector returns to the rail", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
-    const rail = screen.getByRole("dialog", { name: "F2 · Verteiler 1" });
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
+    const rail = screen.getByRole("dialog", { name: "F2 · Verteiler 3" });
     const tile = within(rail).getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ });
     expect(tile).toHaveAttribute("aria-current", "true");
 
     fireEvent.click(within(rail).getByRole("button", { name: /^F1, FI-Schutzschalter/ }));
     expect(screen.getByRole("dialog", { name: "FI-Schutzschalter (RCD)" })).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "F2 · Verteiler 1" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "F2 · Verteiler 3" })).toBeNull();
     expect(sheetBackdrops()).toHaveLength(1);
 
     fireEvent.click(within(screen.getByRole("dialog", { name: "FI-Schutzschalter (RCD)" })).getByRole("button", { name: "Schließen" }));
-    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).toBeInTheDocument();
     expect(sheetBackdrops()).toHaveLength(1);
 
     // The backdrop pops one sheet; the last one closes the stack.
@@ -386,17 +387,17 @@ describe("EnclosureTab — sheet stack", () => {
 
   it("gives the stack's inspector and palette the stack's 56 px targets", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
     fireEvent.click(screen.getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ }));
     expect(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).toHaveClass("sp-sheet--glove");
     fireEvent.click(within(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).getByRole("button", { name: "Schließen" }));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).getByRole("button", { name: "+ Gerät" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).getByRole("button", { name: "+ Gerät" }));
     expect(screen.getByRole("dialog", { name: "Gerät hinzufügen" })).toHaveClass("sp-sheet--glove");
   });
 
   it("edits a device from the inspector inside the stack", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
     fireEvent.click(screen.getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ }));
     const inspector = screen.getByRole("dialog", { name: "Leitungsschutzschalter" });
     fireEvent.change(within(inspector).getByPlaceholderText("z. B. Steckdosen Küche"), { target: { value: "Licht Flur" } });
@@ -408,18 +409,18 @@ describe("EnclosureTab — sheet stack", () => {
 
   it("closes back to the rail after deleting a device", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
     fireEvent.click(screen.getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ }));
     fireEvent.click(screen.getByRole("button", { name: "Löschen" }));
     fireEvent.click(screen.getByRole("button", { name: "Wirklich löschen?" }));
     expect(deviceIds(current())).toEqual(["fi1"]);
-    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).toBeInTheDocument();
   });
 
   it("adds a device through the palette and opens it", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: /^Hutschiene F2 · Verteiler 2 · leer/ }));
-    const rail = screen.getByRole("dialog", { name: "F2 · Verteiler 2" });
+    fireEvent.click(screen.getByRole("button", { name: /^Hutschiene F2 · Verteiler 4 · leer/ }));
+    const rail = screen.getByRole("dialog", { name: "F2 · Verteiler 4" });
     fireEvent.click(within(rail).getByRole("button", { name: "+ Gerät" }));
 
     const palette = screen.getByRole("dialog", { name: "Gerät hinzufügen" });
@@ -430,34 +431,35 @@ describe("EnclosureTab — sheet stack", () => {
 
     expect(screen.queryByRole("dialog", { name: "Gerät hinzufügen" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).toBeInTheDocument();
-    const added = current().rows.find((candidate) => candidate.label === "F2 · Verteiler 2");
+    const added = current().rows.find((candidate) => candidate.label === "F2 · Verteiler 4");
     expect(added?.devices.map((device) => device.kind)).toEqual(["mcb"]);
-    expect(current().enclosure!.modules[0].rails.r2).toBe(added?.id);
+    expect(current().enclosure!.modules[0].rails.r4).toBe(added?.id);
 
     fireEvent.click(within(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).getByRole("button", { name: "Schließen" }));
-    expect(within(screen.getByRole("dialog", { name: "F2 · Verteiler 2" })).getByRole("button", { name: /Leitungsschutzschalter/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog", { name: "F2 · Verteiler 4" })).getByRole("button", { name: /Leitungsschutzschalter/ })).toBeInTheDocument();
   });
 
   it("moves a device to another rail from the inspector", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
     fireEvent.click(screen.getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ }));
     fireEvent.click(screen.getByRole("button", { name: "Auf andere Hutschiene…" }));
     const picker = screen.getByRole("dialog", { name: "Hutschiene wählen" });
-    fireEvent.click(within(picker).getByRole("button", { name: /^Feld 2 · Verteiler 3 · / }));
+    fireEvent.click(within(picker).getByRole("button", { name: /^Feld 2 · Verteiler 5 · / }));
 
     const target = current().rows.find((candidate) => candidate.devices.some((device) => device.id === "ls1"));
-    expect(current().enclosure!.modules[0].rails.r3).toBe(target?.id);
-    // Back on the inspector of the moved device.
-    expect(screen.getByRole("dialog", { name: "Leitungsschutzschalter" })).toBeInTheDocument();
+    expect(current().enclosure!.modules[0].rails.r5).toBe(target?.id);
+    // Round 2 (PANEL_ENCLOSURE_R2.md §6.5): the sheets close and the drop note offers Rückgängig.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Rückgängig" })).toBeInTheDocument();
   });
 
   it("pops one sheet on Escape", () => {
     render(<Host initial={distributionBoard()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gerät F1.1 auf F2 · Verteiler 3" }));
     fireEvent.click(screen.getByRole("button", { name: /^F1\.1, Leitungsschutzschalter/ }));
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 1" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "F2 · Verteiler 3" })).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
   });

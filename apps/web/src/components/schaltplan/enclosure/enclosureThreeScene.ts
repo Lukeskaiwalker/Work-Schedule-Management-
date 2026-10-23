@@ -62,6 +62,8 @@ const COLOURS: Readonly<Record<string, number>> = {
   "device:overflow": 0xf3b9b2,
   meter: 0x3b4652,
   meter_place: 0xe6ebf1,
+  /** A WAGO strip (R2 §8): the grey of the 2003-7641 housing. */
+  terminal_strip: 0xb9c0c8,
   door: 0xf7f7f4,
   handle: 0x56606b,
 };
