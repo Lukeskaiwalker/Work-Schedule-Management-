@@ -392,7 +392,7 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 |---|---|
 | `apps/api/app/services/schaltplan_type_label.py` | The owner's WAGO Smart Script blueprint (`Schrank Label.wssl`, template 2100804 = 210-804, 99 × 44) as EZPL: logo top-left, QR (`https://smpl-energy.de`) top-right as a downloaded bitmap, "Kunde / Projekt / Baujahr" block, centred contact lines (fixed branding constants); voll-tier stock only |
 | `apps/api/app/routers/workflow_schaltplan.py` → `/panels/{id}/type-label` (GET info, POST print), `/type-label/logo.png`, `/type-label/qr.svg` | Prefill resolved server-side (customer row, project number, this month in Europe/Berlin), print with `build_month` + `copies`; preview images for the dialog |
-| `apps/api/app/services/werkstatt_labels.py` → `logo_asset_for_box`, `mono_image_asset`, `image_download_preamble`, `place_image` | The logo/bitmap pipeline generalised for any box size and any number of assets per job (the machine label's `_logo_asset` is unchanged bit-for-bit) |
+| `apps/api/app/services/werkstatt_labels.py` → `logo_asset_for_box`, `mono_image_asset`, `image_download_preamble`, `place_image` | The logo/bitmap pipeline generalised for any box size and any number of assets per job (the machine label's `_logo_asset` box is 25 × 9,2 mm = 295 × 109 dots since the 300 dpi correction — a new bitmap under a new content-hashed name) |
 | `apps/web/src/components/schaltplan/PanelTypeLabelDialog.tsx` (+ `useTypeLabelPrinting.ts`, `PanelTypeLabelPreview.tsx`) | "Schrank-Etikett" button in the panel toolbar: schematic preview (with a placeholder DataMatrix of the board's `VT-` number bottom-left since 2026-09-24), editable Baujahr, copies, stock warning |
 | `apps/api/app/services/werkstatt_article_labels.py` | The stock article's shelf label (what `POST /werkstatt/articles/{id}/print-label` prints since 2026-09-23): DataMatrix of the SMPL code left, laid out for the 16 × 16 symbol an SMPL code needs, code text small under it; part number (the name's "… - …" head) as headline, description on two lines, `SP-xxxx · EAN …` small; no logo, no footer. `print_article_labels` batches in one connection; `preview_article_label_png` draws the sheet with a placeholder matrix |
 
@@ -486,6 +486,23 @@ The overview became a dashboard each user arranges per device class (Handy < 768
 | `styles/dashboard.css` | Page, grid, frame, editor, sticky toolbar; hides `.mobile-bottom-nav` while editing |
 
 Tests: `apps/api/tests/test_dashboard_*.py`, `test_auth_me_responses.py`, `test_permissions_role_upgrade.py`, `test_werkstatt_dashboard_preview_limit.py`; web `src/test/dashboard*.test.ts(x)`, `adminDashboardDefaults.test.tsx`, `schaltplanHandoff.test.ts`, `userUpdate.test.ts`, `twoFactorDisableMerge.test.tsx`.
+
+## Label printer calibration and IR sensor guide (2026-10-13)
+
+Contract: `docs/LABEL_PRINTER_CALIBRATION.md` (data model, EZPL allow-list, endpoints, German strings, physical test plan T0–T17). Built against a simulated printer; nothing is "verified" until the physical tests.
+
+| Module | Role |
+|---|---|
+| `services/werkstatt_label_builtins.py`, `werkstatt_label_profile.py`, `werkstatt_label_materials.py` | Material profiles: code defaults per WAGO item (sensor mode, `sensor_scale` 3.4 labels / 3.0 strip+tube, roller 258-5006, web geometry incl. 210-805 two lanes), only admin overrides stored (format 2, read-time migration), revision compare-and-set |
+| `services/werkstatt_label_ezpl_policy.py` | Allow-list and never-send list (`~V` prints, `~X*`, `~Z`, `^Z`, `~R`, unlisted `^XSET`) — every calibration send passes `assert_allowed` |
+| `services/werkstatt_label_transport.py`, `werkstatt_label_io_lock.py` | Queries are an Enum (`~S,STATUS`, `^XGET,CONFIG`); a reply ends on its own terminator; one printer connection at a time |
+| `services/werkstatt_label_address.py` | Address policy (SSRF): admin-entered port 9100–9109, no loopback/link-local/metadata/compose names/numeric spellings; `open_checked` resolves once and dials the checked IP |
+| `services/werkstatt_label_printer_status.py` | Parses `^XGET,CONFIG` (sensor line, `^QD` measurement, stored `^Q ^W ^E ^H ^S ~Q`); a reply without this printer's setup lines is neither parsed nor shown raw |
+| `services/werkstatt_label_calibration.py`, `werkstatt_label_session.py`, `werkstatt_label_verdict.py`, `werkstatt_label_patterns.py`, `werkstatt_label_jobs.py` | Apply (no `^E`), auto-sense `~S,SENSOR` with a freshness proof, verdict rules, measuring pattern, DB session lock with TTL (every print path answers 409 meanwhile), per-job baseline `^H ^S ^E ^C` |
+| `routers/werkstatt_label_printer.py`, `routers/admin_label_printer.py` | Quick flow `werkstatt:manage` (released per printer by an admin switch), wizard + profiles `settings:manage`; the blobs need `app_settings.value` as TEXT, which migration `20261022_0105` made it (no migration of their own) |
+| `apps/web/src/components/labelPrinter/*` | `MaterialChangeSheet` (quick flow), `CalibrationWizard`, `ConfirmFeedDialog` (cost + stop hint), `VerdictCard`, `LabelSensorDiagram` (printed scale 1–5, ▲▼ pointer, Ziel/Ist), `LabelPathSideView`; ALL diagram geometry in `sensorGeometry.ts` (from the owner's photo 2026-10-13) |
+| `apps/web/src/components/admin/AdminLabelPrinterCard.tsx`, `pages/werkstatt/WerkstattMaschinenPage.tsx` | Admin card: address, staff switch, material rows with chips; Maschinen page: "Etikettendrucker" quick entry |
+| `werkstatt_label_profile.mm_to_dots` / `printer_mm` / `printer_width_mm` / `q_value`; web `utils/printerDots.ts` | The scale (contract §4.12, after T4): every renderer lays out in physical dots, 300 dpi = 11,81 per mm, rounded once (`mm_to_dots`); `^Q`/`^W` go out in the printer's own millimetre (dots / 12, `printer_mm`), a die-cut length and `^W` rounded up so the form never ends before the label: 210-804 is `^Q98,3 ^W44`. Font sizes, code modules and line weights stay dots. `tests/test_label_physical_scale.py` (ruler 945 dots, no strip drift, printer-mm headers, no builtin die-cut job past its form, no `12` in rendering modules); `stripParityFixtures.json` holds API and editor preview to the same strip numbers |
 
 ## Zugangsdaten and Kalender-Abo (2026-09-24)
 

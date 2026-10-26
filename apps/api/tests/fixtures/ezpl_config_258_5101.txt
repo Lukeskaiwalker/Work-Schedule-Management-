@@ -1,0 +1,32 @@
+Smart Printer V5.UW0m
+USB S/N: 2532090E
+Serial port: 96,N,8,1
+LAN MAC: 00:1d:9a:10:1a:18
+LAN IP 192.168.2.158(DHCP_100M)
+LAN Gateway 192.168.2.1
+LAN Sub-Mask: 255.255.255.000
+LAN Network: ON-LINE
+Card Status: BT card detected
+BT MAC Addr: 08 BE AC 46 C6 14
+BLE Server: Not connected
+Classical(EDR) Server: Not connected
+PORT State L S E U B
+           1 1 1 1 1
+################################
+0000 FORM(S) IN MEMORY
+0003 GRAPHIC(S) IN MEMORY
+000 FONT(S) IN MEMORY
+000 ASIAN FONT(S) IN MEMORY
+000 DATABASE(S) IN MEMORY
+000 TTF(S) IN MEMORY
+14192184 KB FREE MEMORY
+^S2 ^H12 ^R000 ~R255 ~Q-19
+^W34 ^Q97,2 ^E0
+Option:^D0 ^O0 ^AT
+See.:0.1 1.7 1.0 [1.6_58]
+Code Page:850
+Y-axis resolution = 300 Dpi
+^QD1164,30  ^Q97.0,2.5
+Label+Gap = 1194 Dots
+--------
+---

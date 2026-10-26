@@ -20,6 +20,7 @@
  * in the hand.
  */
 import type { DeviceKind, PanelDevice, PanelRow } from "../types/schaltplan";
+import { DOTS_PER_MM, mmToDots } from "./printerDots";
 
 /** Nominal module width (DIN 43880). A 4 TE FI is 70 mm; a 12-module rail 210 mm. */
 export const MODULE_WIDTH_MM = 17.5;
@@ -34,11 +35,15 @@ export const STRIP_HEIGHT_MM = 11;
 export const SINGLE_LABEL_WIDTH_MM = 15;
 export const SINGLE_LABEL_HEIGHT_MM = 6;
 
-/** Printer resolution the layout is computed in (300 dpi ≈ 12 dots/mm). */
-export const DOTS_PER_MM = 12;
+/**
+ * Printer resolution the layout is computed in: the head's 300 dpi, 300 / 25,4
+ * ≈ 11,81 dots per mm — the API's `PHYSICAL_DOTS_PER_MM`. Not 12: a strip laid
+ * out at 12 per mm printed 1,9 % long (physical test T4, 13.10.2026).
+ */
+export { DOTS_PER_MM, mmToDots };
 
-/** Padding kept free on either side of a BMK inside its segment, in dots. */
-export const SEG_PAD_DOTS = 12;
+/** Padding kept free on either side of a BMK inside its segment: 1 mm, in dots. */
+export const SEG_PAD_DOTS = mmToDots(1);
 
 /** Smallest font the strip is ever printed at — below this a BMK is unreadable on the rail. */
 export const MIN_FONT_DOTS = 24;
@@ -49,8 +54,8 @@ export const MAX_FONT_DOTS_FLOOR = 16;
 /** The largest font is capped at this share of the strip height … */
 export const MAX_FONT_HEIGHT_RATIO = 0.72;
 
-/** … and at the strip height minus this margin, whichever is smaller. */
-export const MAX_FONT_MARGIN_DOTS = 12;
+/** … and at the strip height minus this margin (1 mm), whichever is smaller. */
+export const MAX_FONT_MARGIN_DOTS = mmToDots(1);
 
 /** Advance for a glyph outside the table, in em. */
 export const FALLBACK_ADVANCE_EM = 0.58;
@@ -218,9 +223,9 @@ export function textWidthEm(text: string): number {
 
 /** Largest font the stock allows: max(16, min(h − 12, ⌊0.72 h⌋)) with h the strip height in dots. */
 export function maxFontDots(stripWidthMm: number): number {
-  // Whole millimetres first, then dots — the printer frames the strip as
-  // round(width) × 12, and the twin sizes against the same height.
-  const heightDots = Math.round(stripWidthMm) * DOTS_PER_MM;
+  // The printer frames the strip as mm_to_dots(width) — 11 mm = 130 dots —
+  // and the twin sizes against the same height.
+  const heightDots = mmToDots(stripWidthMm);
   return Math.max(
     MAX_FONT_DOTS_FLOOR,
     Math.min(heightDots - MAX_FONT_MARGIN_DOTS, Math.trunc(MAX_FONT_HEIGHT_RATIO * heightDots)),
@@ -309,7 +314,7 @@ export function formatMm(value: number): string {
   return String(rounded).replace(".", ",");
 }
 
-/** A font size in dots as millimetres with one decimal: 92 dots → "7,7". */
+/** A font size in dots as millimetres with one decimal (300 dpi): 91 dots → "7,7". */
 export function formatFontMm(sizeDots: number): string {
   return (sizeDots / DOTS_PER_MM).toFixed(1).replace(".", ",");
 }

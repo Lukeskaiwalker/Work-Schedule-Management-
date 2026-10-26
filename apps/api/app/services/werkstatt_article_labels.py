@@ -25,18 +25,19 @@ from sqlalchemy.orm import Session
 
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_materials import TIER_VOLL, MaterialProfile, active_material
+from app.services.werkstatt_label_profile import mm_to_dots
 
-# ── Layout, reading frame in printer dots (12 per mm) on the 99 × 44 sheet ──
+# ── Layout on the 99 × 44 sheet: positions in mm, module and fonts in dots ──
 
-_DM_X, _DM_Y, _DM_MODULE = 36, 150, 11
+_DM_X, _DM_Y, _DM_MODULE = mm_to_dots(3), mm_to_dots(12.5), 11
 _DM_SYMBOL_MODULES = 16  # ECC200 for 9..12 codewords — an SMPL code is 10
-_DM_SIZE = _DM_MODULE * _DM_SYMBOL_MODULES  # 176 dots, 14.7 mm — scans at arm's length
-_CODE_Y, _CODE_SIZE = _DM_Y + _DM_SIZE + 14, 28
+_DM_SIZE = _DM_MODULE * _DM_SYMBOL_MODULES  # 176 dots, 14,9 mm — scans at arm's length
+_CODE_Y, _CODE_SIZE = _DM_Y + _DM_SIZE + mm_to_dots(1.2), 28
 
-_COL_X = 252
-_HEAD_Y, _HEAD_MAX, _HEAD_MIN = 44, 96, 44
-_DESC_Y, _DESC_MAX, _DESC_MIN, _DESC_LINES, _DESC_LEADING = 168, 50, 26, 2, 1.25
-_FOOT_Y, _FOOT_SIZE = 458, 30
+_COL_X = mm_to_dots(21)
+_HEAD_Y, _HEAD_MAX, _HEAD_MIN = mm_to_dots(3.7), 96, 44
+_DESC_Y, _DESC_MAX, _DESC_MIN, _DESC_LINES, _DESC_LEADING = mm_to_dots(14), 50, 26, 2, 1.25
+_FOOT_Y, _FOOT_SIZE = mm_to_dots(38.2), 30
 
 # "WAGO 2016-7607 - TOPJOB S …": the catalog names lead with the part
 # number and separate the description with " - ". A head longer than this
@@ -172,9 +173,9 @@ def preview_article_label_png(
     font_path: str | None = None,
     bold_font_path: str | None = None,
 ) -> bytes:
-    """The label as a PNG at printer resolution (12 px/mm), drawn with a
-    system TTF where the printer uses its own — sizes and positions are the
-    job's, glyph shapes are approximate."""
+    """The label as a PNG at printer resolution (300 dpi, one pixel per
+    dot), drawn with a system TTF where the printer uses its own — sizes and
+    positions are the job's, glyph shapes are approximate."""
     from PIL import Image, ImageDraw, ImageFont
 
     from app.services.werkstatt_label_materials import DEFAULT_MATERIALS

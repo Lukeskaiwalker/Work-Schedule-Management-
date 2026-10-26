@@ -18,7 +18,10 @@ import { blockCellSizeDots, blockRowSizeDots } from "../../utils/schaltplanTermi
 
 /** Preview scale. 2.4 px/mm puts a 12-module rail at ~520 px — scrollable on a phone, whole on a tablet. */
 export const PX_PER_MM = 2.4;
-/** The same scale in printer dots, so the board font size lands on screen at its true proportion. */
+/**
+ * The same scale in printer dots (300 dpi, 11,81 per mm), so the board font
+ * size lands on screen at the proportion it prints at.
+ */
 export const PX_PER_DOT = PX_PER_MM / DOTS_PER_MM;
 /** Room above and below the band so the thick end lines are not clipped. */
 const BAND_PAD_PX = 6;

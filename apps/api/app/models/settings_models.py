@@ -12,8 +12,9 @@ class AppSetting(Base):
     __tablename__ = "app_settings"
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
-    # Text (migration 0105): the permission overrides are one JSON value each
-    # and outgrew VARCHAR(2048) at a few dozen users with an override.
+    # Text since migration 20261022_0105: the permission overrides are one
+    # JSON value each and outgrew VARCHAR(2048) at a few dozen users with an
+    # override; the label printer state needs the room as well.
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

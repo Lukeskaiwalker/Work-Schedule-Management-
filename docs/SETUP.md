@@ -178,9 +178,10 @@ Construction report processing/runtime knobs:
 
 ## Werkstatt Label Printer (optional)
 - The Maschinen register prints machine labels on the workshop's WAGO Smart
-  Printer 258-5101 — a Godex OEM device speaking EZPL — over raw TCP
-  port-9100 printing. (The first-gen smartPRINTER 258-5000 was a cab device;
-  this generation is not.)
+  Printer 258-5101 — a GoDEX OEM device speaking EZPL — over raw TCP
+  port-9100 printing. Research (2026-10) found WAGO's own GoDoctor
+  screenshots identifying the 258-5000 generation as a GoDEX RT230i; the
+  258-5101 is GoDEX-based as well (EZPL).
 - **Preferred setup: Admin → Einstellungen → "Etikettendrucker (Werkstatt)"**
   — IP + port live in runtime settings, changeable without a redeploy, with a
   "Testdruck" button that prints one sample label.
@@ -197,9 +198,40 @@ Construction report processing/runtime knobs:
   print.
 - The API container must be able to reach the printer's LAN. Give the printer
   a DHCP reservation (its address drifting is the most likely failure).
-- Label geometry (WAGO 210-804: 99 × 44 mm type labels) lives as constants in
-  `apps/api/app/services/werkstatt_labels.py` — adjust there when a different
-  marking material is loaded.
+- **Materials and calibration** live in the app, not in code: material
+  profiles (size, gap, offsets, sensor mode, the sensor carriage's reading on
+  the printer's scale 1–5, guides, roller, the physical roll) are edited in
+  Admin → Einstellungen → "Etikettendrucker (Werkstatt)", together with the
+  full calibration wizard (printer check, profile, sensor guide, measuring
+  pattern, print values). Workshop staff run the quick flow "Material
+  gewechselt" from Werkstatt → Maschinen ("Etikettendrucker" button). The
+  contract — data model, commands, endpoints, physical test plan — is
+  [LABEL_PRINTER_CALIBRATION.md](LABEL_PRINTER_CALIBRATION.md).
+- **Staff switch**: the quick flow stays admin-only until the owner ticks
+  "Schnellablauf „Material gewechselt“ für die Werkstatt freigeben"
+  (`label_calibration_staff_enabled`, Admin → Etikettendrucker). Leave it off
+  until the physical tests T0b, T1, T2 and T5 of the calibration document
+  have results.
+- **Readback**: port 9100 is two-way — SMPL reads `~S,STATUS` and
+  `^XGET,CONFIG` (status, stored settings, last sensor measurement); reads
+  never change a setting.
+- **Never sent** by SMPL: `~V` (prints a self-test page), `~T`, `~X`, `~Z`,
+  `^Z` (factory reset), `~R`/`^R`, `~Q`, `~S,DUMP`, `~S,FEED`, `~S,CANCEL`,
+  `~S,BUFCLR`, `~S,PAUSE`, `~M`/`^M`, `^B`, `^A`, `^N`, `~EB` outside print
+  jobs, and `^XSET,IMMEDIATE` (phase 1); every calibration send passes an
+  allow-list (`werkstatt_label_ezpl_policy.py`).
+- **Every job states its baseline**: `^H ^S ^E ^C ^P1` after `^Q`/`^W`
+  (darkness, speed, stop, copies — EZPL keeps them permanently, and WAGO's own
+  software changes them too); a job with copies > 1 ends with `^C1` so SMPL's
+  copy count does not reach the next client's job.
+- **Calibration lock**: while someone runs a calibration session, every print
+  route (machine labels, articles, crates, BMK strips, type labels) answers
+  409 "Etikettendrucker wird gerade eingerichtet …"; the Testdruck answers
+  `ok: false` with the same text. The session expires 10 minutes after its
+  last step.
+- **Roller**: all six WAGO materials (210-804/-824/-812/-805, 211-501,
+  2009-110) use the black, smooth platen roller **258-5006**; the green,
+  grooved 258-5007 is for WMB-Inline 2009-113/-114/-115 only.
 
 ## Local SMTP + Invite/Reset Links (optional but recommended)
 - Configure in `apps/api/.env.example` (or your deployment env):

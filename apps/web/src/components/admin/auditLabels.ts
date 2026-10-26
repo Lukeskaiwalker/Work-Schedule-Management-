@@ -18,6 +18,7 @@ const AUDIT_TARGET_LABELS: Record<string, { de: string; en: string }> = {
   dashboard_default: { de: "Standard-Startseite", en: "Default start page" },
   employee_group: { de: "Mitarbeitergruppe", en: "Employee group" },
   file: { de: "Datei", en: "File" },
+  label_printer: { de: "Etikettendrucker", en: "Label printer" },
   material_catalog_item: { de: "Katalogartikel", en: "Catalog item" },
   message: { de: "Nachricht", en: "Message" },
   openai: { de: "OpenAI-Einstellungen", en: "OpenAI settings" },

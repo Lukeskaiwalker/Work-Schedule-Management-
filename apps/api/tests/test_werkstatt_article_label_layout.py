@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from app.services import werkstatt_article_labels as al
 from app.services import werkstatt_labels
 from app.services.werkstatt_label_materials import DEFAULT_MATERIALS
+from app.services.werkstatt_label_profile import mm_to_dots
 from tests.conftest import auth_headers
 
 VOLL = DEFAULT_MATERIALS[0]
@@ -60,11 +61,13 @@ def test_job_places_matrix_code_head_description_and_foot_without_logo_or_footer
     content = al.ArticleLabelContent("SMPL-81JHYT", "WAGO 2016-7607 - TOPJOB S 2L-PE-KL.42GRAD 16QMM GR-GE", "WAGO", "SP-0187", "4045454725112")
     job = al.render_article_label(VOLL, content)
 
-    assert job[:3] == ["^Q99,3", "^W44", "^L"] and job[-1] == "E"
+    assert job[:8] == ["^Q98,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L"] and job[-1] == "E"
     # A 16 × 16 symbol of 11-dot modules, anchored at its reading bottom
-    # (528 - (150 + 176) = 202) and its reading left (36 + 2 mm offset = 60).
-    assert "XRB202,60,11,0,11" in job
-    assert job[job.index("XRB202,60,11,0,11") + 1] == "SMPL-81JHYT"
+    # (520 - (148 + 176) = 196: 44 mm, 12,5 mm at 300 dpi) and its reading
+    # left (3 mm + 2 mm offset = 35 + 24 = 59).
+    assert (al._DM_X, al._DM_Y, al._DM_SIZE) == (35, 148, 176)
+    assert "XRB196,59,11,0,11" in job
+    assert job[job.index("XRB196,59,11,0,11") + 1] == "SMPL-81JHYT"
     assert not any(line.startswith(("Y", "~EB")) for line in job), "no logo on a shelf label"
     assert not any("SMPL Energy" in line for line in job), "no footer on a shelf label"
 
@@ -82,11 +85,12 @@ def test_job_places_matrix_code_head_description_and_foot_without_logo_or_footer
     assert sizes["TOPJOB S 2L-PE-KL.42GRAD"] == sizes["16QMM GR-GE"] == 50
     assert sizes["SP-0187 · EAN 4045454725112"] == 30
     # The code sits under the matrix in the left column; everything else in
-    # the right column, clear of the 176-dot symbol (machine y = reading x + 24).
+    # the right column (21 mm = 248 dots), clear of the 176-dot symbol
+    # (machine y = reading x + 24).
     code_y = next(y for _, y, _, t in texts if t == "SMPL-81JHYT")
-    assert code_y == 36 + 24
-    assert all(y == 252 + 24 for _, y, _, t in texts if t != "SMPL-81JHYT")
-    assert 252 > al._DM_X + al._DM_SIZE
+    assert code_y == 35 + 24
+    assert all(y == 248 + 24 for _, y, _, t in texts if t != "SMPL-81JHYT")
+    assert al._COL_X == 248 > al._DM_X + al._DM_SIZE
 
 
 def test_long_head_and_description_shrink_and_a_missing_ean_leaves_only_the_number() -> None:
@@ -127,7 +131,7 @@ def test_endpoint_prints_the_shelf_layout(client: TestClient, admin_token: str, 
     assert printed.status_code == 200, printed.text
     code = printed.json()["internal_code"]
     text = sent[0].decode("utf-8")
-    assert f"XRB202,60,11,0,11\r\n{code}\r\n" in text
+    assert f"XRB196,59,11,0,11\r\n{code}\r\n" in text
     assert ",96,96,0,1E,0,0,WAGO 2009-305\r\n" in text
     # The description wraps to two lines at one size.
     assert ",50,50,0,1E,0,0,SAMMELSCHIENENTRAeGER\r\n" in text and ",50,50,0,1E,0,0,FUeR TS 35\r\n" in text
@@ -170,6 +174,6 @@ def test_preview_is_a_png_of_the_sheet() -> None:
     png = al.preview_article_label_png(al.ArticleLabelContent("SMPL-81JHYT", "WAGO 2016-7607 - TOPJOB S", "WAGO", "SP-0187", None))
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     image = Image.open(BytesIO(png))
-    assert image.size == (99 * 12, 44 * 12)
+    assert image.size == (mm_to_dots(99), mm_to_dots(44)) == (1169, 520)  # one pixel per 300 dpi dot
     # Something dark was drawn where the matrix goes and where the head goes.
     assert image.getpixel((al._DM_X, al._DM_Y + al._DM_SIZE - 1)) == 0  # the finder's bottom-left corner

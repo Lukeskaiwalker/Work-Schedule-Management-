@@ -177,39 +177,40 @@ describe("boardFontSize", () => {
   const rows = (...devices: ReturnType<typeof makeDevice>[]) => ({ rows: [{ devices }] });
 
   it("pins the printer constants the size is derived from", () => {
-    expect(DOTS_PER_MM).toBe(12);
-    expect(SEG_PAD_DOTS).toBe(12);
+    // The head's 300 dpi — not 12 per mm (physical test T4, 13.10.2026).
+    expect(DOTS_PER_MM).toBe(300 / 25.4);
+    expect(SEG_PAD_DOTS).toBe(12); // 1 mm = 11,81 → 12 dots
     expect(MIN_FONT_DOTS).toBe(24);
     expect(MAX_FONT_DOTS_FLOOR).toBe(16);
     expect(STRIP_HEIGHT_MM).toBe(11);
   });
 
   it("caps the size at max(16, min(h − 12, 0.72 h)) for the strip width", () => {
-    // 11 mm × 12 = 132 dots: min(120, int(95.04)) = 95.
-    expect(maxFontDots(11)).toBe(95);
-    // 6 mm × 12 = 72 dots: min(60, int(51.84)) = 51.
+    // 11 mm at 300 dpi = 130 dots: min(118, int(93.6)) = 93.
+    expect(maxFontDots(11)).toBe(93);
+    // 6 mm = 71 dots: min(59, int(51.12)) = 51.
     expect(maxFontDots(6)).toBe(51);
     // Absurdly narrow stock still leaves a legible floor.
     expect(maxFontDots(1)).toBe(16);
   });
 
   it("uses the maximum when nothing on the board is labelled", () => {
-    expect(boardFontSize({ rows: [] }, 11)).toEqual({ sizeDots: 95, overflowing: [] });
+    expect(boardFontSize({ rows: [] }, 11)).toEqual({ sizeDots: 93, overflowing: [] });
     expect(boardFontSize(rows(makeDevice("blank"), makeDevice("mcb")), 11)).toEqual({
-      sizeDots: 95,
+      sizeDots: 93,
       overflowing: [],
     });
   });
 
-  it("fits F1.1 into a 17.5 mm module at floor((210 − 24) / 2.001) = 92 dots", () => {
+  it("fits F1.1 into a 17.5 mm module at floor((206.69 − 24) / 2.001) = 91 dots", () => {
     expect(boardFontSize(rows(makeDevice("mcb", { designation: "F1.1" })), 11)).toEqual({
-      sizeDots: 92,
+      sizeDots: 91,
       overflowing: [],
     });
   });
 
   it("clamps a roomy board to the maximum", () => {
-    expect(boardFontSize(rows(makeDevice("rcd", { designation: "F1" })), 11).sizeDots).toBe(95);
+    expect(boardFontSize(rows(makeDevice("rcd", { designation: "F1" })), 11).sizeDots).toBe(93);
   });
 
   it("is one size for the whole document: the tightest segment of any row wins", () => {
@@ -219,7 +220,7 @@ describe("boardFontSize", () => {
         { devices: [makeDevice("mcb", { designation: "F1.1" }), makeDevice("blank", { designation: "F1.10.11.12" })] },
       ],
     };
-    expect(boardFontSize(document, 11).sizeDots).toBe(92);
+    expect(boardFontSize(document, 11).sizeDots).toBe(91);
   });
 
   it("clamps to 24 dots and reports the BMKs that will run past their segment", () => {
@@ -256,10 +257,11 @@ describe("widthSuggestionsMm / formatMm / formatFontMm", () => {
     expect(formatMm(52.4999)).toBe("52,5");
   });
 
-  it("prints the font size in millimetres with one decimal", () => {
-    expect(formatFontMm(95)).toBe("7,9");
-    expect(formatFontMm(92)).toBe("7,7");
+  it("prints the font size in real millimetres (300 dpi) with one decimal", () => {
+    expect(formatFontMm(93)).toBe("7,9");
+    expect(formatFontMm(91)).toBe("7,7");
     expect(formatFontMm(24)).toBe("2,0");
+    expect(formatFontMm(95)).toBe("8,0"); // 12 per mm called this 7,9
   });
 });
 
@@ -275,8 +277,10 @@ describe("parity with the API's edge rules", () => {
     expect(deviceWidthMm({ te: 0.4, width_mm: null })).toBe(17.5);
   });
 
-  it("sizes against a whole-millimetre strip height, like the API", () => {
-    expect(maxFontDots(11)).toBe(95);
-    expect(maxFontDots(10.5)).toBe(maxFontDots(11));
+  it("sizes against the strip's physical height in dots, like the API", () => {
+    // The printer frames the strip as mm_to_dots(width) since the 300 dpi
+    // correction: 10,5 mm = 124 dots, not a whole-millimetre 11 × 12.
+    expect(maxFontDots(11)).toBe(93);
+    expect(maxFontDots(10.5)).toBe(89);
   });
 });

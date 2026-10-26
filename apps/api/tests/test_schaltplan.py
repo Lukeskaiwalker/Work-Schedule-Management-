@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM
 from app.services.schaltplan_layout import (
     board_font_size,
     build_legend,
@@ -678,8 +679,11 @@ def test_bmk_strip_is_one_job_per_rail_with_real_widths_and_cut_marks(
     # The label is the rail plus 3 mm of lead on both sides — plus the material's
     # 2 mm print-origin offset, so the lead AFTER the end line is as long as the
     # one before the start line: 3 + 105.5 + 3 + 2 = 113.5 and 3 + 17.5 + 3 + 2 = 25.5.
-    assert abs(_q_length(first) - 113.5) <= 1
-    assert abs(_q_length(second) - 25.5) <= 1
+    # ^Q states it in the printer's millimetres (dots / 12), rounded up:
+    # 1317 + 24 dots → 112, 278 + 24 → 26.
+    printer_mm = PHYSICAL_DOTS_PER_MM / 12
+    assert abs(_q_length(first) - 113.5 * printer_mm) <= 1 and _q_length(first) * 12 >= 1317 + 24
+    assert abs(_q_length(second) - 25.5 * printer_mm) <= 1 and _q_length(second) * 12 >= 278 + 24
     assert b"^W11" in first and b"^W11" in second
     # Cut marks: one divider between neighbours, plus a start and an end line.
     assert first.count(b"Lo,") == 2 + 2
@@ -719,11 +723,12 @@ def test_bmk_strip_font_size_is_dictated_by_the_whole_board(
 ):
     """Printing r1 alone must still use the size the widest BMK on r2 forces.
 
-    On the 11 mm strip (132 dots) a 1 TE segment has 17.5 × 12 − 2 × 12 = 186
-    dots for text. "F1.1" is 0.611 + 0.556 + 0.278 + 0.556 = 2.001 em wide, so
-    it fits at 186 / 2.001 = 92.95 → 92 dots. "F1.10" adds another 0.556 em:
-    186 / 2.557 = 72.74 → 72 dots. The board size is the minimum, 72, and r1
-    gets it even though every BMK on r1 would fit at 92 — a board with two
+    On the 11 mm strip (130 dots at 300 dpi) a 1 TE segment has
+    17.5 × 11.811 − 2 × 12 = 182.69 dots for text. "F1.1" is
+    0.611 + 0.556 + 0.278 + 0.556 = 2.001 em wide, so it fits at
+    182.69 / 2.001 = 91.30 → 91 dots. "F1.10" adds another 0.556 em:
+    182.69 / 2.557 = 71.45 → 71 dots. The board size is the minimum, 71, and
+    r1 gets it even though every BMK on r1 would fit at 91 — a board with two
     text sizes on it is exactly what the user rejected.
     """
     _configure_label_printer(client, admin_token)
@@ -737,11 +742,11 @@ def test_bmk_strip_font_size_is_dictated_by_the_whole_board(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["font_size_dots"] == 72
+    assert body["font_size_dots"] == 71
     assert body["overflowing"] == []
     (job,) = _jobs(sent[0])
     assert b"F1.10" not in job, "only r1 was asked for"
-    assert _at_sizes(job) == [72, 72, 72]
+    assert _at_sizes(job) == [71, 71, 71]
 
 
 def test_bmk_strip_centres_each_text_in_its_segment(
@@ -749,14 +754,15 @@ def test_bmk_strip_centres_each_text_in_its_segment(
 ):
     """Pinned position of "F1.1" on r1 of the _strip_panel fixture.
 
-    Reading frame (x along the feed, y across the 132-dot strip), size 92:
-      segment start = 3 mm lead (36) + F1's 70 mm (840)            = 876
-      segment width = 17.5 mm                                      = 210
-      text width    = 92 × 2.001 em                                = 184.092
-      left          = round(876 + (210 − 184.092) / 2) = round(888.954) = 889
-      top           = round(132 / 2 − 92 × (0.19 + 0.716 / 2))
-                    = round(66 − 50.416) = round(15.584)           = 16
-    Machine frame: x = 132 − top = 116, y = left + 2 mm offset (24) = 913.
+    Reading frame (x along the feed, y across the 130-dot strip — 11 mm at
+    300 dpi, 11.811 dots per mm), size 91, rounded once at the end:
+      segment start = 3 mm lead + F1's 70 mm = 73 mm               = 862.20
+      segment width = 17.5 mm                                      = 206.69
+      text width    = 91 × 2.001 em                                = 182.091
+      left          = round(862.20 + (206.69 − 182.091) / 2) = round(874.51) = 875
+      top           = round(130 / 2 − 91 × (0.19 + 0.716 / 2))
+                    = round(65 − 49.868) = round(15.132)           = 15
+    Machine frame: x = 130 − top = 115, y = left + 2 mm offset (24) = 899.
     """
     _configure_label_printer(client, admin_token)
     sent = _capture_label_jobs(monkeypatch)
@@ -768,9 +774,9 @@ def test_bmk_strip_centres_each_text_in_its_segment(
         json={"row_ids": ["r1"]},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["font_size_dots"] == 92
+    assert resp.json()["font_size_dots"] == 91
     (job,) = _jobs(sent[0])
-    assert b"\r\nAT,116,913,92,92,0,1E,0,0,F1.1\r\n" in job
+    assert b"\r\nAT,115,899,91,91,0,1E,0,0,F1.1\r\n" in job
 
 
 def test_bmk_strip_reports_a_bmk_that_cannot_fit_at_the_minimum_size(
@@ -778,7 +784,7 @@ def test_bmk_strip_reports_a_bmk_that_cannot_fit_at_the_minimum_size(
 ):
     """A 23-character BMK on a 1 TE breaker cannot fit even at 24 dots.
 
-    "Q1 Hauptschalter Keller" is 10.615 em; 186 / 10.615 = 17.5 dots, under the
+    "Q1 Hauptschalter Keller" is 10.615 em; 182.69 / 10.615 = 17.2 dots, under the
     24-dot floor. The size is clamped to 24 — smaller would be illegible on the
     board — and the text is reported so the caller can warn that it will run
     past its cut marks.
@@ -827,34 +833,34 @@ def test_strip_segments_skip_blank_covers_and_unnamed_devices():
 
 
 def test_board_font_size_is_the_maximum_when_nothing_is_labelled():
-    # 11 mm × 12 dots = 132 dots across; the cap is max(16, min(132 − 12, int(0.72 × 132))) = 95.
+    # 11 mm at 300 dpi = 130 dots across; the cap is max(16, min(130 − 12, int(0.72 × 130))) = 93.
     document = _document([
         _device("x", "mcb", designation=""),
         # A blank cover never counts, whatever someone typed on it.
         _device("b1", "blank", designation="WWWWWWWWWWWW"),
     ])
-    assert board_font_size(document, 11) == (95, [])
-    assert board_font_size({"rows": []}, 11) == (95, [])
+    assert board_font_size(document, 11) == (93, [])
+    assert board_font_size({"rows": []}, 11) == (93, [])
 
 
 def test_board_font_size_uses_per_glyph_widths():
-    """The BMK "F1.1" is 2.001 em and fits 92 dots; a flat 0.58 em/char would allow only 80."""
+    """The BMK "F1.1" is 2.001 em and fits 91 dots; a flat 0.58 em/char would allow only 78."""
     document = _document([_device("f11", "mcb", designation="F1.1")])
     size, overflowing = board_font_size(document, 11)
-    assert size == 92
+    assert size == 91
     assert overflowing == []
-    assert size > int(186 / (0.58 * 4))
+    assert size > int((17.5 * PHYSICAL_DOTS_PER_MM - 24) / (0.58 * 4))
 
 
 def test_board_font_size_is_the_smallest_fit_over_every_row():
     # The tight BMK sits in the FIRST row and a roomy one follows, so an
-    # implementation that only looked at the last row would answer 92.
+    # implementation that only looked at the last row would answer 91.
     document = _document([_device("f110", "mcb", designation="F1.10")])
     document["rows"].append({
         "id": "row-2", "label": "Reihe 2", "slots": 12,
         "devices": [_device("f11", "mcb", designation="F1.1")],
     })
-    assert board_font_size(document, 11) == (72, [])
+    assert board_font_size(document, 11) == (71, [])
 
 
 def test_segment_text_trims_the_same_junk_as_the_editor():

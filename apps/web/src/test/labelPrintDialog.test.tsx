@@ -111,14 +111,15 @@ describe("LabelPrintDialog", () => {
     const { container } = renderDialog();
     const sizes = previewTextSizes(container);
     expect(sizes).toHaveLength(4);
-    // F1.1 in 17.5 mm fixes the board at 92 dots; the preview scales 0.2 px per dot.
-    expect(new Set(sizes)).toEqual(new Set(["18.4"]));
+    // F1.1 in 17.5 mm fixes the board at 91 dots; the preview scales
+    // 2.4 px/mm ÷ 11.81 dots/mm (300 dpi) = 0.2032 px per dot.
+    expect(new Set(sizes)).toEqual(new Set(["18.49"]));
   });
 
   it("keeps the one size when a row with only roomy segments is previewed alone", () => {
     const { container } = renderDialog({ initialRowIds: ["r2"] });
     // K1 on a 35 mm Schütz would fit far larger; the board size still rules.
-    expect(previewTextSizes(container)).toEqual(["18.4"]);
+    expect(previewTextSizes(container)).toEqual(["18.49"]);
   });
 
   it("centres each BMK on its segment", () => {
@@ -152,7 +153,7 @@ describe("LabelPrintDialog", () => {
     const { onPrint, container } = renderDialog({ document, initialRowIds: ["r1"] });
     expect(screen.getByText(`Zu lang für die Box bei einheitlicher Größe: ${tooLong}`)).toBeInTheDocument();
     expect(screen.getByText(/Schriftgröße: 2,0 mm/)).toBeInTheDocument();
-    expect(new Set(previewTextSizes(container))).toEqual(new Set(["4.8"]));
+    expect(new Set(previewTextSizes(container))).toEqual(new Set(["4.88"])); // 24 dots
     const print = screen.getByRole("button", { name: "Drucken" });
     expect(print).toBeEnabled();
     fireEvent.click(print);
@@ -360,9 +361,9 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
     expect(previewTexts(container)).toEqual(["X1", "1.1", "X2", "2.1"]);
     // 12 mm feed + 5.2 mm Etagenklemme = 17.2 mm between the end lines, 3 mm lead each side.
     expect(screen.getAllByText(/3 \+ 17,2 \+ 3/)).toHaveLength(2);
-    // "1.1" on 5.2 mm with the 0.5 mm pad fits at 36 dots → 3.0 mm, 7.2 px in the preview.
+    // "1.1" on 5.2 mm with the 0.5 mm pad fits at 35 dots → 3,0 mm, 7.11 px in the preview.
     expect(screen.getByText(/2 Streifen · 4 Klemmen · 46,4 mm Material · Schriftgröße: 3,0 mm/)).toBeInTheDocument();
-    expect(new Set(previewTextSizes(container))).toEqual(new Set(["7.2"]));
+    expect(new Set(previewTextSizes(container))).toEqual(new Set(["7.11"]));
     // A divider on every boundary: one cut line per strip between X1 and 1.1.
     expect(container.querySelectorAll("line.sp-strip-cut")).toHaveLength(2);
   });

@@ -181,7 +181,7 @@ describe("weekday header", () => {
 
 describe("audit log target labels", () => {
   it("names the targets the API writes in German", () => {
-    for (const target of ["user", "project", "task", "settings", "backup", "school_absence", "role", "employee_group"]) {
+    for (const target of ["user", "project", "task", "settings", "backup", "school_absence", "role", "employee_group", "label_printer"]) {
       expectGerman(auditTargetLabel(target, true), target);
     }
     expect(auditTargetLabel("user", true)).toBe("Benutzer");

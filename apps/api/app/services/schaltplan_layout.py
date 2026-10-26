@@ -95,6 +95,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM, mm_to_dots
+
 # ── Device catalogue ────────────────────────────────────────────────────────
 #
 # ``te``      default width in Teilungseinheiten (1 TE = 18 mm)
@@ -408,17 +410,18 @@ GLYPH_ADVANCE_EM: dict[str, float] = {
 }
 GLYPH_ADVANCE_FALLBACK_EM = 0.58
 
-# The 258-5101's 300 dpi head; the same number as werkstatt_labels._DOTS_PER_MM.
-STRIP_DOTS_PER_MM = 12
+# Sizes are dots of the 258-5101's 300 dpi head (PHYSICAL_DOTS_PER_MM, 11,81
+# per mm — what the strip renderer lays out in); millimetres convert with
+# mm_to_dots. The editor's twin (schaltplanStrip.ts) uses the same number.
 # 1 mm between a segment's cut line and its text, on each side.
-STRIP_SEG_PAD_DOTS = 12
+STRIP_SEG_PAD_DOTS = mm_to_dots(1)
 # 2 mm capitals: below this a BMK is unreadable on a board, so a text that
 # needs less is printed at this size and reported as overflowing instead.
 STRIP_MIN_SIZE_DOTS = 24
 # The ceiling comes from the strip's height: 72 % of it, never closer than
 # 1 mm to the edge, and at least 16 dots on absurdly narrow stock.
 STRIP_MAX_SIZE_RATIO = 0.72
-STRIP_MAX_SIZE_MARGIN_DOTS = 12
+STRIP_MAX_SIZE_MARGIN_DOTS = mm_to_dots(1)
 STRIP_MAX_SIZE_FLOOR_DOTS = 16
 
 
@@ -428,10 +431,10 @@ def text_width_em(text: str) -> float:
 
 
 def strip_max_font_size(strip_width_mm: float) -> int:
-    """The largest size the strip's height allows: 11 mm (132 dots) → 95."""
-    # Whole millimetres first, then dots — the renderer builds its frame as
-    # _mm(width) * 12, and the two must never size against different heights.
-    h_px = int(round(strip_width_mm)) * STRIP_DOTS_PER_MM
+    """The largest size the strip's height allows: 11 mm (130 dots) → 93."""
+    # The renderer builds its frame as mm_to_dots(width); the two must never
+    # size against different heights.
+    h_px = mm_to_dots(strip_width_mm)
     return max(
         STRIP_MAX_SIZE_FLOOR_DOTS,
         min(h_px - STRIP_MAX_SIZE_MARGIN_DOTS, int(h_px * STRIP_MAX_SIZE_RATIO)),
@@ -447,7 +450,7 @@ def font_size_for_fits(
     """ONE font size for a list of ``(text, width_mm)`` segments, and the texts that overflow.
 
     For each segment the size at which its text exactly fills the width
-    minus the pads is ``(width_mm × 12 − 2 × pad) / em``. The result is the
+    minus the pads is ``(width_mm × 11,81 − 2 × pad) / em``. The result is the
     floor of the smallest such fit, clamped to [STRIP_MIN_SIZE_DOTS,
     strip_max_font_size]. ``pad_dots`` is what stays free between a cut mark
     and the text on either side — 1 mm on the BMK strip, 0.5 mm on a
@@ -464,7 +467,7 @@ def font_size_for_fits(
     for text, width_mm in segments:
         if not text:
             continue
-        budget = width_mm * STRIP_DOTS_PER_MM - 2 * pad_dots
+        budget = width_mm * PHYSICAL_DOTS_PER_MM - 2 * pad_dots
         fits.append((text, budget / text_width_em(text)))
     if not fits:
         return max_size, []

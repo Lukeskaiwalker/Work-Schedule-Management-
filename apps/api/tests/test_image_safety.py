@@ -246,9 +246,10 @@ def test_the_module_is_what_the_call_sites_use():
     for path in root.rglob("*.py"):
         if path.name == "image_safety.py":
             continue
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for line in path.read_text(encoding="utf-8").splitlines():
             if "Image.open(" in line and "open_untrusted_image" not in line:
-                offenders.append(f"{path.relative_to(root)}:{number}")
+                offenders.append(f"{path.relative_to(root)}: {line.strip()}")
     # The one deliberate exception: the company logo, read from a configured
-    # local path, not from anything a user sent.
-    assert offenders == ["services/werkstatt_labels.py:315"], offenders
+    # local path, not from anything a user sent. Pinned by its code, not its
+    # line number, so an edit above it does not read as a new decode site.
+    assert offenders == ['services/werkstatt_labels.py: img = Image.open(path).convert("L")'], offenders
