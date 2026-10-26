@@ -13,7 +13,7 @@ decisions of 2026-10-21 are binding and quoted as **D1–D8**. Two reviews were
 folded in; §18 maps every finding to its fix or to the reason it was
 rejected. The repo is public: every example below is invented data.
 
-Round 2: see `PANEL_ENCLOSURE_R2.md`.
+Round 2: see `PANEL_ENCLOSURE_R2.md`. Round 4 (Zählerschrank-Vorbereitung, §14a-Klemmleiste, Modulsuche): see `PANEL_ENCLOSURE_R4.md`; the Stromlaufplan export: `SCHALTPLAN_STROMLAUF.md`.
 
 ---
 
