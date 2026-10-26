@@ -3109,17 +3109,21 @@ see the flow; the header change still reaches every print on deploy (§11).
 
 ## Appendix A — probe reply `^XGET,CONFIG` (2026-10-13, golden fixture)
 
+The USB serial number and both MAC addresses are invented (the repository is public;
+the MACs are from the RFC 7042 documentation range). The parser reads none of them;
+every other line is the printer's reply verbatim.
+
 ```
 Smart Printer V5.UW0m
-USB S/N: 2532090E
+USB S/N: 12345678
 Serial port: 96,N,8,1
-LAN MAC: 00:1d:9a:10:1a:18
+LAN MAC: 00:00:5e:00:53:01
 LAN IP 192.168.2.158(DHCP_100M)
 LAN Gateway 192.168.2.1
 LAN Sub-Mask: 255.255.255.000
 LAN Network: ON-LINE
 Card Status: BT card detected
-BT MAC Addr: 08 BE AC 46 C6 14
+BT MAC Addr: 00 00 5E 00 53 02
 BLE Server: Not connected
 Classical(EDR) Server: Not connected
 PORT State L S E U B
