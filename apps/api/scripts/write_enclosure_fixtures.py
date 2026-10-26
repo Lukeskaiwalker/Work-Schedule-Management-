@@ -86,6 +86,8 @@ CATALOG_CODES = (
     "ZH5EL27", "ZH53X3", "ZH53XS", "ZU62A",
     # Round 2 (§14.1): the RK fields, and the two cabinets the terminal boards use.
     "ZB32S", "ZB53S", "ZU37RK", "ZU59RK", "ZU37V5RKAPZ2", "ZH53XSRK",
+    # Round 3: the three 3-Punkt kits of three_point_zb53s.
+    "ZH53W9SNT", "ZH50D53ST", "ZH53X3T",
 )
 
 # ── Catalogue subset ─────────────────────────────────────────────────────────

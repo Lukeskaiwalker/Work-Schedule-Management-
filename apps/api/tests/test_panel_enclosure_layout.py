@@ -64,7 +64,7 @@ def test_order_matches_the_fixture_on_every_board() -> None:
     catalog = EnclosureCatalog.from_out(fixtures["catalog"])
     assert set(fixtures["boards"]) == {
         "meter_dist_zb33s", "violations_zb34s", "removed_dangling_zb52s", "tall_zb54s", "cross_feed_zb33s",
-        "terminals_zb34s", "terminals_rk_zb53s", "terminals_overflow_zb32s",
+        "terminals_zb34s", "terminals_rk_zb53s", "terminals_overflow_zb32s", "three_point_zb53s",
     }
     for name, board in fixtures["boards"].items():
         assert physical_row_order(board["document"], catalog) == board["order"], name

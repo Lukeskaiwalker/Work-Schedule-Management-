@@ -166,8 +166,8 @@ _U84T = _part(
 )
 
 
-def _hlak(note: str) -> dict[str, Any]:
-    return _device_part("hlak", "Hauptleitungsabzweigklemme", "hlak", "aar2", 4, 3, note)
+def _hlak(note: str, *, key: str = "hlak", rail: str = "aar2") -> dict[str, Any]:
+    return _device_part(key, "Hauptleitungsabzweigklemme", "hlak", rail, 4, 3, note)
 
 
 _EHZ_COVER = {"article_no": "KU40XXE", "label": "Blindabdeckung freier eHZ-Zählerplatz", "qty": 1, "verified": False}
@@ -237,6 +237,68 @@ def _three_point(code: str, name: str, field_height: int, *, wiring: int | None 
     notes = (stack, *unverified, *(() if wiring else (_NO_WIRING,)))
     return _module(code, "meter_3p", name, field_height, zones,
                    fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes)
+
+
+# ── The current 3-Punkt range (round 3, 2026-10-26) ──────────────────────────
+#
+# Owner: ZH53X9ST, ZH50D53ST, ZH53W9SNT, ZH33W7NT and the 3-Punkt fields with
+# and without Zählersteckklemme — none hager.com marks "Auslaufprodukt". The
+# stacks are Tipp 44 (VDE-AR-N 4100:2026-04): AAR 300, ZF 450 (Doppelstock
+# 750), NAR 300, an optional VF 300 on top. Height, places and mm² come from
+# the datasheets; what sits on the rails was read off the product photos: the
+# HLAK on the upper AAR rail, the Trennvorrichtung of the "T" kits on the
+# lower one, the Zählersteckklemme of the "W" and Hessen ("C") kits in the
+# meter place. The Netzgebiet in a name is Hager's, from the code's own title
+# or one of its row ("U" Bayern, "C" Hessen, ZH51X Thüringen, …).
+
+_STACK_3P_VF = "Feldaufbau (VF oben, AAR, 3-Punkt-Zählerfeld, NAR unten) aus Hager Tipp 44 abgeleitet"
+_PHOTO = "Bestückung (HLAK, Trennvorrichtung, Zählersteckklemme) vom hager.com-Produktfoto abgelesen"
+_RESERVE = "unterer Zählerplatz laut Foto Reserve (nicht verdrahtet)"
+_RESERVE_FIELD = "Reservefeld: AAR und Zählerplätze laut Foto unbestückt und unverdrahtet"
+_REGION_FROM_ROW = "Netzgebiet aus Hager-Titeln derselben Artikelreihe abgeleitet"
+_CASCADE = "PV-Überschuss/Kaskade: Leitung zum nachgeschalteten Zähler nicht dargestellt"
+
+NRW = "NRW, SH, MV, Nds., E.ON Mitte"
+
+
+def _trenn(key: str = "trenn", label: str = "Trennvorrichtung", *, rail: str = "aar2") -> dict[str, Any]:
+    return _device_part(key, label, "hauptschalter", rail, 3, 3,
+                        "Hager: „mit Trennfkt.“ — Gerät und Bemessungsstrom nicht genannt, 3 PLE angenommen")
+
+
+def _main_switch(key: str = "hs", label: str = "Hauptschalter") -> dict[str, Any]:
+    return _device_part(key, label, "hauptschalter", "aar2", 3, 3,
+                        "Drehgriff laut Produktfoto; Typ und Bemessungsstrom nennt Hager nicht")
+
+
+def _zsk(key: str = "zsk", label: str = "Zählersteckklemme") -> dict[str, Any]:
+    return _part(key, label, verified=False, note="laut Produktfoto; im Datenblatt nicht genannt")
+
+
+_HLAK_PHOTO = "Klemmblock auf der oberen AAR-Schiene laut Produktfoto; 3-polig und 4 PLE angenommen"
+_HLAK_TOP = _hlak(_HLAK_PHOTO, rail="aar1")
+_TRENN_PAIR = (_trenn("trenn", "Trennvorrichtung Zähler 1"), _trenn("trenn2", "Trennvorrichtung Zähler 2"))
+_ZSK_PAIR = (_zsk("zsk", "Zählersteckklemme oben"), _zsk("zsk2", "Zählersteckklemme unten"))
+_CASCADE_TRENN = (_HLAK_TOP, _trenn("trenn2", "Trennvorrichtung Kaskade", rail="aar1"), _trenn())
+
+
+def _three_point_vf(code: str, name: str, *, wiring: int | None = None,
+                    extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
+    """1350 mm, one 3-Punkt place under a two-row Verteilerfeld ("1ZP/VT-3rh")."""
+    zones = [_zone("vf", "VF", 0, 2, _numbered("vf", 2)), _aar(2), _meter_zone(4, 3, 1, "3punkt"), _nar(7)]
+    notes = (_STACK_3P_VF, *unverified, *(() if wiring else (_NO_WIRING,)))
+    return _module(code, "meter_3p", name, 1350, zones,
+                   fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes)
+
+
+def _kit(code: str, name: str, field_height: int, *, vf: bool = False, wiring: int | None = None,
+         extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
+    """A kit of the current range: 1050 = one place; 1350 = Doppelstock, or
+    one place under a Verteilerfeld (``vf``). Every one was read off its photo."""
+    notes = (_PHOTO, *unverified)
+    if vf:
+        return _three_point_vf(code, name, wiring=wiring, extra=extra, unverified=notes)
+    return _three_point(code, name, field_height, wiring=wiring, extra=extra, unverified=notes)
 
 
 def _distribution(code: str, name: str, field_height: int, rows: int, fittings: tuple[dict[str, Any], ...]) -> dict[str, Any]:
@@ -332,4 +394,98 @@ BUILTIN_MODULES: list[dict[str, Any]] = [
                   fittings=(_SAS_BUSBAR, _U84T)),
     _with_busbars("ZH53XSRK", "Verteilerfeld mit Sammelschienen, 7 Reihen, für Reihenklemmen, 1350 mm", 1350, 7,
                   fittings=(_SAS_BUSBAR, _U84T)),
+    # Round 3 (2026-10-26): the current 3-Punkt range, appended (§3.5).
+    # 1050 mm: AAR · one place · NAR.
+    _kit("ZH33X7T", f"Komplettfeld 3-Punkt, 1 Zählerplatz, mit Trennfunktion, 10 mm², 1050 mm, {NRW}", 1050,
+         wiring=10, extra=(_trenn(),)),
+    _kit("ZH33X16T", f"Komplettfeld 3-Punkt, 1 Zählerplatz, HLAK, mit Trennfunktion, 16 mm², 1050 mm, {NRW}", 1050,
+         wiring=16, extra=(_HLAK_TOP, _trenn()), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH33W7NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Zählersteckklemme, mit Trennfunktion, 10 mm², 1050 mm", 1050,
+         wiring=10, extra=(_trenn(), _zsk())),
+    _kit("ZH33W16NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Zählersteckklemme, HLAK, mit Trennfunktion, 16 mm², 1050 mm",
+         1050, wiring=16, extra=(_HLAK_TOP, _trenn(), _zsk())),
+    _kit("ZH32X16NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, HLAK, mit Trennfunktion, 16 mm², 1050 mm", 1050,
+         wiring=16, extra=(_HLAK_TOP, _trenn())),
+    _kit("ZH32P7KT", "Komplettfeld 3-Punkt, 1 Zählerplatz, mit Trennfunktion, 10 mm², 1050 mm, Mitteldeutschland", 1050,
+         wiring=10, extra=(_trenn(),), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH32P16KT", "Komplettfeld 3-Punkt, 1 Zählerplatz, HLAK, mit Trennfunktion, 16 mm², 1050 mm, Mitteldeutschland",
+         1050, wiring=16, extra=(_HLAK_TOP, _trenn()), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH32U7NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, mit Trennfunktion, 10 mm², 1050 mm, Bayern", 1050,
+         wiring=10, extra=(_trenn(),)),
+    _kit("ZH32U16NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, HLAK, mit Trennfunktion, 16 mm², 1050 mm, Bayern", 1050,
+         wiring=16, extra=(_HLAK_TOP, _trenn()), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH33Q7NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, mit Trennfunktion, 10 mm², 1050 mm, EnBW", 1050,
+         wiring=10, extra=(_trenn(),), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH33Q16NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, HLAK, mit Trennfunktion, 16 mm², 1050 mm, EnBW", 1050,
+         wiring=16, extra=(_HLAK_TOP, _trenn()), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH34C7N", "Komplettfeld 3-Punkt, 1 Zählerplatz, Zählersteckklemme, Hauptschalter, 1050 mm, Hessen", 1050,
+         extra=(_main_switch(), _zsk())),
+    _kit("ZH34C16NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Zählersteckklemme, HLAK, mit Trennfunktion, 16 mm², "
+         "1050 mm, Hessen", 1050, wiring=16, extra=(_HLAK_TOP, _trenn(), _zsk()), unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH3PZ16PNT", "Komplettfeld 3-Punkt, PV-Überschuss/Kaskade, 1 Zählerplatz, HLAK, 2 Trennvorrichtungen, "
+         "16 mm², 1050 mm", 1050, wiring=16, extra=_CASCADE_TRENN, unverified=(_CASCADE,)),
+    _kit("ZH33XL", "Reservefeld 3-Punkt, 1 Reserveplatz, mit Sammelschienen und PE/N-Klemmen, 1050 mm", 1050,
+         unverified=(_RESERVE_FIELD,)),
+    # 1350 mm: Verteilerfeld (2 rows) · AAR · one place · NAR.
+    _kit("ZH53X9ST", f"Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, mit Trennfunktion, 10 mm², "
+         f"1350 mm, {NRW}", 1350, vf=True, wiring=10, extra=(_trenn(),)),
+    _kit("ZH53X9S", f"Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, 10 mm², 1350 mm, {NRW}", 1350,
+         vf=True, wiring=10),
+    _kit("ZH53W9SNT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, Zählersteckklemme, "
+         "mit Trennfunktion, 10 mm², 1350 mm", 1350, vf=True, wiring=10, extra=(_trenn(), _zsk())),
+    _kit("ZH50D53ST", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, HLAK, mit Trennfunktion, "
+         "16 mm², 1350 mm", 1350, vf=True, wiring=16, extra=(_HLAK_TOP, _trenn())),
+    _kit("ZH51X9NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, HLAK, mit Trennfunktion, "
+         "10 mm², 1350 mm, Thüringen", 1350, vf=True, wiring=10, extra=(_HLAK_TOP, _trenn())),
+    _kit("ZH52P9KT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, mit Trennfunktion, 10 mm², "
+         "1350 mm, Mitteldeutschland", 1350, vf=True, wiring=10, extra=(_trenn(),)),
+    _kit("ZH52U9NT", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, mit Trennfunktion, 10 mm², "
+         "1350 mm, Bayern", 1350, vf=True, wiring=10, extra=(_trenn(),)),
+    _kit("ZH54C9N", "Komplettfeld 3-Punkt, 1 Zählerplatz, Verteilerfeld 2 Reihen, Zählersteckklemme, Hauptschalter, "
+         "10 mm², 1350 mm, Hessen", 1350, vf=True, wiring=10, extra=(_main_switch(), _zsk())),
+    _kit("ZH5PZ16PNT", "Komplettfeld 3-Punkt, PV-Überschuss/Kaskade, 1 Zählerplatz, Verteilerfeld 2 Reihen, HLAK, "
+         "2 Trennvorrichtungen, 16 mm², 1350 mm", 1350, vf=True, wiring=16, extra=_CASCADE_TRENN,
+         unverified=(_CASCADE,)),
+    _kit("ZH53XL", "Reservefeld 3-Punkt, 1 Reserveplatz, Verteilerfeld 2 Reihen, mit Sammelschienen und "
+         "PE/N-Klemmen, 1350 mm", 1350, vf=True, unverified=(_RESERVE_FIELD,)),
+    # 1350 mm: AAR · Doppelstock (two places) · NAR.
+    _kit("ZH53X3T", f"Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), mit Trennfunktion, 10 mm², 1350 mm, {NRW}",
+         1350, wiring=10, extra=_TRENN_PAIR),
+    _kit("ZH53Q3NT", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), mit Trennfunktion, 10 mm², 1350 mm, EnBW",
+         1350, wiring=10, extra=_TRENN_PAIR, unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH53W3NT", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), Zählersteckklemmen, mit Trennfunktion, "
+         "10 mm², 1350 mm", 1350, wiring=10, extra=(*_TRENN_PAIR, *_ZSK_PAIR)),
+    _kit("ZH52P3KT", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), mit Trennfunktion, 10 mm², 1350 mm, "
+         "Mitteldeutschland", 1350, wiring=10, extra=_TRENN_PAIR, unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH52U3NT", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), mit Trennfunktion, 10 mm², 1350 mm, Bayern",
+         1350, wiring=10, extra=_TRENN_PAIR, unverified=(_REGION_FROM_ROW,)),
+    _kit("ZH51X3NT", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), HLAK, mit Trennfunktion, 10 mm², 1350 mm, "
+         "Thüringen", 1350, wiring=10,
+         extra=(_HLAK_TOP, _hlak(_HLAK_PHOTO, key="hlak2", rail="aar1"), *_TRENN_PAIR)),
+    _kit("ZH54C4N", "Komplettfeld 3-Punkt, 2 Zählerplätze (Doppelstock), Zählersteckklemmen, Hauptschalter, 10 mm², "
+         "1350 mm, Hessen", 1350, wiring=10,
+         extra=(_main_switch("hs", "Hauptschalter Zähler 1"), _main_switch("hs2", "Hauptschalter Zähler 2"), *_ZSK_PAIR)),
+    # 1350 mm: Doppelstock with one place wired and the lower one in reserve.
+    _kit("ZH53X1", f"Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), 10 mm², 1350 mm, {NRW}", 1350,
+         wiring=10, unverified=(_RESERVE,)),
+    _kit("ZH53X1T", f"Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), mit Trennfunktion, 10 mm², "
+         f"1350 mm, {NRW}", 1350, wiring=10, extra=(_trenn(),), unverified=(_RESERVE,)),
+    _kit("ZH53Q1NT", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), mit Trennfunktion, 10 mm², "
+         "1350 mm, EnBW", 1350, wiring=10, extra=(_trenn(),), unverified=(_RESERVE, _REGION_FROM_ROW)),
+    _kit("ZH53W1NT", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), Zählersteckklemme, "
+         "mit Trennfunktion, 10 mm², 1350 mm", 1350, wiring=10,
+         extra=(_trenn(), _zsk("zsk", "Zählersteckklemme oben")), unverified=(_RESERVE,)),
+    _kit("ZH52P1KT", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), mit Trennfunktion, 10 mm², "
+         "1350 mm, Mitteldeutschland", 1350, wiring=10, extra=(_trenn(),), unverified=(_RESERVE, _REGION_FROM_ROW)),
+    _kit("ZH52U1NT", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), mit Trennfunktion, 10 mm², "
+         "1350 mm, Bayern", 1350, wiring=10, extra=(_trenn(),), unverified=(_RESERVE,)),
+    _kit("ZH51X1NT", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), HLAK, mit Trennfunktion, "
+         "10 mm², 1350 mm, Thüringen", 1350, wiring=10, extra=(_HLAK_TOP, _trenn()), unverified=(_RESERVE,)),
+    _kit("ZH50D5ST", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), HLAK, mit Trennfunktion, "
+         "16 mm², 1350 mm", 1350, wiring=16, extra=(_HLAK_TOP, _trenn()), unverified=(_RESERVE,)),
+    _kit("ZH54C1N", "Komplettfeld 3-Punkt, 1 Zählerplatz + 1 Reserve (Doppelstock), Zählersteckklemme, Hauptschalter, "
+         "10 mm², 1350 mm, Hessen", 1350, wiring=10,
+         extra=(_main_switch(), _zsk("zsk", "Zählersteckklemme oben")), unverified=(_RESERVE,)),
+    _kit("ZH52XL", "Reservefeld 3-Punkt, 2 Reserveplätze (Doppelstock), mit Sammelschienen und PE/N-Klemmen, 1350 mm",
+         1350, unverified=(_RESERVE_FIELD,)),
 ]

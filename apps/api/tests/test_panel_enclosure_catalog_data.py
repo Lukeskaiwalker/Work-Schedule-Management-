@@ -57,7 +57,13 @@ CABINETS = {
 E1050 = "AAR 0-1 aar1,aar2 | RFZ 2 rfz | ZF 3-4 | NAR 5-6 nar*"
 P1050 = "AAR 0-1 aar1,aar2 | ZF 2-4 | NAR 5-6 nar*"
 E1350 = "VF 0-1 vf1,vf2 | AAR 2-3 aar1,aar2 | RFZ 4 rfz | ZF 5-6 | NAR 7-8 nar*"
+P1350 = "AAR 0-1 aar1,aar2 | ZF 2-6 | NAR 7-8 nar*"
+P1350VF = "VF 0-1 vf1,vf2 | AAR 2-3 aar1,aar2 | ZF 4-6 | NAR 7-8 nar*"
 BUSBAR, BKE, PE_N, RJ45, U84T = {"busbar": None}, {"bke": None}, {"pe_n": None}, {"rj45": None}, {"u84t": None}
+# Round 3: the parts of the current 3-Punkt range.
+TRENN, TRENN2, HS, HS2 = ({key: "hauptschalter"} for key in ("trenn", "trenn2", "hs", "hs2"))
+HLAK, HLAK2, ZSK, ZSK2 = {"hlak": "hlak"}, {"hlak2": "hlak"}, {"zsk": None}, {"zsk2": None}
+ONE, TWO = (1, "3punkt"), (2, "3punkt")
 
 MODULES = {
     # code: (family, field height, zones, (meter places, meter type) | None, mm², {fitting: device kind})
@@ -91,7 +97,58 @@ MODULES = {
     "ZU59V7RKAPZ2": ("distribution_apz", 1350, "VT 0-6 r1..r7 | APZ 7-8 apz(6)", None, None, U84T),
     "ZH3ES5RK": ("busbar", 1050, "SAS 0-1 sas* | VT 2-6 r1..r5", None, None, BUSBAR | U84T),
     "ZH53XSRK": ("busbar", 1350, "SAS 0-1 sas* | VT 2-8 r1..r7", None, None, BUSBAR | U84T),
+    # Round 3: the current 3-Punkt range (2026-10-26), appended.
+    "ZH33X7T": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN),
+    "ZH33X16T": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH33W7NT": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN | ZSK),
+    "ZH33W16NT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN | ZSK),
+    "ZH32X16NT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH32P7KT": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN),
+    "ZH32P16KT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH32U7NT": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN),
+    "ZH32U16NT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH33Q7NT": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN),
+    "ZH33Q16NT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH34C7N": ("meter_3p", 1050, P1050, ONE, None, BUSBAR | HS | ZSK),
+    "ZH34C16NT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN | ZSK),
+    "ZH3PZ16PNT": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN | TRENN2),
+    "ZH33XL": ("meter_3p", 1050, P1050, ONE, None, BUSBAR),
+    "ZH53X9ST": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | TRENN),
+    "ZH53X9S": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR),
+    "ZH53W9SNT": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | TRENN | ZSK),
+    "ZH50D53ST": ("meter_3p", 1350, P1350VF, ONE, 16, BUSBAR | HLAK | TRENN),
+    "ZH51X9NT": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | HLAK | TRENN),
+    "ZH52P9KT": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | TRENN),
+    "ZH52U9NT": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | TRENN),
+    "ZH54C9N": ("meter_3p", 1350, P1350VF, ONE, 10, BUSBAR | HS | ZSK),
+    "ZH5PZ16PNT": ("meter_3p", 1350, P1350VF, ONE, 16, BUSBAR | HLAK | TRENN | TRENN2),
+    "ZH53XL": ("meter_3p", 1350, P1350VF, ONE, None, BUSBAR),
+    "ZH53X3T": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | TRENN2),
+    "ZH53Q3NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | TRENN2),
+    "ZH53W3NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | TRENN2 | ZSK | ZSK2),
+    "ZH52P3KT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | TRENN2),
+    "ZH52U3NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | TRENN2),
+    "ZH51X3NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | HLAK | HLAK2 | TRENN | TRENN2),
+    "ZH54C4N": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | HS | HS2 | ZSK | ZSK2),
+    "ZH53X1": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR),
+    "ZH53X1T": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN),
+    "ZH53Q1NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN),
+    "ZH53W1NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN | ZSK),
+    "ZH52P1KT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN),
+    "ZH52U1NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | TRENN),
+    "ZH51X1NT": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | HLAK | TRENN),
+    "ZH50D5ST": ("meter_3p", 1350, P1350, TWO, 16, BUSBAR | HLAK | TRENN),
+    "ZH54C1N": ("meter_3p", 1350, P1350, TWO, 10, BUSBAR | HS | ZSK),
+    "ZH52XL": ("meter_3p", 1350, P1350, TWO, None, BUSBAR),
 }
+
+#: Round 3: what hager.com marked "Auslaufprodukt" on 2026-10-26 (owner: "do
+#: not use ones that are discontinued"). Most have a "…T" successor above.
+DISCONTINUED_3P = (
+    "ZH31X7N", "ZH32U7N", "ZH33Q7N", "ZH33W7N", "ZH33W16N", "ZH33X16", "ZH3PZ10PN", "ZH3PZ16PN", "ZH50D5S",
+    "ZH50D53S", "ZH51X1N", "ZH51X3N", "ZH51X9N", "ZH52P1K", "ZH52P3K", "ZH52P9K", "ZH52U1N", "ZH52U3N", "ZH52U9N",
+    "ZH53Q1N", "ZH53Q3N", "ZH53W1N", "ZH53W3N", "ZH53W9SN",
+)
 
 #: Every field built for terminal blocks ships the U84T rail insulation (Hager
 #: flyer 21DE0246) instead of PE/N blocks (§2.2, R8, R15).
@@ -304,6 +361,57 @@ def test_the_four_rk_built_ins_of_round_two() -> None:
                         ("ZH3ES5RK", "ZH3ES5"), ("ZH53XSRK", "ZH53XS")):
         assert rail_keys(catalog.module(rk)) == rail_keys(catalog.module(sibling)), rk
         assert frozen_fields("module", catalog.module(rk)) == frozen_fields("module", catalog.module(sibling)), rk
+
+
+ROUND_3 = list(MODULES)[list(MODULES).index("ZH33X7T"):]
+
+
+def test_the_owner_s_four_fields_ship_and_no_discontinued_one_does() -> None:
+    catalog = builtin_catalog()
+    for code in ("ZH53X9ST", "ZH50D53ST", "ZH53W9SNT", "ZH33W7NT"):
+        assert catalog.module(code) is not None, code
+    assert not [code for code in DISCONTINUED_3P if catalog.known(code)]
+
+
+def test_round_three_parts_sit_where_the_photos_show_them() -> None:
+    """HLAK on the upper AAR rail, Trennvorrichtung or Hauptschalter on the
+    lower one (the Kaskade's second Trennvorrichtung beside the HLAK), and
+    every part read off a photo is ungeprüft with its reason."""
+    for code in ROUND_3:
+        spec = builtin_catalog().module(code)
+        assert spec["unverified"][1] == "Bestückung (HLAK, Trennvorrichtung, Zählersteckklemme) vom hager.com-Produktfoto abgelesen", code
+        for fitting in spec["fittings"]:
+            device = fitting["device"]
+            if fitting["key"] == "busbar":
+                continue
+            assert fitting["verified"] is False and fitting["note"], (code, fitting["key"])
+            if fitting["key"].startswith("zsk"):
+                assert device is None and fitting["removable"] is False, code
+            elif device["kind"] == "hlak":
+                assert device["rail"] == "aar1", code
+            else:
+                expected = "aar1" if fitting["key"] == "trenn2" and "Kaskade" in spec["name"] else "aar2"
+                assert (device["kind"], device["rail"], device["te"], device["poles"]) == (
+                    "hauptschalter", expected, 3, 3), code
+
+
+def test_round_three_names_say_what_the_kit_holds() -> None:
+    """The picker shows the name, so it carries what tells two kits apart:
+    places, Zählersteckklemme, HLAK, the switch, mm² and height."""
+    for code in ROUND_3:
+        spec = builtin_catalog().module(code)
+        kinds = fitting_kinds(spec)
+        name = spec["name"]
+        assert ("Zählersteckklemme" in name) == ("zsk" in kinds), code
+        assert ("HLAK" in name) == ("hlak" in kinds), code
+        assert ("Trennfunktion" in name or "Trennvorrichtungen" in name) == ("trenn" in kinds), code
+        assert ("Hauptschalter" in name) == ("hs" in kinds), code
+        assert f"{spec['field_height_mm']} mm" in name, code
+        if spec["wiring_mm2"]:
+            assert f"{spec['wiring_mm2']} mm²" in name, code
+        if "Reserve" in name:
+            assert any("Reserve" in note for note in spec["unverified"]), code
+        assert len(name) <= 160, code
 
 
 def test_every_built_in_spec_passes_its_own_validator() -> None:

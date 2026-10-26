@@ -47,6 +47,9 @@ because they are what the built-in catalogue ships. Each board's purpose:
   in the field before its circuits.
 * ``terminals_overflow_zb32s`` — five FI + 10 LS groups (71.5 mm Leisten) in
   one ZU37KS: two per terminal rail, X5 without place; the next field empty.
+* ``three_point_zb53s`` — round 3's current 3-Punkt kits: VF over AAR over one
+  place (ZH53W9SNT, ZH50D53ST) and a Doppelstock (ZH53X3T) with a free place,
+  their Trennvorrichtungen and HLAK as placed pre-fitted parts.
 """
 
 from __future__ import annotations
@@ -384,6 +387,37 @@ def terminals_overflow_zb32s() -> dict[str, Any]:
     return document("ZB32S", modules, rows)
 
 
+def three_point_zb53s() -> dict[str, Any]:
+    """Round 3: the current 3-Punkt kits. A ZH53W9SNT (VF over AAR, one place,
+    Zählersteckklemme) with an FI group on its VF, a 16 mm² ZH50D53ST with
+    HLAK and Trennvorrichtung fed by an E50, and a ZH53X3T Doppelstock with
+    one meter and one free place — both of its Trennvorrichtungen pre-fitted."""
+    modules = [
+        module("mod-w", "ZH53W9SNT", 0, {"nar": "row-w-nar", "aar2": "row-w-aar2", "vf2": "row-w-vf2"},
+               meters=[meter(0, "1XYZ0000000051", "WE 1")]),
+        module("mod-d", "ZH50D53ST", 1, {"nar": "row-d-nar", "aar1": "row-d-aar1", "aar2": "row-d-aar2"},
+               meters=[meter(0, "1XYZ0000000052", "Wärmepumpe")]),
+        module("mod-t", "ZH53X3T", 2, {"nar": "row-t-nar", "aar2": "row-t-aar2"},
+               meters=[meter(0, "1XYZ0000000053", "WE 2")]),
+    ]
+    rows = [
+        row("row-w-nar", "F1 · NAR", [dev("dev-w-q0", "sls", designation="Q0", rating="E35")]),
+        row("row-w-aar2", "F1 · AAR 2", [
+            dev("dev-w-q1", "hauptschalter", designation="Q1", parent_id="dev-w-q0", supplied_by=supplied("mod-w", "trenn"))]),
+        row("row-w-vf2", "F1 · Verteilerfeld 2", [
+            fi("dev-w-f1", "F1", parent_id="dev-w-q1"), *ls_run("w-f1", "F1", range(1, 4), 1)]),
+        row("row-d-nar", "F2 · NAR", [dev("dev-d-q0", "sls", designation="Q10", rating="E50")]),
+        row("row-d-aar1", "F2 · AAR 1", [dev("dev-d-x0", "hlak", designation="X10", supplied_by=supplied("mod-d", "hlak"))]),
+        row("row-d-aar2", "F2 · AAR 2", [
+            dev("dev-d-q1", "hauptschalter", designation="Q11", parent_id="dev-d-q0", supplied_by=supplied("mod-d", "trenn"))]),
+        row("row-t-nar", "F3 · NAR", [dev("dev-t-q0", "sls", designation="Q20", rating="E35")]),
+        row("row-t-aar2", "F3 · AAR 2", [
+            dev("dev-t-q1", "hauptschalter", designation="Q21", parent_id="dev-t-q0", supplied_by=supplied("mod-t", "trenn")),
+            dev("dev-t-q2", "hauptschalter", designation="Q22", supplied_by=supplied("mod-t", "trenn2"))]),
+    ]
+    return document("ZB53S", modules, rows)
+
+
 BOARDS = {
     "meter_dist_zb33s": meter_dist_zb33s,
     "violations_zb34s": violations_zb34s,
@@ -393,4 +427,5 @@ BOARDS = {
     "terminals_zb34s": terminals_zb34s,
     "terminals_rk_zb53s": terminals_rk_zb53s,
     "terminals_overflow_zb32s": terminals_overflow_zb32s,
+    "three_point_zb53s": three_point_zb53s,
 }

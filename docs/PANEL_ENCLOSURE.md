@@ -379,14 +379,56 @@ module has T95L (both `verified: false`).
 built-ins are appended: ZU37V5RKAPZ2, ZU59V7RKAPZ2, ZH3ES5RK and ZH53XSRK
 (R2 R15, §10).
 
+**Round 3 (2026-10-26): the current 3-Punkt range.** The owner asked for
+ZH53X9ST, ZH50D53ST, ZH53W9SNT, ZH33W7NT and "the 3-Punkt fields with or
+without Zählersteckklemme", and for nothing hager.com marks
+"Auslaufprodukt". So 42 single-field kits were appended. All are
+`meter_3p`, and all are `verified: false`.
+
+Where the facts came from:
+- **Stacks:** Tipp 44 (VDE-AR-N 4100:2026-04).
+- **Height, places and mm²:** the datasheets.
+- **Rail fittings:** the hager.com product photos. Every module says so in
+  `unverified[1]` ("Bestückung … vom hager.com-Produktfoto abgelesen"),
+  and every fitting carries its own note.
+
+The three stacks:
+
+| Stack | Zones (top → bottom) | Codes |
+|-------|----------------------|-------|
+| 1050, one place | AAR 0–1 · ZF 2–4 · NAR 5–6 | ZH33X7T, ZH33X16T, ZH33W7NT, ZH33W16NT, ZH32X16NT, ZH32P7KT, ZH32P16KT, ZH32U7NT, ZH32U16NT, ZH33Q7NT, ZH33Q16NT, ZH34C7N, ZH34C16NT, ZH3PZ16PNT, ZH33XL |
+| 1350, VF + one place | VF 0–1 (vf1, vf2) · AAR 2–3 · ZF 4–6 · NAR 7–8 | ZH53X9ST, ZH53X9S, ZH53W9SNT, ZH50D53ST, ZH51X9NT, ZH52P9KT, ZH52U9NT, ZH54C9N, ZH5PZ16PNT, ZH53XL |
+| 1350, Doppelstock | AAR 0–1 · ZF 2–6 (2 places) · NAR 7–8 | ZH53X3T, ZH53Q3NT, ZH53W3NT, ZH52P3KT, ZH52U3NT, ZH51X3NT, ZH54C4N; one place + reserve: ZH53X1, ZH53X1T, ZH53Q1NT, ZH53W1NT, ZH52P1KT, ZH52U1NT, ZH51X1NT, ZH50D5ST, ZH54C1N; Reservefeld ZH52XL |
+
+Parts read off the photos:
+- **`hlak`:** on aar1, the upper AAR rail. It sits in every 16 mm² kit and
+  in the Thüringen ZH51X kits.
+- **`trenn` / `trenn2`:** kind `hauptschalter` on aar2, the lower AAR rail.
+  These are the kits Hager titles "mit Trennfkt.". The Kaskade kits'
+  second one sits on aar1.
+- **`hs` / `hs2`:** the rotary Hauptschalter of the Hessen "C" kits.
+- **`zsk` / `zsk2`:** "Zählersteckklemme", a non-device part, in the "W"
+  kits and the Hessen kits.
+- **Reserve places:** a 1350 mm kit with one wired place has its lower
+  place in reserve. The Reservefelder (…XL) have no devices.
+
+Names carry the Netzgebiet. It comes from Hager's title of the code or of
+its row ("U" Bayern, "C" Hessen, ZH51X Thüringen, ZH33X/ZH53X
+NRW/SH/MV/Nds./E.ON Mitte, "P/K" Mitteldeutschland, "Q" EnBW). Where only
+the row says it, the kit carries "Netzgebiet aus Hager-Titeln derselben
+Artikelreihe abgeleitet". The discontinued predecessors (ZH33W7N, ZH53W9SN,
+ZH52U9N, …) are listed in the data test and must stay out.
+
 `mm²` = `wiring_mm2` from the research (ZH3EL27, ZH31X7NT: 10; ZH3EL16,
 ZH5EL16: 16); "—" = null, so `vde.sls_rating` stays silent rather than guess
 from the article code (research uncertainty: code digits do not map to specs).
 
 Not shipped (admins can add; the model supports them): 2-/3-field
 Komplettfelder (ZK…/ZL…, `width_fields` 2–3), multimedia/Lastmanagement
-fields (row counts unknown), ZH53X9ST (its stated stack does not add up to
-1350 mm). Mandatory accessories the research names but cannot pin down
+fields (row counts unknown), the 3-Punkt SG-only fields (ZH32U5N, ZH33Q5N,
+ZH51X2N, ZH52U2N, ZH53Q2N: a Steuergerät place, no meter place). ZH53X9ST
+shipped in round 3: the photo shows VF 2 rows plus AAR 2 rails, which
+Hager's "VT-3rh" counts as three free rows. Mandatory accessories the research names but cannot pin down
 (ZH5EL27: "ZZ35S/S35V", "ZM15H/ZM25F", ZZ60A; VZ00APZ for …APZ2 fields;
 ZZ55SAVE Feld-Feld) are **not** auto-added: the research gives alternatives
 and no quantities, and a wrong line on every board is worse than a missing
