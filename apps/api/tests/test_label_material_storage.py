@@ -24,7 +24,7 @@ from app.services.runtime_settings import (
     get_runtime_setting,
     set_runtime_setting,
 )
-from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
+from app.services.werkstatt_label_builtins import AUTOSENSE_COST_HINT, DEFAULT_MATERIALS, LEGACY_V1_BUILTIN_VALUES
 from app.services.werkstatt_label_materials import get_label_printer_config
 from app.services.werkstatt_label_profile import MediaWeb, format_scale_de
 from tests.conftest import auth_headers
@@ -59,9 +59,15 @@ def _put(client: TestClient, token: str, material_id: str, **body) -> object:
 
 
 def _v1_blob() -> dict:
-    """The format-1 shape of a9c335f: every key of every builtin stored."""
+    """The format-1 shape of a9c335f: every key of every builtin stored.
+
+    Only the builtins a9c335f had: one added since (the 211-502, R4 §9.3)
+    was never in a v1 blob and heals from code.
+    """
     entries = []
     for profile in DEFAULT_MATERIALS:
+        if profile.id not in LEGACY_V1_BUILTIN_VALUES:
+            continue
         entries.append({
             "id": profile.id, "name": profile.name, "part_no": profile.part_no, "width_mm": profile.width_mm,
             "length_mm": profile.length_mm, "gap_mm": 3.0,
@@ -364,3 +370,60 @@ def test_get_shape_and_hints(client: TestClient, admin_token: str) -> None:
     # At 300 dpi the quad's top text ends 13 dots (1,1 mm) inside the edge — 12 dots (1,0) at 12 per mm.
     assert by_id["wago-210-804"]["offset_limits"] == {"x_min": -2.0, "x_max": 10.0, "across_min": -2.6, "across_max": 1.1}
     assert by_id["wago-210-804"]["resolved"] == {"darkness": 12, "speed_ips": 2, "stop_mm": 0}
+
+
+# ── WAGO 211-502 (docs/PANEL_ENCLOSURE_R4.md §9.3) ──────────────────────────
+
+
+def _tube_502():
+    return next(profile for profile in DEFAULT_MATERIALS if profile.id == "wago-211-502")
+
+
+def test_the_211_502_tube_ships_right_after_the_211_501() -> None:
+    ids = [profile.id for profile in DEFAULT_MATERIALS]
+    assert ids.index("wago-211-502") == ids.index("wago-211-501") + 1
+    tube = _tube_502()
+    assert (tube.name, tube.part_no, tube.width_mm, tube.length_mm, tube.builtin) == (
+        "Schrumpfschlauch Ø 4,8 (weiß, Endlos)", "WAGO 211-502", 7.5, None, True,
+    )
+    assert (tube.sensor_mode, tube.sensor_scale, tube.guide, tube.feed_path, tube.roller) == (
+        "see_through", 3.0, "fit", "external", "258-5006",
+    )
+    assert tube.web == MediaWeb(liner_width_mm=7.5, source="estimate")
+    # Never in a v1 blob, so it has no frozen v1 shape: missing builtins heal from code.
+    assert "wago-211-502" not in LEGACY_V1_BUILTIN_VALUES
+
+
+def _healed(config: dict):
+    tube = next(profile for profile in config["materials"] if profile.id == "wago-211-502")
+    assert config["overrides"]["wago-211-502"] == frozenset()
+    assert tube == _tube_502()  # the code default (``job`` does not compare)
+    return tube
+
+
+def test_a_v1_blob_without_the_211_502_heals_it(client: TestClient) -> None:
+    _write_raw(_v1_blob())
+    config = _config()
+    _healed(config)
+    assert config["overrides"]["wago-210-804"] == frozenset({"x_offset_mm"})  # the real override survives
+
+
+def test_a_v2_blob_without_the_211_502_heals_it(client: TestClient) -> None:
+    _write_raw({"format": 2, "revision": 4, "materials": [{"id": "wago-211-501", "x_offset_mm": 1.5}, {"id": "wago-2009-110"}]})
+    config = _config()
+    assert _healed(config).x_offset_mm == 2.0
+    assert next(p for p in config["materials"] if p.id == "wago-211-501").x_offset_mm == 1.5
+
+
+def test_the_211_502_hints_and_costs(client: TestClient, admin_token: str) -> None:
+    tube = _by_id(settings(client, admin_token))["wago-211-502"]
+    texts = [hint["text"] for hint in tube["hints"]]
+    assert "Breite flach ≈ 7,5 mm: berechnet (π · 4,8 / 2), nicht gemessen" in texts
+    assert any(hint["topic"] == "sensor_position" and "Mitte" in hint["text"] for hint in tube["hints"])
+    assert tube["autosense_cost_hint"] == AUTOSENSE_COST_HINT["wago-211-502"] == (
+        "Menge unbekannt – für Endlosschlauch nennt keine Quelle eine Grenze"
+    )
+    # The tube pattern (30 mm + the 2 mm offset) and the word "Schlauch".
+    assert (tube["pattern_supported"], tube["pattern_cost_hint"]) == (True, "≈ 32 mm Schlauch (Schätzung)")
+    limits = tube["offset_limits"]
+    assert limits["x_min"] <= 2.0 <= limits["x_max"] and limits["across_min"] <= 0 <= limits["across_max"]

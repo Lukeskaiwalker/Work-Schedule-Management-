@@ -95,3 +95,42 @@ describe("EnclosureFieldBar", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("EnclosureFieldBar — §14a-Klemmen (docs/PANEL_ENCLOSURE_R4.md §8.2)", () => {
+  function withControl(control: { field: number; sub: string } | null, readOnly = false) {
+    const onOpenControl = vi.fn();
+    render(
+      <EnclosureFieldBar
+        document={renderBoard()}
+        index={INDEX}
+        onOpenModule={vi.fn()}
+        onAddModule={vi.fn()}
+        readOnly={readOnly}
+        control={control}
+        onOpenControl={onOpenControl}
+      />,
+    );
+    return onOpenControl;
+  }
+
+  it("puts a 56 px button on the carrier's field with its state, and opens the sheet", () => {
+    const onOpenControl = withControl({ field: 0, sub: "6 Klemmen" });
+    const group = screen.getByRole("group", { name: "Feld 1" });
+    const button = within(group).getByRole("button", { name: "§14a-Klemmen · 6 Klemmen" });
+    expect(button).toHaveClass("sp-encl-fieldbar-btn", "sp-encl-fieldbar-btn--control");
+    expect(within(button).getByText("§14a-Klemmen")).toBeInTheDocument();
+    expect(within(button).getByText("6 Klemmen")).toBeInTheDocument();
+    fireEvent.click(button);
+    expect(onOpenControl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["fehlt", "entfernt", "passt nicht"])("says %s, also on a read-only board", (sub) => {
+    withControl({ field: 0, sub }, true);
+    expect(screen.getByRole("button", { name: `§14a-Klemmen · ${sub}` })).toBeInTheDocument();
+  });
+
+  it("has no button without a meter field", () => {
+    withControl(null);
+    expect(screen.queryByRole("button", { name: /^§14a-Klemmen/ })).toBeNull();
+  });
+});

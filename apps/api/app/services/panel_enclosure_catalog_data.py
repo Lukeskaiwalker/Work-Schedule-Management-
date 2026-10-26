@@ -181,6 +181,10 @@ _STACK_3P_1050 = "Feldaufbau (AAR oben, 3-Punkt-Zählerfeld, NAR unten) aus Hage
 _STACK_3P_1350 = "Feldaufbau (AAR oben, 3-Punkt-Doppelstock, NAR unten) aus Hager Tipp 44 abgeleitet"
 _NO_WIRING = "Feldverdrahtung (mm²) nicht angegeben"
 _SAS_POSITION = "Lage der Sammelschienenzone aus Rechnung abgeleitet"
+# R4-9 (docs/PANEL_ENCLOSURE_R4.md §7): the busbar Verteilerfelder show their
+# Sammelschienen at the bottom on the Hager photos, level with the NAR of a
+# meter field beside them — which is what a ZZ55SAVE joint needs.
+_SAS_BOTTOM = "Sammelschienenzone unten laut Hager-Produktfoto"
 _SAS_SEALED = "Sammelschienenzone als plombierbar angenommen"
 _COVER_ONLY = "als Füllung ohne Einbausatz angenommen"
 _APZ_LIKE_VT5 = "APZ-Höhe wie ZU37VT5APZ2 angenommen"
@@ -197,6 +201,7 @@ def _module(
     fittings: tuple[dict[str, Any], ...] = (),
     wiring: int | None = None,
     unverified: tuple[str, ...] = (),
+    reserve_field: bool = False,
 ) -> dict[str, Any]:
     height_units = {1050: _GRID_1050, 1350: _GRID_1350}.get(field_height or 0) or sum(z["units"] for z in zones)
     cover = {"meter_ehz": _EHZ_COVER, "meter_3p": _3P_COVER}.get(family)
@@ -216,6 +221,7 @@ def _module(
         "verified": not unverified,
         "unverified": list(unverified),
         "source_url": _catalog_page(code),
+        "reserve_field": reserve_field,
     }
 
 
@@ -229,14 +235,15 @@ def _ehz(code: str, name: str, field_height: int, places: int, *, wiring: int | 
 
 
 def _three_point(code: str, name: str, field_height: int, *, wiring: int | None = None,
-                 extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
+                 extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = (),
+                 reserve_field: bool = False) -> dict[str, Any]:
     if field_height == 1050:
         stack, zones = _STACK_3P_1050, [_aar(0), _meter_zone(2, 3, 1, "3punkt"), _nar(5)]
     else:
         stack, zones = _STACK_3P_1350, [_aar(0), _meter_zone(2, 5, 2, "3punkt"), _nar(7)]
     notes = (stack, *unverified, *(() if wiring else (_NO_WIRING,)))
     return _module(code, "meter_3p", name, field_height, zones,
-                   fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes)
+                   fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes, reserve_field=reserve_field)
 
 
 # ── The current 3-Punkt range (round 3, 2026-10-26) ──────────────────────────
@@ -282,23 +289,26 @@ _ZSK_PAIR = (_zsk("zsk", "Zählersteckklemme oben"), _zsk("zsk2", "Zählersteckk
 _CASCADE_TRENN = (_HLAK_TOP, _trenn("trenn2", "Trennvorrichtung Kaskade", rail="aar1"), _trenn())
 
 
-def _three_point_vf(code: str, name: str, *, wiring: int | None = None,
-                    extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
+def _three_point_vf(code: str, name: str, *, wiring: int | None = None, extra: tuple[dict[str, Any], ...] = (),
+                    unverified: tuple[str, ...] = (), reserve_field: bool = False) -> dict[str, Any]:
     """1350 mm, one 3-Punkt place under a two-row Verteilerfeld ("1ZP/VT-3rh")."""
     zones = [_zone("vf", "VF", 0, 2, _numbered("vf", 2)), _aar(2), _meter_zone(4, 3, 1, "3punkt"), _nar(7)]
     notes = (_STACK_3P_VF, *unverified, *(() if wiring else (_NO_WIRING,)))
     return _module(code, "meter_3p", name, 1350, zones,
-                   fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes)
+                   fittings=(_NAR_BUSBAR, *extra), wiring=wiring, unverified=notes, reserve_field=reserve_field)
 
 
 def _kit(code: str, name: str, field_height: int, *, vf: bool = False, wiring: int | None = None,
          extra: tuple[dict[str, Any], ...] = (), unverified: tuple[str, ...] = ()) -> dict[str, Any]:
     """A kit of the current range: 1050 = one place; 1350 = Doppelstock, or
-    one place under a Verteilerfeld (``vf``). Every one was read off its photo."""
+    one place under a Verteilerfeld (``vf``). Every one was read off its photo.
+    A kit noted as Reservefeld is ``reserve_field`` (R4-12): never the §14a
+    carrier while a meter field in use exists."""
     notes = (_PHOTO, *unverified)
+    reserve = _RESERVE_FIELD in unverified
     if vf:
-        return _three_point_vf(code, name, wiring=wiring, extra=extra, unverified=notes)
-    return _three_point(code, name, field_height, wiring=wiring, extra=extra, unverified=notes)
+        return _three_point_vf(code, name, wiring=wiring, extra=extra, unverified=notes, reserve_field=reserve)
+    return _three_point(code, name, field_height, wiring=wiring, extra=extra, unverified=notes, reserve_field=reserve)
 
 
 def _distribution(code: str, name: str, field_height: int, rows: int, fittings: tuple[dict[str, Any], ...]) -> dict[str, Any]:
@@ -314,9 +324,9 @@ def _with_apz(code: str, name: str, field_height: int, rows: int, *,
 
 def _with_busbars(code: str, name: str, field_height: int, rows: int, *,
                   fittings: tuple[dict[str, Any], ...] = (_SAS_BUSBAR, _PE_N)) -> dict[str, Any]:
-    zones = [_sas(0), _zone("vt", "VT", 2, rows, _numbered("r", rows))]
+    zones = [_zone("vt", "VT", 0, rows, _numbered("r", rows)), _sas(rows)]
     return _module(code, "busbar", name, field_height, zones, fittings=fittings,
-                   unverified=(_SAS_POSITION, _SAS_SEALED))
+                   unverified=(_SAS_BOTTOM, _SAS_SEALED))
 
 
 def _communication(code: str, name: str, field_height: int, rfz: int) -> dict[str, Any]:

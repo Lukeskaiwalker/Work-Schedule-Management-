@@ -12,7 +12,9 @@
  * `buildDropIndex` runs once per drag start; a hit test is then O(bands +
  * devices on one rail). The rail-fit number lives here too and is shared
  * with the RailPicker's "Zu wenig Platz" (`deviceOverMm`), so the drop
- * label and the picker can never disagree about a full rail.
+ * label and the picker can never disagree about a full rail. It counts the
+ * §14a block where the block would sit after the drop (R4 §3.2: the
+ * automatic rail may move it away).
  *
  * Strips (R11, owner 2026-10-22: whole strips) drop only onto the two
  * terminal rails of their own field; `stripDropAt` reads the same bands and
@@ -21,8 +23,10 @@
  */
 import { DRAWING_PAD_PX, FIELD_HEADER_PX, fieldIndexAt, type RailBand } from "./enclosureFrontLayout";
 import { enclosureModules, type CatalogIndex } from "../../../utils/enclosureCatalog";
+import { controlBlockMmOn } from "../../../utils/enclosureControlBlock";
 import { round1 } from "../../../utils/enclosureGeometry";
 import { enclosureDeviceWidthMm, linkedRows, railLengthMm, railRowId, resolvableRails } from "../../../utils/enclosureLayout";
+import { ensureRailRow, moveDevicesInto } from "../../../utils/enclosureOpsCore";
 import { dragGroup, reservedRailKey, rowsInCabinetOrder } from "../../../utils/enclosureOpsDrag";
 import { fieldOfStrip, stripMoveOverMm } from "../../../utils/enclosureOpsTerminals";
 import { TOLERANCE_MM } from "../../../utils/enclosureTerminals";
@@ -51,7 +55,8 @@ export function railOverMm(capacityMm: number, usedMm: number): number {
 /**
  * How far a rail would run over with `deviceIds` moved onto it (they leave
  * wherever they are, this rail included). 0 when they fit, and for a rail
- * the board cannot resolve.
+ * the board cannot resolve. The §14a block counts where it sits on the
+ * board after the drop.
  */
 export function deviceOverMm(doc: PanelDocument, index: CatalogIndex, deviceIds: readonly string[], moduleId: string, railKey: string): number {
   const module = enclosureModules(doc).find((candidate) => candidate.id === moduleId);
@@ -61,7 +66,15 @@ export function deviceOverMm(doc: PanelDocument, index: CatalogIndex, deviceIds:
   const rowId = railRowId(linkedRows(doc, index), module, railKey);
   const staying = (doc.rows.find((row) => row.id === rowId)?.devices ?? []).filter((device) => !moving.has(device.id));
   const moved = deviceIds.map((id) => findDevice(doc, id)).filter((device): device is PanelDevice => device !== null);
-  return railOverMm(railLengthMm(ref.rail), railUsedMm(ref.rail, staying) + railUsedMm(ref.rail, moved));
+  const blockMm = controlBlockMmOn(postDropDocument(doc, index, deviceIds, moduleId, railKey), index, moduleId, railKey);
+  return railOverMm(railLengthMm(ref.rail), railUsedMm(ref.rail, staying) + railUsedMm(ref.rail, moved) + blockMm);
+}
+
+/** The board with `deviceIds` at the end of the rail — only read for where the §14a block then sits. */
+function postDropDocument(doc: PanelDocument, index: CatalogIndex, deviceIds: readonly string[], moduleId: string, railKey: string): PanelDocument {
+  if (!doc.enclosure?.control_block) return doc; // no stored block: nothing moves
+  const rail = ensureRailRow(doc, index, moduleId, railKey);
+  return "error" in rail ? doc : moveDevicesInto(rail.document, deviceIds, rail.rowId);
 }
 
 // ── What is being dragged ────────────────────────────────────────────────────

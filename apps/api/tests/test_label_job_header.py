@@ -19,6 +19,10 @@ nothing else:
   (99 + 3 × 44 mm → ``^Q98,3 ^W44``, 50 + 3 mm → ``^Q50,3``).
 
 ``tests/test_label_physical_scale.py`` pins the scale itself.
+
+Round 4 (docs/PANEL_ENCLOSURE_R4.md §9) ADDS keys to the 300 dpi golden —
+the vertical §14a strip and the Aderbeschriftung on the 211-502 — and
+changes none: the existing keys stay byte-identical and first, in their order.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from app.core.db import SessionLocal
 from app.services import schaltplan_type_label as tl
 from app.services import werkstatt_article_labels as art
 from app.services import werkstatt_box_labels as box
+from app.services import werkstatt_label_control_strip as control_strip
 from app.services import werkstatt_label_jobs as jobs
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
@@ -77,6 +82,19 @@ def render_golden(materials: list[MaterialProfile]) -> dict[str, list[str]]:
     }
 
 
+def render_golden_r4(materials: list[MaterialProfile]) -> dict[str, list[str]]:
+    """The round-4 keys: only at 300 dpi, a9c335f never had them."""
+    m = {profile.id: profile for profile in materials}
+    return {
+        "control_strip_default": control_strip.control_strip_sample(m["wago-2009-110"]),
+        "wire_labels_default": control_strip.wire_labels_sample(m["wago-211-502"]),
+    }
+
+
+def render_all_golden(materials: list[MaterialProfile]) -> dict[str, list[str]]:
+    return {**render_golden(materials), **render_golden_r4(materials)}
+
+
 def _split(job: list[str]) -> tuple[list[str], list[str], list[str]]:
     """(header, elements, tail from the final E on)."""
     start = job.index("^L")
@@ -85,8 +103,12 @@ def _split(job: list[str]) -> tuple[list[str], list[str], list[str]]:
 
 
 def test_golden_jobs_are_pinned_at_300_dpi() -> None:
-    new = render_golden(list(DEFAULT_MATERIALS))
-    assert set(new) == set(GOLDEN) == set(GOLDEN_300DPI)
+    assert set(render_golden(list(DEFAULT_MATERIALS))) == set(GOLDEN)
+    new = render_all_golden(list(DEFAULT_MATERIALS))
+    assert set(new) == set(GOLDEN_300DPI)
+    # Round 4 only added keys: the old ones first, in their order.
+    assert list(GOLDEN_300DPI)[: len(GOLDEN)] == list(GOLDEN)
+    assert list(GOLDEN_300DPI)[len(GOLDEN):] == ["control_strip_default", "wire_labels_default"]
     for name, job in GOLDEN_300DPI.items():
         copies = COPIES.get(name, 1)
         assert new[name] == job, f"{name}: job changed"
@@ -244,12 +266,12 @@ def test_matrix_data_line_passes_untouched() -> None:
 
 
 def test_no_golden_job_is_clamped_or_raises() -> None:
-    new = render_golden(list(DEFAULT_MATERIALS))
+    new = render_all_golden(list(DEFAULT_MATERIALS))
     for name, job in GOLDEN_300DPI.items():
         assert _split(new[name])[1] == _split(job)[1], name
 
 
-@pytest.mark.parametrize("material_id", ["wago-2009-110", "wago-211-501", "wago-210-812"])
+@pytest.mark.parametrize("material_id", ["wago-2009-110", "wago-211-501", "wago-211-502", "wago-210-812"])
 def test_dry_render_checks_follow_the_limits(material_id: str) -> None:
     profile = next(m for m in DEFAULT_MATERIALS if m.id == material_id)
     limits = offset_limits(profile)
@@ -366,3 +388,21 @@ def test_send_from_fake_printer_counts_pieces(client: TestClient, admin_token: s
     assert fake_printer.pieces_printed[-1] == 3
     fake_printer.raw_job(["^Q20,0", "^W11", "^L", "AT,100,30,36,36,0,1E,0,0,T5b", "E"])
     assert fake_printer.pieces_printed[-1] == 1  # SMPL's trailing ^C1 reset its own ^C3
+
+
+def test_the_dry_samples_cover_the_round_4_jobs() -> None:
+    """The vertical strip on the 2009-110, the Aderbeschriftung on both tubes."""
+    m = {profile.id: profile for profile in DEFAULT_MATERIALS}
+    rendered = {
+        material_id: [render(m[material_id]) for render in dry_render_samples(m[material_id], pattern=False)]
+        for material_id in ("wago-2009-110", "wago-211-501", "wago-211-502")
+    }
+    assert control_strip.control_strip_sample(m["wago-2009-110"]) in rendered["wago-2009-110"]
+    for tube in ("wago-211-501", "wago-211-502"):
+        assert control_strip.wire_labels_sample(m[tube]) in rendered[tube]
+    # The vertical texts stay a millimetre inside both edges of the strip, so
+    # the Block label (7 … 127 of 130 dots) still bounds the 2009-110's offsets.
+    sample = control_strip.control_strip_sample(m["wago-2009-110"])
+    boxes = [jobs._anchor_extent(kind, line) for kind, line in jobs._elements(_split(sample)[1]) if kind == "AT"]
+    assert min(box[0] for box in boxes) >= mm_to_dots(1) and max(box[1] for box in boxes) <= mm_to_dots(11) - mm_to_dots(1)
+    assert offset_limits(m["wago-2009-110"]) == jobs.OffsetLimits(x_min=-2.0, x_max=10.0, across_min=-0.5, across_max=0.2)

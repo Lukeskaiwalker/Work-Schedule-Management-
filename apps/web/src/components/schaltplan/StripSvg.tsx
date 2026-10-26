@@ -12,6 +12,13 @@
  * a 16 mm² terminal Block, three rows on the same band — the name, the X
  * number, one cell per terminal — with short dividers in the bottom row
  * only (`werkstatt_labels._render_block_label`).
+ *
+ * `vertical` is the third: the §14a block strip (docs/PANEL_ENCLOSURE_R4.md
+ * §9.1), whose 5,2 mm segments cannot hold a label along the feed, so every
+ * label is written across the band, reading bottom → top, and a blank one
+ * keeps its empty segment. It is drawn at 5 px/mm — at the strip scale a
+ * 3 mm text would be 7 px — and its accessible name lists the labels.
+ * `heightMm` draws the band of another stock, the heat-shrink tube.
  */
 import { DOTS_PER_MM, STRIP_HEIGHT_MM, STRIP_LEAD_MM, formatMm } from "../../utils/schaltplanStrip";
 import { blockCellSizeDots, blockRowSizeDots } from "../../utils/schaltplanTerminals";
@@ -23,12 +30,14 @@ export const PX_PER_MM = 2.4;
  * size lands on screen at the proportion it prints at.
  */
 export const PX_PER_DOT = PX_PER_MM / DOTS_PER_MM;
+/** The §14a strip's preview scale: its labels are 3 mm high, across a 5,2 mm segment. */
+export const VERTICAL_PX_PER_MM = 5;
 /** Room above and below the band so the thick end lines are not clipped. */
 const BAND_PAD_PX = 6;
 
 /** Font size for the preview, in px, rounded so SVG attributes do not carry float noise. */
-export function previewFontPx(sizeDots: number): number {
-  return Math.round(sizeDots * PX_PER_DOT * 100) / 100;
+export function previewFontPx(sizeDots: number, pxPerMm: number = PX_PER_MM): number {
+  return Math.round(sizeDots * (pxPerMm / DOTS_PER_MM) * 100) / 100;
 }
 
 export interface PreviewSegment {
@@ -55,26 +64,56 @@ type Props = {
   /** Printed length between the start and end lines, in mm. */
   lengthMm: number;
   fontPx: number;
+  /** Labels across the band, reading bottom → top, at `VERTICAL_PX_PER_MM` (the §14a strip). */
+  vertical?: boolean;
+  /** The band across the stock: the 11 mm strip unless a tube is loaded. */
+  heightMm?: number;
 };
 
-export function StripSvg({ label, segments, lengthMm, fontPx }: Props) {
+type SegmentTextProps = { x: number; y: number; text: string; fontPx: number; vertical: boolean };
+
+/** One text centred on its segment; a vertical one turned to read bottom → top. A blank prints nothing. */
+function SegmentText({ x, y, text, fontPx, vertical }: SegmentTextProps) {
+  if (text === "") return null;
+  return (
+    <text
+      className="sp-strip-text"
+      x={x}
+      y={y}
+      transform={vertical ? `rotate(-90 ${x} ${y})` : undefined}
+      textAnchor="middle"
+      dominantBaseline="central"
+      fontSize={fontPx}
+    >
+      {text}
+    </text>
+  );
+}
+
+function stripName(label: string, total: number, segments: readonly PreviewSegment[], vertical: boolean): string {
+  const name = `Streifen ${label}, ${formatMm(total)} mm`;
+  return vertical ? `${name}: ${segments.map((segment) => segment.text || "leer").join(", ")}` : name;
+}
+
+export function StripSvg({ label, segments, lengthMm, fontPx, vertical = false, heightMm = STRIP_HEIGHT_MM }: Props) {
+  const pxPerMm = vertical ? VERTICAL_PX_PER_MM : PX_PER_MM;
   const total = STRIP_LEAD_MM + lengthMm + STRIP_LEAD_MM;
-  const width = total * PX_PER_MM;
-  const band = STRIP_HEIGHT_MM * PX_PER_MM;
+  const width = total * pxPerMm;
+  const band = heightMm * pxPerMm;
   const height = band + BAND_PAD_PX * 2;
   const top = BAND_PAD_PX;
   const bottom = top + band;
-  const leadPx = STRIP_LEAD_MM * PX_PER_MM;
-  const x = (mm: number) => leadPx + mm * PX_PER_MM;
+  const leadPx = STRIP_LEAD_MM * pxPerMm;
+  const x = (mm: number) => leadPx + mm * pxPerMm;
 
   return (
     <svg
-      className="sp-strip-svg"
+      className={vertical ? "sp-strip-svg sp-strip-svg--vertical" : "sp-strip-svg"}
       width={width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`Streifen ${label}, ${formatMm(total)} mm`}
+      aria-label={stripName(label, total, segments, vertical)}
     >
       <rect className="sp-strip-band" x={0} y={top} width={width} height={band} />
       <rect className="sp-strip-lead" x={0} y={top} width={leadPx} height={band} />
@@ -90,16 +129,13 @@ export function StripSvg({ label, segments, lengthMm, fontPx }: Props) {
               y2={bottom}
             />
           )}
-          <text
-            className="sp-strip-text"
+          <SegmentText
             x={x(segment.start + segment.widthMm / 2)}
             y={top + band / 2}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontSize={fontPx}
-          >
-            {segment.text}
-          </text>
+            text={segment.text}
+            fontPx={fontPx}
+            vertical={vertical}
+          />
         </g>
       ))}
       <line className="sp-strip-end" x1={x(0)} x2={x(0)} y1={top - 3} y2={bottom + 3} />

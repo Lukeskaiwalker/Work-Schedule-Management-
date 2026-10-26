@@ -11,10 +11,15 @@
  * WAGO terminals (docs/PANEL_ENCLOSURE_R2.md §8): a placed strip is a
  * light-grey block with its X label; a rail reserved for terminals is tinted
  * and hatched (flag `terminals`), even when empty.
+ *
+ * Round 4 (docs/PANEL_ENCLOSURE_R4.md §5): the §14a block ("§14a", red when
+ * it does not fit its rail) and, open view only, the cabinet preparation's
+ * leads (`RunsLayer`): dashed, in screen px at every zoom, with a label at
+ * the middle of the longest segment.
  */
 import { memo, type ReactElement } from "react";
 
-import type { SceneBox } from "../../../types/panelEnclosure";
+import type { PrepRun, PrepRunKind, SceneBox } from "../../../types/panelEnclosure";
 import {
   DEVICE_FONT_PX,
   FIELD_FONT_PX,
@@ -26,6 +31,7 @@ import {
   type GapRun,
 } from "./enclosureFrontLayout";
 import "../../../styles/schaltplan-enclosure-terminals.css";
+import "../../../styles/schaltplan-enclosure-control.css";
 
 /** Room left above a zone's first rail band for its label (U/2 − half a device), mm. */
 const ZONE_LABEL_STRIP_MM = 30;
@@ -206,6 +212,20 @@ function TerminalStripShape({ box, state }: { box: SceneBox; state: ShapeState }
   );
 }
 
+/** The §14a block on its AAR rail (open view): grey like the terminals, outlined violet like its wires. */
+function ControlBlockShape({ box, state }: { box: SceneBox; state: ShapeState }) {
+  return (
+    <g
+      data-box-id={box.id}
+      data-kind={box.kind}
+      className={cls("sp-encl-control-block", box.flags.includes("overflow") && "sp-encl-control-block--overflow")}
+    >
+      <Rect box={box} className="sp-encl-control-block-body" />
+      {boxLabel(box, box.label, state.zoom, "sp-encl-text sp-encl-text--control", SMALL_FONT_PX)}
+    </g>
+  );
+}
+
 /** An eHZ / 3-Punkt meter (open) or its front behind the window (closed): a display above the number. */
 function MeterShape({ box, state }: { box: SceneBox; state: ShapeState }) {
   const { zoom } = state;
@@ -257,7 +277,7 @@ function PlainShape({ box, className }: { box: SceneBox; className: string }) {
 /** Kinds a view does not show: doors in the open view (§4), what the covers hide in the closed one. */
 const SKIPPED: Readonly<Record<"open" | "closed", ReadonlySet<string>>> = {
   open: new Set(["door", "handle"]),
-  closed: new Set(["zone", "rail", "busbar", "device", "meter", "meter_place", "terminal_strip"]),
+  closed: new Set(["zone", "rail", "busbar", "device", "meter", "meter_place", "terminal_strip", "control_block"]),
 };
 
 export function isDrawn(box: SceneBox, view: "open" | "closed"): boolean {
@@ -287,6 +307,8 @@ export const BoxShape = memo(function BoxShape({ box, state }: { box: SceneBox; 
       return <DeviceShape box={box} state={state} />;
     case "terminal_strip":
       return <TerminalStripShape box={box} state={state} />;
+    case "control_block":
+      return <ControlBlockShape box={box} state={state} />;
     case "meter":
     case "meter_front":
       return <MeterShape box={box} state={state} />;
@@ -345,5 +367,68 @@ export function HatchPattern({ id, zoom }: { id: string; zoom: number }) {
     <pattern id={`${id}-hatch`} patternUnits="userSpaceOnUse" width={size} height={size} patternTransform="rotate(45)">
       <line className="sp-encl-hatch-line" x1={0} y1={0} x2={0} y2={size} />
     </pattern>
+  );
+}
+
+// ── Leads (R4 §5) ────────────────────────────────────────────────────────────
+
+/** Dash and gap per lead, screen px: supply thin ink, network teal, control violet. */
+export const RUN_DASH_PX: Readonly<Record<PrepRunKind, readonly [number, number]>> = {
+  supply: [2, 2],
+  network: [4, 3],
+  control: [6, 4],
+};
+const RUN_WIDTH_PX: Readonly<Record<PrepRunKind, number>> = { supply: 1, network: 1.5, control: 1.5 };
+/** The label sits this far above its segment, px. */
+const RUN_LABEL_LIFT_PX = 6;
+const RUN_LABEL_HALO_PX = 3;
+
+/** The middle of a run's longest segment (the first of equals): where its label goes. */
+export function runLabelPoint(run: PrepRun): [number, number] {
+  let best: [number, number] = run.points[0] ?? run.from;
+  let longest = -1;
+  for (let i = 1; i < run.points.length; i += 1) {
+    const [x0, y0] = run.points[i - 1];
+    const [x1, y1] = run.points[i];
+    const length = Math.abs(x1 - x0) + Math.abs(y1 - y0);
+    if (length > longest) {
+      longest = length;
+      best = [(x0 + x1) / 2, (y0 + y1) / 2];
+    }
+  }
+  return best;
+}
+
+/** The cabinet preparation's leads, drawn over the boxes in the open view (`prep.runs`). */
+export function RunsLayer({ runs, zoom }: { runs: readonly PrepRun[]; zoom: number }) {
+  return (
+    <g className="sp-encl-runs">
+      {runs.map((run, i) => {
+        const [dash, gap] = RUN_DASH_PX[run.kind];
+        const [x, y] = runLabelPoint(run);
+        return (
+          <g key={`${run.kind}:${i}`} data-run={run.kind} className={`sp-encl-run sp-encl-run--${run.kind}`}>
+            <polyline
+              className="sp-encl-run-line"
+              points={run.points.map(([px, py]) => `${px},${py}`).join(" ")}
+              strokeWidth={RUN_WIDTH_PX[run.kind] / zoom}
+              strokeDasharray={`${dash / zoom} ${gap / zoom}`}
+            />
+            {run.label ? (
+              <text
+                className="sp-encl-run-label"
+                x={x}
+                y={y - RUN_LABEL_LIFT_PX / zoom}
+                textAnchor="middle"
+                fontSize={SMALL_FONT_PX / zoom}
+                strokeWidth={RUN_LABEL_HALO_PX / zoom}
+              >
+                {run.label}
+              </text>
+            ) : null}
+          </g>
+        );
+      })}
+    </g>
   );
 }

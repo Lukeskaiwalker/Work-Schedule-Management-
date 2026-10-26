@@ -58,10 +58,11 @@ RECENT_LIMIT_MAX = 25
 #: Lines added by hand per board. A real list stays far below (a board's whole
 #: Materialliste is rarely 50 lines); the cap stops a runaway client.
 MAX_MANUAL_LINES = 200
-#: Line keys a mapping may name: the derived planned lines. ``article:`` (an
-#: unplanned booking) and ``salvage:`` (an orphaned return) name an article
-#: already and are refused.
-MAPPABLE_PREFIXES = ("device:", "part:", "enclosure:", "module:", "accessory:")
+#: Line keys a mapping may name: the derived planned lines, the cabinet
+#: preparation's wires and ``prep:`` parts included (R4 §6: they have no
+#: article number to match). ``article:`` (an unplanned booking) and
+#: ``salvage:`` (an orphaned return) name an article already and are refused.
+MAPPABLE_PREFIXES = ("device:", "part:", "enclosure:", "module:", "accessory:", "wire:", "prep:")
 RETURN_PREFIX = "removed:"
 
 
@@ -343,7 +344,10 @@ def set_material_mapping(
     elif not key.startswith(MAPPABLE_PREFIXES):
         raise HTTPException(
             status_code=400,
-            detail="Nur geplante Positionen (Gerät, Klemme, Schrank, Modul, Zubehör, Rücklauf) können zugeordnet werden.",
+            detail=(
+                "Nur geplante Positionen (Gerät, Klemme, Schrank, Modul, Zubehör, Aderleitung, Schrankvorbereitung, "
+                "Rücklauf) können zugeordnet werden."
+            ),
         )
     article = _article_or_404(db, payload.article_id) if payload.article_id is not None else None
     if article is not None and bool(article.is_archived):

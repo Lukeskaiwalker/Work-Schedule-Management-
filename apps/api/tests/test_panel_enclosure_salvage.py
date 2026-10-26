@@ -274,7 +274,8 @@ def test_the_overview_counts_open_returns_apart_from_picking(client: TestClient,
     panel, hs = _board_with_removed_hs(client, admin_token)
     rows = client.get("/api/schaltplan/material/overview", headers=auth(admin_token)).json()
     [row] = [row for row in rows if row["panel"]["id"] == panel["id"]]
-    assert (row["returns_open"], row["planned_total"], row["open_lines"]) == (1, 6, 6)
+    # The cabinet preparation adds ZY3N1SA and K96ESA5 (docs/PANEL_ENCLOSURE_R4.md §6).
+    assert (row["returns_open"], row["planned_total"], row["open_lines"]) == (1, 8, 8)
     assert _book(client, admin_token, panel["id"], "salvage", hs).status_code == 200
     rows = client.get("/api/schaltplan/material/overview", headers=auth(admin_token)).json()
     assert [row["returns_open"] for row in rows if row["panel"]["id"] == panel["id"]] == [0]

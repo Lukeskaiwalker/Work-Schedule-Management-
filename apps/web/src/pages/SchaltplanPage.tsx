@@ -44,6 +44,7 @@ import { RailEditor } from "../components/schaltplan/RailEditor";
 import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
 import { TerminalList } from "../components/schaltplan/TerminalList";
 import { useLabelPrinting } from "../components/schaltplan/useLabelPrinting";
+import { usePanelControlBlock } from "../components/schaltplan/usePanelControlBlock";
 import { useSchaltplanPalette } from "../components/schaltplan/useSchaltplanPalette";
 import { useTypeLabelPrinting } from "../components/schaltplan/useTypeLabelPrinting";
 import { EnclosureTab } from "../components/schaltplan/enclosure/EnclosureTab";
@@ -436,6 +437,8 @@ export function SchaltplanPage() {
   const findings = useMemo(() => (document ? validateDocument(document, skip) : []), [document, skip]);
   const terminalGroups = boardTerms.terms?.groups ?? [];
   const terminalCount = terminalCounts(terminalGroups).terminals;
+  // The §14a block's prints and the Daten tab's infeed hint (docs/PANEL_ENCLOSURE_R4.md §8.5, §9).
+  const control = usePanelControlBlock({ document, index: enclosureIndex, groups: terminalGroups, wantHint: tab === "daten", openLabels: labels.open });
   const warnings = findings.filter((finding) => finding.level === "warn");
   // The cabinet's own findings are listed on the Schrank tab; the banner sums their warnings in one chip.
   const cabinetFindings = useMemo(() => {
@@ -603,6 +606,7 @@ export function SchaltplanPage() {
               openSheet={schrankSheet}
               onSheetOpened={() => setSchrankSheet(null)}
               boardTerminals={boardTerms}
+              onPrintWires={control.printWires}
             />
           )}
 
@@ -641,12 +645,9 @@ export function SchaltplanPage() {
               boardTerminals={boardTerms}
               readOnly={readOnly}
               onSetAllTerminals={(flag) => editor.mutate((current) => setAllTerminalsOnBoard(current, enclosureIndex, flag))}
-              onPrint={() =>
-                labels.open(
-                  terminalGroups.flatMap((group) => group.strips.map((strip) => strip.stripId)),
-                  "reihenklemmen",
-                )
-              }
+              onPrint={control.printKlemmen}
+              hasControlStrip={control.hasControlStrip}
+              onPrintWires={control.printWires}
               pdfHref={panelPdfUrl(panel.id, { terminalsOnly: true })}
               onPdfClick={savedPdfClick(panelPdfUrl(panel.id, { terminalsOnly: true }), settleSaves, setError, "Klemmenliste")}
               printing={labels.printing}
@@ -688,6 +689,7 @@ export function SchaltplanPage() {
               onPatchSupply={editor.patchSupply}
               onSaveMeta={savePanelMeta}
               onDelete={deleteCurrentPanel}
+              infeedHint={control.infeedHint}
             />
           )}
         </section>

@@ -8,7 +8,9 @@ cabinet brings to it, and books what comes back out of one:
   Meters never: the grid operator supplies them (D7). Among the accessories,
   the U84T rail insulation the WAGO terminal rails need (one line with an
   admin's own U84T accessory, the larger count; docs/PANEL_ENCLOSURE_R2.md
-  §5, ``panel_enclosure_terminal_material``).
+  §5, ``panel_enclosure_terminal_material``). A Hager article the cabinet
+  preparation derives (R4 §6, ``panel_enclosure_prep_material``) that an
+  admin also lists is merged the same way, at the admin line's slot.
 * **Pre-fitted parts** (D5). A module's ``fittings`` snapshot says what came
   in the box. A device that claims one through ``supplied_by`` is the
   module's part, counted by the module line and never again as a device. A
@@ -36,7 +38,7 @@ list, so "ZH3EH16" means the same article in both).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +47,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import PanelPlan, WerkstattArticle, WerkstattMovement
 from app.schemas.schaltplan import PanelMaterialLineOut
+from app.services import panel_enclosure_prep_material as prep_material
 from app.services import panel_enclosure_terminal_material as terminal_material
 from app.services import schaltplan_material as material
 from app.services.panel_enclosure_catalog import EnclosureCatalog, match_articles_by_number
@@ -269,11 +272,15 @@ def _maker(spec: Mapping[str, Any]) -> str:
     return f"{spec.get('manufacturer') or 'Hager'} {spec['article_no']}"
 
 
-def enclosure_planned_lines(document: Any, catalog: EnclosureCatalog, rail_sets: int = 0) -> list[material.PlannedLine]:
+def enclosure_planned_lines(
+    document: Any, catalog: EnclosureCatalog, rail_sets: int = 0, prep_items: Sequence[Mapping[str, Any]] | None = None,
+) -> list[material.PlannedLine]:
     """Cabinet, modules (counted, first-placement order), then accessories and blind plates.
 
     ``rail_sets``: the U84T sets the WAGO placement needs (R2 §5.1); they
     join the accessories as one line with an admin's own U84T accessory.
+    ``prep_items``: the cabinet preparation's items (derived when None); an
+    accessory naming one of their Hager articles becomes that one line (R4 §6).
     """
     if not has_enclosure(document):
         return []
@@ -285,7 +292,9 @@ def enclosure_planned_lines(document: Any, catalog: EnclosureCatalog, rail_sets:
         lines.append(_cabinet_line(code, cabinet))
     unit_mm = int(cabinet.get("unit_mm") or DEFAULT_UNIT_MM) if cabinet is not None else DEFAULT_UNIT_MM
     lines.extend(_module_lines(modules, catalog, unit_mm))
-    lines.extend(_accessory_lines(_accessories(cabinet, modules, catalog), rail_sets))
+    items = prep_material.prep_items(document, catalog) if prep_items is None else prep_items
+    lines.extend(_accessory_lines(_accessories(cabinet, modules, catalog), rail_sets,
+                                  prep_material.derived_accessories(items)))
     return lines
 
 
@@ -359,9 +368,12 @@ def accessory_quantities(document: Any, catalog: EnclosureCatalog) -> dict[str, 
     return {number: int(entry["qty"]) for number, entry in _accessories(cabinet, _modules(document), catalog).items()}
 
 
-def _accessory_lines(found: Mapping[str, Mapping[str, Any]], rail_sets: int) -> list[material.PlannedLine]:
+def _accessory_lines(
+    found: Mapping[str, Mapping[str, Any]], rail_sets: int, derived: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[material.PlannedLine]:
     """One line per accessory article. U84T is one line with the WAGO rails'
-    insulation sets: the larger count and the derived label (R2 §5.1)."""
+    insulation sets: the larger count and the derived label (R2 §5.1); so is
+    an article the cabinet preparation derives (``derived``, R4 §6)."""
     u84t = terminal_material.U84T_ARTICLE_NO
     lines: list[material.PlannedLine] = []
     for number, entry in found.items():
@@ -369,8 +381,9 @@ def _accessory_lines(found: Mapping[str, Mapping[str, Any]], rail_sets: int) -> 
             line = terminal_material.u84t_line(int(entry["qty"]), rail_sets)
             lines.extend([line] if line is not None else [])
             continue
-        lines.append(material.PlannedLine(f"accessory:{number}", LINE_ENCLOSURE, entry["label"], entry["detail"],
-                                          entry["qty"]))
+        admin = material.PlannedLine(f"accessory:{number}", LINE_ENCLOSURE, entry["label"], entry["detail"],
+                                     entry["qty"])
+        lines.append(prep_material.merged_accessory_line(admin, (derived or {}).get(number)))
     derived = terminal_material.u84t_line(0, rail_sets) if u84t not in found else None
     return [*lines, *([derived] if derived is not None else [])]
 
@@ -388,8 +401,14 @@ def removed_planned_lines(document: Any, catalog: EnclosureCatalog) -> list[mate
     ]
 
 
-def line_article_numbers(document: Any, catalog: EnclosureCatalog) -> dict[str, str]:
-    """line key → the article number its automatic stock match looks for."""
+def line_article_numbers(
+    document: Any, catalog: EnclosureCatalog, prep_items: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, str]:
+    """line key → the article number its automatic stock match looks for.
+
+    ``prep_items``: the cabinet preparation's items (derived when None); their
+    Hager and WAGO lines look for their number, wires and ``prep:`` lines none.
+    """
     if not has_enclosure(document):
         return {}
     out: dict[str, str] = {}
@@ -413,6 +432,9 @@ def line_article_numbers(document: Any, catalog: EnclosureCatalog) -> dict[str, 
     for item in removed_fittings(document, catalog):
         if item.article_no:
             out.setdefault(f"{REMOVED_PREFIX}{item.module_code}:{item.fitting_key}", item.article_no)
+    items = prep_material.prep_items(document, catalog) if prep_items is None else prep_items
+    for key, number in prep_material.prep_article_numbers(items).items():
+        out.setdefault(key, number)
     # The WAGO rails' insulation set (R2 §5.2): matched after its EAN.
     out.setdefault(terminal_material.U84T_KEY, terminal_material.U84T_ARTICLE_NO)
     return out

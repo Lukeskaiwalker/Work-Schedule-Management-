@@ -75,7 +75,8 @@ def test_findings_match_the_fixture_on_every_board() -> None:
 def test_the_compliant_reference_board_has_no_warning() -> None:
     findings = _findings(meter_dist_zb33s())
     assert [f for f in findings if f["level"] == "warn"] == []
-    assert {f["rule"] for f in findings} == {"encl.unverified", "encl.terminals"}
+    # Round 4: a board older than the §14a block is told to add one (info, R4-2).
+    assert {f["rule"] for f in findings} == {"encl.unverified", "encl.terminals", "encl.control_block_missing"}
 
 
 def test_findings_come_sorted_by_rule_then_scope_then_message() -> None:

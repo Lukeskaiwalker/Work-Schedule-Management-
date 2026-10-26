@@ -79,6 +79,106 @@
   color: var(--muted);
 }
 
+/* Between head and body, outside the scroller (SheetFrame `toolbar`): the
+   module picker's search stays in reach while the list scrolls under it. */
+.sp-encl-sheet-toolbar {
+  flex: none;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--sp-line);
+  background: #fff;
+}
+
+/* ── Module search (docs/PANEL_ENCLOSURE_R4.md §8.1) ─────────────────────── */
+
+.sp-encl-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Label left, hit count right: one line, so the toolbar does not grow when
+   the status fills in and the list under it does not jump. */
+.sp-encl-search-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sp-encl-search-status {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.sp-encl-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sp-encl-search input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--sp-ink);
+  font-family: inherit;
+  /* 16 px: iOS Safari zooms the viewport on focus below that. */
+  font-size: 16px;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* The native cancel button is a few px wide; the 56 px × next to it is the clear. */
+.sp-encl-search input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+  -webkit-appearance: none;
+}
+
+.sp-encl-search input[type="search"]:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 1px;
+}
+
+.sp-encl-search-clear {
+  appearance: none;
+  flex: none;
+  width: 56px;
+  min-width: 56px;
+  height: 56px;
+  min-height: 56px;
+  padding: 0;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sp-encl-search-clear:hover {
+  border-color: var(--sp-accent);
+  color: var(--sp-accent);
+}
+
+.sp-encl-search-clear:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 1px;
+}
+
+.sp-encl-search-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
 /* ── Items (cabinets, modules, rails, templates) ─────────────────────────── */
 
 .sp-encl-item {

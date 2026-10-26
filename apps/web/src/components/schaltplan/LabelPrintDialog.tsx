@@ -25,6 +25,12 @@
  * through the page's autosave, not through the print request. The strips
  * are the page's one derivation (`useBoardTerminals`, R2 §3.1), so a cabinet
  * board numbers them as the Klemmen tab does — and waits for the catalogue.
+ * The §14a block strip (docs/PANEL_ENCLOSURE_R4.md §9.1) is that list's last
+ * item: it needs no catalogue of its own, but it waits with the list.
+ *
+ * `mode="adern"` prints the §14a block's wire labels on the board's own
+ * heat-shrink tube (§9.2, `LabelPrintDialogWires.tsx`): no list, one
+ * material chip, a preview of every label twice.
  *
  * Same bottom sheet as the palette and the inspector: it is the reachable
  * third of a phone held in front of an open board.
@@ -32,8 +38,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { StripSvg, layoutSegments, previewFontPx } from "./StripSvg";
+import { WirePreview, wireSheet } from "./LabelPrintDialogWires";
 import { TerminalLabelEditor } from "./LabelPrintTerminalEditor";
-import { TERMINAL_MATERIAL, TerminalPreview, TerminalStripList, boardStrips } from "./LabelPrintTerminals";
+import { TERMINAL_MATERIAL, TerminalPreview, TerminalStripList } from "./LabelPrintTerminals";
 import { CATALOG_LOADING } from "./TerminalList";
 import { boardTerminalsState, type BoardTerminalsState } from "../../hooks/useBoardTerminals";
 import {
@@ -59,10 +66,23 @@ import {
   unverifiedTerminalParts,
   type TerminalGroup,
 } from "../../utils/schaltplanTerminals";
+import {
+  CONTROL_STRIP_ID,
+  WIRE_STRIP_ID,
+  controlStrip,
+  klemmenStripIds,
+  printableControl,
+} from "../../utils/schaltplanControlStrip";
 import type { PrintTarget } from "../../utils/schaltplanApi";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
 
-export type LabelPrintMode = "bmk" | "reihenklemmen";
+export type LabelPrintMode = "bmk" | "reihenklemmen" | "adern";
+
+const TITLES: Readonly<Record<LabelPrintMode, string>> = {
+  bmk: "BMK-Etiketten drucken",
+  reihenklemmen: "Klemmen-Etiketten drucken",
+  adern: "Aderbeschriftung drucken",
+};
 
 export interface LabelPrintOptions {
   target: PrintTarget;
@@ -71,7 +91,7 @@ export interface LabelPrintOptions {
 type Props = {
   open: boolean;
   document: PanelDocument;
-  /** Ticked when the sheet opens: rail ids in BMK mode, strip ids in Reihenklemmen mode. */
+  /** Ticked when the sheet opens: rail ids in BMK mode, strip ids in Reihenklemmen mode; ignored for "adern". */
   initialRowIds: string[];
   busy: boolean;
   mode?: LabelPrintMode;
@@ -192,6 +212,7 @@ export function LabelPrintDialog({
   onClose,
 }: Props) {
   const terminalMode = mode === "reihenklemmen";
+  const wiresMode = mode === "adern";
   const [materialId, setMaterialId] = useState<LabelMaterialId>(DEFAULT_LABEL_MATERIAL);
   const [selectedIds, setSelectedIds] = useState<string[]>(initialRowIds);
 
@@ -224,24 +245,33 @@ export function LabelPrintDialog({
   // Fitted over every Leiste of the board, not the ticked ones.
   const terminalBoard = useMemo(() => terminalFontSize(groups, STRIP_HEIGHT_MM), [groups]);
   const unverified = useMemo(() => unverifiedTerminalParts(groups), [groups]);
+  // The §14a strip waits with the list, though it needs no catalogue itself.
+  const control = useMemo(() => (terminalsReady ? controlStrip(document) : null), [terminalsReady, document]);
+  const wires = useMemo(() => (wiresMode ? wireSheet(document) : null), [wiresMode, document]);
 
   if (!open) return null;
 
   const strip = terminalMode || materialId === "wago-2009-110";
-  const material = terminalMode
-    ? TERMINAL_MATERIAL
-    : (LABEL_MATERIALS.find((entry) => entry.id === materialId) ?? LABEL_MATERIALS[0]);
+  const material = wires
+    ? wires.tube
+    : terminalMode
+      ? TERMINAL_MATERIAL
+      : (LABEL_MATERIALS.find((entry) => entry.id === materialId) ?? LABEL_MATERIALS[0]);
   const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id));
-  const canPrint = terminalMode
-    ? !busy && selectedStrips.length > 0
-    : !busy && selectedRows.length > 0 && counts.labelled > 0;
+  // Ticked and printable: a strip with a label too long for its terminal is never sent.
+  const selectedControl = selectedIds.includes(CONTROL_STRIP_ID) ? printableControl(control) : null;
+  const canPrint = wires
+    ? !busy && wires.segments !== null
+    : terminalMode
+      ? !busy && (selectedStrips.length > 0 || selectedControl !== null)
+      : !busy && selectedRows.length > 0 && counts.labelled > 0;
   const fontPx = previewFontPx(terminalMode ? terminalBoard.sizeDots : board.sizeDots);
 
   const toggle = (id: string) =>
     setSelectedIds((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
   const toggleAllRows = () => setSelectedIds(allSelected ? [] : rows.map((row) => row.id));
   const toggleAllStrips = () => {
-    const stripIds = boardStrips(groups).map((entry) => entry.stripId);
+    const stripIds = klemmenStripIds(groups, control);
     const every = stripIds.every((id) => selectedIds.includes(id));
     setSelectedIds(every ? [] : stripIds);
   };
@@ -249,12 +279,15 @@ export function LabelPrintDialog({
   // Only strips the board still derives: the server refuses any other as a stale screen.
   const printIds = () => {
     if (!terminalMode) return selectedIds;
-    const derived = new Set(boardStrips(groups).map((entry) => entry.stripId));
+    const derived = new Set(klemmenStripIds(groups, control));
     return selectedIds.filter((id) => derived.has(id));
   };
-  const print = () => onPrint(printIds(), material.id, { target: terminalMode ? "reihenklemmen" : "bmk" });
+  const print = () =>
+    wires
+      ? onPrint([WIRE_STRIP_ID], wires.tube.id, { target: "adern" })
+      : onPrint(printIds(), material.id, { target: terminalMode ? "reihenklemmen" : "bmk" });
 
-  const title = terminalMode ? "Klemmen-Etiketten drucken" : "BMK-Etiketten drucken";
+  const title = TITLES[mode];
 
   return (
     <>
@@ -273,20 +306,25 @@ export function LabelPrintDialog({
         <div className="sp-sheet-body">
           <div className="sp-field">
             <span className="sp-field-label">Material</span>
-            {terminalMode ? (
+            {wires ? (
+              <Chips name="Material" options={[wires.tube]} active={wires.tube.id} onPick={() => undefined} />
+            ) : terminalMode ? (
               <Chips name="Material" options={[TERMINAL_MATERIAL]} active={TERMINAL_MATERIAL.id} onPick={() => undefined} />
             ) : (
               <Chips name="Material" options={LABEL_MATERIALS} active={materialId} onPick={setMaterialId} />
             )}
           </div>
 
-          {terminalMode && !terminalsReady ? (
+          {wires ? (
+            <WirePreview sheet={wires} />
+          ) : terminalMode && !terminalsReady ? (
             <p className="sp-label-empty" role="status">
               {CATALOG_LOADING}
             </p>
           ) : terminalMode ? (
             <TerminalStripList
               groups={groups}
+              control={control}
               selectedIds={selectedIds}
               onToggle={toggle}
               onToggleAll={toggleAllStrips}
@@ -323,10 +361,11 @@ export function LabelPrintDialog({
             </div>
           )}
 
-          {terminalMode && !terminalsReady ? null : terminalMode ? (
+          {wires || (terminalMode && !terminalsReady) ? null : terminalMode ? (
             <>
               <TerminalPreview
                 strips={selectedStrips}
+                control={selectedControl}
                 skipped={selection.skipped}
                 board={terminalBoard}
                 fontPx={fontPx}

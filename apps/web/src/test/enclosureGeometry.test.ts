@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildEnclosureScene, round1 } from "../utils/enclosureGeometry";
+import { DERIVE, defaultControlBlock, placeControlBlock } from "../utils/enclosureControlBlock";
 import { placeTerminals } from "../utils/enclosureTerminals";
 import type { EnclosureModule, SceneBox } from "../types/panelEnclosure";
 import type { PanelDocument } from "../types/schaltplan";
@@ -212,5 +213,39 @@ describe("terminal strips", () => {
     const boxes = byId(buildEnclosureScene(document, FIXTURE_INDEX, "open", without)!.boxes);
     expect([...boxes.values()].some((box) => box.kind === "terminal_strip")).toBe(false);
     expect(boxes.get("rail:mod-v:r1")!.flags).toEqual([]);
+  });
+});
+
+// ── The §14a block (docs/PANEL_ENCLOSURE_R4.md §5) ───────────────────────────
+
+describe("the §14a block box", () => {
+  const blockBoxes = (document: PanelDocument, view: "open" | "closed", block: Parameters<typeof buildEnclosureScene>[4] = DERIVE) =>
+    buildEnclosureScene(document, FIXTURE_INDEX, view, undefined, block)!.boxes.filter((box) => box.kind === "control_block");
+
+  it("is one box on the carrier rail in the open view, none in the closed view", () => {
+    const document = boardDocument("control_ehz_zb33s");
+    const placed = placeControlBlock(document, FIXTURE_INDEX)!;
+    expect(blockBoxes(document, "open")).toEqual([{
+      id: "control:block", kind: "control_block",
+      x: round1(placed.railX + placed.offsetMm), y: round1(placed.railY - 48), z: 47.5,
+      w: placed.widthMm, h: 96, d: 42.3, label: "§14a",
+      moduleId: "mod-a", railKey: "aar1", rowId: "row-a-aar1", deviceId: null, zoneType: "AAR", flags: [],
+    }]);
+    expect(blockBoxes(document, "closed")).toEqual([]);
+  });
+
+  it("follows a given block and none for null", () => {
+    const document = boardDocument("meter_dist_zb33s");
+    expect(blockBoxes(document, "open")).toEqual([]);
+    expect(blockBoxes(document, "open", defaultControlBlock())).toHaveLength(1);
+    expect(blockBoxes(boardDocument("control_ehz_zb33s"), "open", null)).toEqual([]);
+  });
+
+  it("is flagged when it overflows", () => {
+    const document = boardDocument("control_ehz_zb33s");
+    const aar1 = document.rows.find((candidate) => candidate.id === "row-a-aar1")!;
+    aar1.devices = Array.from({ length: 12 }, (_, i) => ({ ...aar1.devices[0], id: `dev-full-${i}`, kind: "mcb", te: 1, width_mm: null }));
+    const block = { ...defaultControlBlock(), rail: "aar1" };
+    expect(blockBoxes(document, "open", block)[0]).toMatchObject({ x: 255, flags: ["overflow"] });
   });
 });

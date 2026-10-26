@@ -63,7 +63,8 @@ def test_the_ten_rules_replace_the_old_one_in_the_rule_order() -> None:
         "encl.terminals_head_field", "encl.terminals_zone")
     start = RULE_ORDER.index("encl.terminals")
     assert RULE_ORDER[start:start + 10] == TERMINAL_RULE_ORDER
-    assert RULE_ORDER[start - 1] == "encl.meter_place_invalid" and RULE_ORDER[start + 10] == "vde.nar_sls"
+    # Round 4 put its rules between encl.meter_place_invalid and these (R4 §4).
+    assert RULE_ORDER[start - 1] == "encl.pen_split" and RULE_ORDER[start + 10] == "vde.nar_sls"
 
 
 def test_the_compliant_board_only_states_its_terminals() -> None:

@@ -43,6 +43,7 @@ import {
   withRow,
   type OpResult,
 } from "./enclosureOpsCore";
+import { seedControlBlock } from "./enclosureOpsControlBlock";
 import { terminalRailKey, terminalRailKeys } from "./enclosureTerminals";
 import type { EnclosureMeter, EnclosureModule, FittingSpec, ModuleSpec } from "../types/panelEnclosure";
 import type { PanelDevice, PanelDocument } from "../types/schaltplan";
@@ -170,6 +171,8 @@ function adoptRows(doc: PanelDocument, index: CatalogIndex, moduleId: string): P
  * fitting device (D15). `claim` (default on) takes over matching devices and
  * meters outside the cabinet; `adoptRows` hangs the remaining outside rows
  * onto empty VT/VF rails, skipping the field's terminal rails (R2 §3.6).
+ * A meter field on a board without a §14a block seeds the default block
+ * (docs/PANEL_ENCLOSURE_R4.md R4-2); a present or removed one is kept.
  */
 export function placeModule(
   doc: PanelDocument,
@@ -192,7 +195,7 @@ export function placeModule(
     removed_fittings: [],
     meters: meterEntries(doc, spec, plan.meters),
   };
-  const placed = withModules(doc, (modules) => [...modules, module]);
+  const placed = seedControlBlock(withModules(doc, (modules) => [...modules, module]), spec.family);
   const fitted = fitDevices(placed, index, module, spec, plan);
   if (!fitted.ok) return refuse(fitted.error);
   let next = removeDevices(fitted.document, plan.meters.map((device) => device.id));

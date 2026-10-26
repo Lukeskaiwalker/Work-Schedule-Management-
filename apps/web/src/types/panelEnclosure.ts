@@ -90,10 +90,63 @@ export interface EnclosureModule {
   terminal_order?: Record<string, TerminalOrderEntry> | null;
 }
 
+// ── Round 4: the §14a block and the prep overrides (docs/PANEL_ENCLOSURE_R4.md §2) ──
+
+/** Never grün-gelb (PE), hellblau/blau (N), single grün/gelb. */
+export type WireColour = "braun" | "schwarz" | "grau" | "rot" | "violett" | "weiß" | "orange" | "rosa";
+/** The heat-shrink tube the wire labels print on (O3/O4). */
+export type TubeMaterialId = "wago-211-501" | "wago-211-502";
+export type WireMm2 = 1.5 | 2.5;
+
+/** One output of the §14a block, left → right. */
+export interface ControlTerminal {
+  /** "t1"…: `t` and 1–3 digits, unique in the block. */
+  id: string;
+  /** ≤ 12 code points; "" = unnamed (printed as an empty segment). */
+  label: string;
+  color: WireColour;
+}
+
+/**
+ * `enclosure.control_block` (§2.1): the Steuersignal-Klemmleiste's user data.
+ * Where it sits is derived (`placeControlBlock`). Read ONLY through
+ * `parseControlBlock` (`utils/enclosureControlBlock.ts`): a tablet several
+ * versions behind or a hand edit may store anything here.
+ */
+export interface ControlBlock {
+  terminals: ControlTerminal[];
+  /** An AAR rail key of the carrier; null = automatic (§3.2). */
+  rail: string | null;
+  wire_mm2: WireMm2;
+  /** null = measured on the drawing; else 0,5 … 20 m, one decimal. */
+  wire_length_m: number | null;
+  label_material: TubeMaterialId;
+  /** true = removed on this board (no Materialliste lines, no drawing). */
+  off: boolean;
+}
+
+export type PrepSupplyChoice = "auto" | "SA" | "LS" | "SI" | "off";
+export type PrepInfeedChoice = "auto" | "K96ESA5" | "clamps" | "off";
+export type PrepToggle = "auto" | "off";
+
+/** `enclosure.prep` (§2.2): per-board overrides of the derived items; absent ≡ every group `auto`. Read through `parsePrep`. */
+export interface PrepOverrides {
+  supply: PrepSupplyChoice;
+  infeed: PrepInfeedChoice;
+  joints: PrepToggle;
+  network: PrepToggle;
+  /** A stored network lead length (0,5 … 20 m); null = from Hager's table or the drawing. */
+  network_m: number | null;
+}
+
 /** `document.enclosure`: the cabinet and the modules in it. */
 export interface PanelEnclosure {
   code: string;
   modules: EnclosureModule[];
+  /** Round 4 (§2.1): absent on boards older than round 4; seeded by `placeModule`. */
+  control_block?: ControlBlock | null;
+  /** Round 4 (§2.2): only once a group was overridden. */
+  prep?: PrepOverrides | null;
 }
 
 // ── Catalogue specs (§3.1) ───────────────────────────────────────────────────
@@ -188,6 +241,11 @@ export interface ModuleSpec extends CatalogSpecBase {
   zones: ZoneSpec[];
   fittings: FittingSpec[];
   free_place_cover: AccessorySpec | null;
+  /**
+   * R4-12: a reserve meter field (ZH33XL, ZH53XL, ZH52XL) is never the §14a
+   * carrier while a meter field in use exists. Not frozen; admins set it in JSON.
+   */
+  reserve_field: boolean;
 }
 
 // ── Catalogue API (§7) ───────────────────────────────────────────────────────
@@ -248,7 +306,9 @@ export type SceneBoxKind =
   | "door"
   | "handle"
   /** Round 2 (§8): one placed WAGO strip on a terminal rail, open view only. */
-  | "terminal_strip";
+  | "terminal_strip"
+  /** Round 4 (R4 §5): the §14a block on its carrier's AAR rail, open view only (id `control:block`). */
+  | "control_block";
 
 /** `terminals` (round 2, §8): a reserved terminal rail, drawn even when empty. */
 export type SceneBoxFlag =
@@ -463,3 +523,102 @@ export type TerminalSuggestion =
       scopes: string[];
       deviceIds: string[];
     };
+
+// ── Round 4: the §14a block's placement and the cabinet preparation (R4 §3) ──
+
+export type ControlPartId = "249-116" | "2002-1671" | "2002-1692";
+
+/** One part of the block, left → right; the non-terminal parts carry nulls. Every mm is `round1`ed. */
+export interface ControlBlockPart {
+  partId: ControlPartId;
+  terminalId: string | null;
+  label: string | null;
+  color: WireColour | null;
+  /** 1-based terminal position; null for end stops and the end plate. */
+  position: number | null;
+  /** Relative to the block's left edge. */
+  offsetMm: number;
+  widthMm: number;
+}
+
+/** `placeControlBlock` (§3.2): derived, never stored; Python emits these key names. */
+export interface ControlBlockPlacement {
+  moduleId: string;
+  railKey: string;
+  /** 0-based cabinet field of the AAR zone. */
+  field: number;
+  /** "F1 · AAR 1" (`default_rail_label`, never the row label). */
+  railTitle: string;
+  /** Rail left edge, scene mm. */
+  railX: number;
+  /** Rail centre line, scene mm. */
+  railY: number;
+  /** Block left edge from the rail's left end: right-aligned, never over the devices. */
+  offsetMm: number;
+  widthMm: number;
+  devicesMm: number;
+  capacityMm: number;
+  overflow: boolean;
+  parts: ControlBlockPart[];
+}
+
+export type PrepGroup = "supply" | "busbar" | "network" | "control";
+
+/**
+ * One derived item of the cabinet preparation (§3.3). `key` is the
+ * Materialliste mapping key (`accessory:`, `part:`, `wire:`, `prep:`); an
+ * item an override switched off keeps its place with `qty` 0 and `suppressed`.
+ */
+export interface PrepItem {
+  key: string;
+  articleNo: string | null;
+  label: string;
+  qty: number;
+  unit: "Stk" | "m";
+  reason: string;
+  verified: boolean;
+  group: PrepGroup;
+  /** The matching `PrepOverrides` value; null for groups without one. */
+  override: string | null;
+  suppressed: boolean;
+}
+
+export type PrepRunKind = "supply" | "network" | "control";
+
+/** A lead drawn on the open view (§3.4): vertical first, then horizontal; `lengthMm` from the unrounded ends. */
+export interface PrepRun {
+  kind: PrepRunKind;
+  from: [number, number];
+  to: [number, number];
+  points: [number, number][];
+  label: string;
+  lengthMm: number;
+}
+
+/** What the infeed parser recognised and what it led to (the Daten hint, §8.5). */
+export interface PrepInfeed {
+  mm2: number | null;
+  cores: number | null;
+  aluminium: boolean;
+  /** "K96ESA5", a clamp article, or null (no clamp fits). */
+  article: string | null;
+  /** The K96ESA5 is the automatic guess for an unknown cross-section. */
+  assumed: boolean;
+}
+
+/** `cabinetPrep` (§3.3): null when the cabinet is unknown. */
+export interface CabinetPrep {
+  items: PrepItem[];
+  runs: PrepRun[];
+  /** null without a `main` busbar zone. */
+  infeed: PrepInfeed | null;
+  overrides: PrepOverrides;
+}
+
+/** `parseInfeed` (§3.5): the cross-section in a free-text cable description. */
+export interface CableSection {
+  mm2: number | null;
+  /** 2…5, else null. */
+  cores: number | null;
+  aluminium: boolean;
+}

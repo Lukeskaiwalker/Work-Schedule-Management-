@@ -127,7 +127,8 @@ export function panelPdfUrl(
   return `${API_BASE}/schaltplan/panels/${panelId}/pdf${qs}`;
 }
 
-export type PrintTarget = "bmk" | "reihenklemmen";
+/** "adern": the §14a block's wire labels on its heat-shrink tube (docs/PANEL_ENCLOSURE_R4.md §9.2). */
+export type PrintTarget = "bmk" | "reihenklemmen" | "adern";
 
 export interface PanelLabelsPrintResult {
   /** Labelled segments (2009-110) or labels (210-805) actually printed. */
@@ -136,7 +137,8 @@ export interface PanelLabelsPrintResult {
    * Real devices without a BMK on the SELECTED rails — a selected rail with
    * nothing to print still counts its unnamed devices. A blank cover never
    * counts. For Reihenklemmen: the Leiste markers of the selected strips
-   * left blank by an override.
+   * left blank by an override, and the §14a strip's blank labels. For the
+   * Aderbeschriftung: the block's terminals without a label.
    */
   skipped_without_bmk: number;
   printer: string;
@@ -145,7 +147,8 @@ export interface PanelLabelsPrintResult {
    * One entry per piece that went out on the 2009-110, blank-free length;
    * empty for 210-805. A rail for BMK; a terminal strip (`row_id` = the
    * strip id, "f1:leiste" or "w1:block", `part_count` = its parts) for
-   * Reihenklemmen.
+   * Reihenklemmen — the §14a strip last as "control:block"; one piece
+   * "control:wires" (`part_count` = the sleeves) for the Aderbeschriftung.
    */
   strips: { row_id: string; row_label: string; length_mm: number; part_count?: number | null }[];
   /**
@@ -167,6 +170,9 @@ export interface PrintPanelLabelsOptions {
    * 400 — the sheet never sends it because Drucken is disabled with nothing
    * ticked. The marker texts are not sent: they live in the saved document
    * (`terminal_labels`), so the page flushes its autosave before printing.
+   * The §14a strip is the id "control:block". For the Aderbeschriftung the
+   * one id "control:wires"; the server reads the tube from the block and
+   * ignores both the ids and `materialId`.
    */
   stripIds?: string[];
   target?: PrintTarget;
@@ -174,7 +180,8 @@ export interface PrintPanelLabelsOptions {
 
 /**
  * Print the board's BMK labels for the chosen rails — or, with
- * `target: "reihenklemmen"`, the WAGO terminal markers of the chosen strips.
+ * `target: "reihenklemmen"`, the WAGO terminal markers of the chosen strips,
+ * or, with `target: "adern"`, the §14a block's wire labels.
  *
  * `materialId` is one of `LABEL_MATERIALS` in `utils/schaltplanStrip.ts`:
  * the 2009-110 strip gives one cut-marked strip per rail (or per Leiste,
@@ -191,7 +198,7 @@ export async function printPanelLabels(
 ): Promise<PanelLabelsPrintResult> {
   const target = options.target ?? "bmk";
   const body =
-    target === "reihenklemmen"
+    target === "reihenklemmen" || target === "adern"
       ? {
           target,
           // null = every strip on the server; [] would mean "none".

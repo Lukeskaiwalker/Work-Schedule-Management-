@@ -19,6 +19,11 @@
  * set, so a circuit in the AAR gets no terminal and no X number — and the
  * Stückliste carries the placement's end plates. Until the catalogue is
  * there the tab waits instead of showing numbers that would shift.
+ *
+ * A board with a §14a block (docs/PANEL_ENCLOSURE_R4.md §9) also prints
+ * that block's strip from the same sheet — so the strip print stays on for
+ * a board whose only strip it is — and gets "Aderbeschriftung drucken" for
+ * the wire labels on heat-shrink tube.
  */
 import { useMemo, type MouseEvent } from "react";
 
@@ -59,6 +64,10 @@ type Props = {
   /** The page's "wait for the autosave" handler for the PDF link: the server draws the list from the saved board. */
   onPdfClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
   printing?: boolean;
+  /** The board has a printable §14a block strip: the strip print has something to print without terminals. */
+  hasControlStrip?: boolean;
+  /** "Aderbeschriftung drucken" (the label dialog in mode `adern`); absent without a block. */
+  onPrintWires?: () => void;
 };
 
 function summaryText(counts: TerminalCounts, eligible: number): string {
@@ -139,6 +148,7 @@ type ReadyProps = Props & {
 
 function ReadyTerminalList(props: ReadyProps) {
   const { document, readOnly, onSetAllTerminals, onPrint, pdfHref, onPdfClick, printing = false, groups, skip, railParts } = props;
+  const { hasControlStrip = false, onPrintWires } = props;
   const bom = useMemo(() => terminalBom(groups, railParts), [groups, railParts]);
   // The same info findings `validateDocument` reports. Shown here because
   // the page's Prüfen block lists warnings only, and "no FI in this group"
@@ -183,12 +193,23 @@ function ReadyTerminalList(props: ReadyProps) {
           <button
             type="button"
             className="sp-btn sp-btn--primary"
-            disabled={!hasTerminals || printing}
+            disabled={(!hasTerminals && !hasControlStrip) || printing}
             onClick={onPrint}
             title="Ein 2009-110-Streifen je Klemmenleiste, ein 60-mm-Etikett je Block — Auswahl und Texte in der Vorschau"
           >
             {printing ? "Drucke…" : "Klemmen-Etiketten drucken"}
           </button>
+          {onPrintWires ? (
+            <button
+              type="button"
+              className="sp-btn"
+              disabled={printing}
+              onClick={onPrintWires}
+              title="Jede Bezeichnung der §14a-Klemmleiste zweimal, auf Schrumpfschlauch"
+            >
+              Aderbeschriftung drucken
+            </button>
+          ) : null}
           {hasTerminals && (
             // Only with a handler that opens it itself (after the saves): without one the
             // in-app viewer's interceptor must still catch it on the app surfaces.

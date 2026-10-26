@@ -91,7 +91,7 @@ function moduleSpec(code: string, family: ModuleSpec["family"], fieldHeight: num
     verified: true, unverified: [], source_url: null, note: "",
     family, field_height_mm: fieldHeight, width_fields: 1,
     height_units: fieldHeight === 1050 ? 7 : fieldHeight === 1350 ? 9 : zones.reduce((sum, z) => sum + z.units, 0),
-    wiring_mm2: null, zones, fittings: [], free_place_cover: null, ...extra,
+    wiring_mm2: null, zones, fittings: [], free_place_cover: null, reserve_field: false, ...extra,
   };
 }
 
@@ -119,7 +119,8 @@ export const MODULES: Record<string, ModuleSpec> = {
   ZU37VT5APZ2: moduleSpec("ZU37VT5APZ2", "distribution_apz", 1050, [zone("vt", "VT", 0, 5, numbered("r", 5)), apz(5)], {
     fittings: [{ ...part("rj45", "RJ45-Buchse"), removable: true }],
   }),
-  ZH3ES5: moduleSpec("ZH3ES5", "busbar", 1050, [sas(0), zone("vt", "VT", 2, 5, numbered("r", 5))], { fittings: [busbar] }),
+  // R4-9: the Sammelschienenzone sits at the bottom (Hager photos), level with a meter field's NAR.
+  ZH3ES5: moduleSpec("ZH3ES5", "busbar", 1050, [zone("vt", "VT", 0, 5, numbered("r", 5)), sas(5)], { fittings: [busbar] }),
   ZH5EL27: moduleSpec("ZH5EL27", "meter_ehz", 1350, [zone("vf", "VF", 0, 2, numbered("vf", 2)), aar(2), rfz(4), zf(5, 2, 1, "ehz"), nar(7)], {
     fittings: [busbar, bke],
   }),
@@ -145,6 +146,16 @@ export function testCatalog(overrides: { modules?: Record<string, ModuleSpec> } 
 }
 
 export const INDEX = catalogIndex(testCatalog());
+
+/**
+ * R4-12: a reserve meter field, never the §14a carrier while a field in use
+ * exists. Kept out of MODULES so the picker tests keep their lists; the
+ * round-4 tests read `R4_INDEX`.
+ */
+export const ZH33XL: ModuleSpec = moduleSpec("ZH33XL", "meter_3p", 1050, [aar(0), zf(2, 3, 1, "3punkt"), nar(5)], {
+  fittings: [busbar], reserve_field: true,
+});
+export const R4_INDEX = catalogIndex(testCatalog({ modules: { ZH33XL } }));
 
 /** Freeze a value and everything inside it: an op that mutates its input throws in strict mode. */
 export function deepFreeze<T>(value: T): T {

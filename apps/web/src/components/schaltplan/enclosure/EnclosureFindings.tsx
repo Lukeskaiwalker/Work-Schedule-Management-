@@ -23,8 +23,9 @@ export interface FindingAction {
 export const findingKey = (rule: string, scope: string): string => `${rule}|${scope}`;
 
 export const FINDINGS_DISCLAIMER = "Prüfhilfe nach VDE-AR-N 4100:2026-04 — ersetzt nicht die TAB des Netzbetreibers.";
+/** What no rule here can see (docs/PANEL_ENCLOSURE_R4.md §4: the supply kit is derived now, its SABO approval is not). */
 export const NOT_CHECKED =
-  "Nicht automatisch geprüft: Spannungsabgriff für SMGW/APZ vor dem SLS · RJ45 im RfZ · Einführung des Hauptkabels nicht von oben · Montagehöhe und Arbeitsraum · TAB des Netzbetreibers.";
+  "Nicht automatisch geprüft: Zulassung der SABO durch den Netzbetreiber · RJ45-Dose im RfZ · Einführung des Hauptkabels nicht von oben · Montagehöhe und Arbeitsraum · TAB des Netzbetreibers.";
 
 const LEVEL_TEXT: Readonly<Record<string, string>> = { warn: "Prüfen", info: "Hinweis" };
 

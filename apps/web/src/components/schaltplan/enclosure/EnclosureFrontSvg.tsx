@@ -43,11 +43,16 @@
  * RailSheet). With `onMoveStrip` and `stripSource` a strip drags as a whole
  * onto its own field's terminal rails (`useDrawingDrag`). Strip targets lie
  * above the bands and below the devices.
+ *
+ * Round 4 (docs/PANEL_ENCLOSURE_R4.md §5, §8.2): the open view draws the
+ * cabinet preparation's leads (`runs`) over the boxes, and with
+ * `onOpenControl` the §14a block is a target of its own, painted last —
+ * it lies on an AAR rail band and must win the tap.
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
 
-import type { EnclosureScene, SceneBox, TerminalPlacement } from "../../../types/panelEnclosure";
-import { BoxShape, FieldHeader, GapShape, HatchPattern, ModuleLabel, isDrawn, type ShapeState } from "./EnclosureFrontBoxes";
+import type { EnclosureScene, PrepRun, SceneBox, TerminalPlacement } from "../../../types/panelEnclosure";
+import { BoxShape, FieldHeader, GapShape, HatchPattern, ModuleLabel, RunsLayer, isDrawn, type ShapeState } from "./EnclosureFrontBoxes";
 import { reservedRailLine } from "./enclosureEditorModel";
 import { EnclosureDragLayer } from "./EnclosureDragLayer";
 import type { DeviceDragSource, DeviceDrop, StripDragSource, StripDrop } from "./enclosureDropTargets";
@@ -104,9 +109,16 @@ export interface EnclosureFrontSvgProps {
   onMoveStrip?: (stripId: string, drop: StripDrop) => void;
   /** What dragging a strip needs, asked when a drag starts. Strips are drag sources only with this and `onMoveStrip`. */
   stripSource?: (stripId: string) => StripDragSource | null;
+  /** The cabinet preparation's leads (`cabinetPrep(...).runs`), drawn in the open view only. */
+  runs?: readonly PrepRun[];
+  /** A tap on the §14a block: the §14a sheet. Without it the block is picture only. */
+  onOpenControl?: () => void;
+  /** The block's terminal count, for its target's name. */
+  controlTerminals?: number;
 }
 
 const NO_RAILS: ReadonlySet<string> = new Set();
+const NO_RUNS: readonly PrepRun[] = Object.freeze([]);
 
 const VIEW_WORD = { open: "offen", closed: "geschlossen" } as const;
 
@@ -126,7 +138,7 @@ function activateOnKey(event: KeyboardEvent<SVGElement>, activate: () => void) {
 function Target({ rect, label, kind, focusable, onActivate, data }: {
   rect: { x: number; y: number; w: number; h: number };
   label: string;
-  kind: "module" | "slot" | "rail" | "strip" | "device";
+  kind: "module" | "slot" | "rail" | "strip" | "device" | "control";
   focusable: boolean;
   onActivate: () => void;
   data?: Record<string, string | number>;
@@ -175,6 +187,18 @@ interface HitProps {
   onOpenTerminals: EnclosureFrontSvgProps["onOpenTerminals"];
   /** The X labels the placement puts on each terminal rail, by `moduleId\u0000railKey`. */
   railStrips: ReadonlyMap<string, readonly string[]>;
+  onOpenControl: EnclosureFrontSvgProps["onOpenControl"];
+  controlTerminals: number;
+}
+
+/** The §14a block's target (open view, with a handler): on top of everything, so a tap on it never opens the rail. */
+function ControlTarget({ scene, onOpen, terminals }: { scene: EnclosureScene; onOpen: () => void; terminals: number }) {
+  const box = scene.view === "open" ? scene.boxes.find((entry) => entry.kind === "control_block") : undefined;
+  if (!box) return null;
+  const field = fieldIndexAt(scene, box.x + box.w / 2);
+  const count = terminals === 1 ? "1 Klemme" : `${terminals} Klemmen`;
+  const label = field === null ? `§14a-Klemmleiste, ${count}` : `§14a-Klemmleiste, Feld ${field + 1}, ${count}`;
+  return <Target rect={box} kind="control" focusable label={label} onActivate={onOpen} data={{ "box-id": box.id }} />;
 }
 
 /**
@@ -197,8 +221,9 @@ function stripsByRail(placement: TerminalPlacement | null): ReadonlyMap<string, 
   return out;
 }
 
-/** Bottom → top: module backgrounds, free units, rail bands, strips, devices — the most specific target wins. */
-function HitLayer({ scene, cells, bands, draggable, stripsDraggable, onOpenRail, onOpenModule, onPickSlot, onOpenTerminals, railStrips }: HitProps) {
+/** Bottom → top: module backgrounds, free units, rail bands, strips, devices, the §14a block — the most specific target wins. */
+function HitLayer(props: HitProps) {
+  const { scene, cells, bands, draggable, stripsDraggable, onOpenRail, onOpenModule, onPickSlot, onOpenTerminals, railStrips, onOpenControl } = props;
   const railLabels = new Map(bands.map((band) => [`${band.moduleId}\u0000${band.railKey}`, band.label]));
   const modules = scene.boxes.filter((box) => box.kind === "module" && box.moduleId !== null);
   const devices = scene.boxes.filter((box) => (box.kind === "device" || box.kind === "device_front") && box.deviceId && box.moduleId && box.railKey);
@@ -266,6 +291,7 @@ function HitLayer({ scene, cells, bands, draggable, stripsDraggable, onOpenRail,
           data={draggable ? { "device-id": box.deviceId as string, "drag-device": box.deviceId as string } : { "device-id": box.deviceId as string }}
         />
       ))}
+      {onOpenControl ? <ControlTarget scene={scene} onOpen={onOpenControl} terminals={props.controlTerminals} /> : null}
     </g>
   );
 }
@@ -342,6 +368,9 @@ export function EnclosureFrontSvg({
   onOpenTerminals,
   onMoveStrip,
   stripSource,
+  runs = NO_RUNS,
+  onOpenControl,
+  controlTerminals = 0,
 }: EnclosureFrontSvgProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -400,6 +429,7 @@ export function EnclosureFrontSvg({
           {gaps.map((run) => <GapShape key={`gap:${run.field}:${run.unit}`} run={run} state={state} />)}
           {front.map((box, i) => <BoxShape key={`${box.id}#${i}`} box={box} state={state} />)}
           {front.filter((box) => box.kind === "module").map((box, i) => <ModuleLabel key={`label:${box.id}#${i}`} box={box} zoom={zoom} />)}
+          {scene.view === "open" && runs.length > 0 ? <RunsLayer runs={runs} zoom={zoom} /> : null}
         </g>
         {!readOnly && (
           <HitLayer
@@ -413,6 +443,8 @@ export function EnclosureFrontSvg({
             onPickSlot={onPickSlot}
             onOpenTerminals={onOpenTerminals}
             railStrips={railStrips}
+            onOpenControl={onOpenControl}
+            controlTerminals={controlTerminals}
           />
         )}
         {draggable || stripsDraggable ? <EnclosureDragLayer store={dragStore} scene={scene} bands={bands} zoom={zoom} /> : null}

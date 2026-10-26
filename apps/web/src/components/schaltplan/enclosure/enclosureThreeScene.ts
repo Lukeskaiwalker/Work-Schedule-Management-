@@ -64,6 +64,8 @@ const COLOURS: Readonly<Record<string, number>> = {
   meter_place: 0xe6ebf1,
   /** A WAGO strip (R2 §8): the grey of the 2003-7641 housing. */
   terminal_strip: 0xb9c0c8,
+  /** The §14a block (R4 §5): the same WAGO grey. */
+  control_block: 0xb9c0c8,
   door: 0xf7f7f4,
   handle: 0x56606b,
 };

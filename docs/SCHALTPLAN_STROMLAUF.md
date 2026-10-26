@@ -187,6 +187,9 @@ and the feeder chain open the first distribution band):
   terminal label (X1.3 … when `terminal_labels` is given), the circuit chip, two
   label lines, the room.
 * Column width from the outgoing core count: ≤ 3 cores 48 pt, more 64 pt.
+  Built (2026-10-26): a circuit label that 7 pt would cut ("Wärmepumpe" in 48 pt) is set
+  at 6.5 pt; a lane placeholder too wide for its column breaks after its first word
+  ("keine" / "Trennvorrichtung") instead of ending in "…".
   `paginate_columns` packs greedily per source and splits over-wide groups with
   paired markers **→ Forts. Blatt {k}** / **Forts. von Blatt {i}**.
 * `crossings()` returns every horizontal/vertical crossing that is not a

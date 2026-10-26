@@ -55,3 +55,28 @@ describe("glove-sized shared sheets in the Schrank stack", () => {
     }
   });
 });
+
+describe("the module picker's search box (docs/PANEL_ENCLOSURE_R4.md §8.1)", () => {
+  const input = '.sp-encl-search input[type="search"]';
+
+  it("is 56 px tall with a 16 px font, so iOS does not zoom on focus", () => {
+    const rule = declarationsFor(SHEETS_CSS, input);
+    expect(rule).not.toBe("");
+    expect(px(rule, "min-height")).toBe(56);
+    expect(px(rule, "font-size")).toBe(16);
+    expect(rule).toMatch(/(?:^|;|\s)appearance\s*:\s*none/);
+  });
+
+  it("draws no native cancel button: its own × is the 56 px one", () => {
+    expect(declarationsFor(SHEETS_CSS, `${input}::-webkit-search-cancel-button`)).toMatch(/display\s*:\s*none/);
+    const clear = declarationsFor(SHEETS_CSS, ".sp-encl-search-clear");
+    expect(px(clear, "width")).toBe(56);
+    expect(px(clear, "height")).toBe(56);
+    expect(px(clear, "min-width")).toBe(56);
+    expect(px(clear, "min-height")).toBe(56);
+  });
+
+  it("keeps the toolbar out of the scrolling body", () => {
+    expect(declarationsFor(SHEETS_CSS, ".sp-encl-sheet-toolbar")).toMatch(/flex\s*:\s*none/);
+  });
+});

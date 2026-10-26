@@ -22,10 +22,25 @@
  * An item's facts are the stock count and, for a part that fills only some
  * of the field, its height ("150 mm hoch"); a full-field module's height is
  * the field's and every listed one shares it.
+ *
+ * "Modul suchen" (docs/PANEL_ENCLOSURE_R4.md §8.1) sits in the frame's
+ * toolbar, so it stays in reach while 30–40 modules scroll under it. It only
+ * filters: the model (fit, claims) is built once per document, the search
+ * runs over it on a deferred copy of the query, so typing never waits for
+ * `fitsAt`. The query rides in the stack entry like the switches.
  */
-import { useMemo, useState } from "react";
+import { useDeferredValue, useId, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 
 import { SheetFrame, SheetSection, UnverifiedBadge } from "./EnclosureSheetFrame";
+import {
+  hiddenHint,
+  moduleHaystack,
+  noMatchText,
+  searchPicker,
+  searchStatus,
+  uncataloguedHaystack,
+  type HiddenModule,
+} from "./modulePickerSearch";
 import { fieldHeightMm, fitsAt, freeRuns, type CatalogIndex } from "../../../utils/enclosureCatalog";
 import { linkedRows } from "../../../utils/enclosureLayout";
 import { placeModule, previewClaims } from "../../../utils/enclosureOps";
@@ -33,6 +48,7 @@ import { deviceLabel } from "../../../utils/schaltplanDevices";
 import { DEFAULT_PICKER_SWITCHES, type PickerSwitches, type RunEnclosureOp } from "./useSheetStack";
 import type { CatalogEntry, EnclosureCatalog, ModuleSpec, UncataloguedArticle } from "../../../types/panelEnclosure";
 import type { PanelDevice, PanelDocument } from "../../../types/schaltplan";
+import type { SearchHaystack } from "../../../utils/searchNormalize";
 
 type Props = {
   document: PanelDocument;
@@ -47,6 +63,9 @@ type Props = {
   /** The switches, when the caller keeps them (the tab: in the stack entry). Without both, the sheet keeps its own. */
   switches?: PickerSwitches;
   onSwitchesChange?: (next: PickerSwitches) => void;
+  /** "Modul suchen", kept like the switches: without both, the sheet keeps its own. */
+  query?: string;
+  onQueryChange?: (next: string) => void;
   /** The module landed — the tab usually opens its ModuleSheet. */
   onPlaced?: (moduleId: string) => void;
   /** "Katalog verwalten" (managers): push the catalogue admin onto the stack. */
@@ -72,11 +91,13 @@ interface PickerItem {
   refusal: string | null;
   claims: string[];
   adopts: boolean;
+  haystack: SearchHaystack;
 }
 
 interface PickerModel {
   sections: { key: SectionKey; items: PickerItem[] }[];
-  hidden: { height: number; count: number }[];
+  /** The other field height's modules: counted (and searched), never listed. */
+  hidden: HiddenModule[];
 }
 
 function sectionOf(entry: CatalogEntry<ModuleSpec>): SectionKey {
@@ -134,13 +155,14 @@ function pickerModel(document: PanelDocument, catalog: EnclosureCatalog, index: 
   const cabinet = document.enclosure ? index.enclosure(document.enclosure.code) : null;
   if (!cabinet) return { sections: [], hidden: [] };
   const height = fieldHeightMm(cabinet);
-  const hidden = new Map<number, number>();
+  const hidden: HiddenModule[] = [];
   const buckets: Record<SectionKey, PickerItem[]> = { stock: [], recent: [], catalog: [] };
   for (const entry of catalog.modules ?? []) {
     const spec = index.module(entry.code);
     if (!spec || entry.archived) continue;
+    const haystack = moduleHaystack(spec, entry.article);
     if (spec.field_height_mm !== null && spec.field_height_mm !== height) {
-      hidden.set(spec.field_height_mm, (hidden.get(spec.field_height_mm) ?? 0) + 1);
+      hidden.push({ height: spec.field_height_mm, haystack });
       continue;
     }
     const place = target(document, index, spec.code, field, unit);
@@ -150,12 +172,13 @@ function pickerModel(document: PanelDocument, catalog: EnclosureCatalog, index: 
       ...place,
       claims: claimNames(document, index, spec.code),
       adopts: hasDistributionRails(spec),
+      haystack,
     });
   }
   const sections = (Object.keys(SECTION_TITLES) as SectionKey[])
     .map((key) => ({ key, items: buckets[key] }))
     .filter((section) => section.items.length > 0);
-  return { sections, hidden: [...hidden.entries()].sort(([a], [b]) => a - b).map(([h, count]) => ({ height: h, count })) };
+  return { sections, hidden };
 }
 
 /** Rows outside the cabinet that hold devices — what "Vorhandene Reihen übernehmen" would hang onto rails. */
@@ -228,27 +251,98 @@ function Switch({ label, checked, disabled, onChange }: { label: string; checked
   );
 }
 
-/** The caller's switches when it keeps them, else the sheet's own. */
-function useSwitches(switches: PickerSwitches | undefined, onChange: ((next: PickerSwitches) => void) | undefined) {
-  const [own, setOwn] = useState<PickerSwitches>(DEFAULT_PICKER_SWITCHES);
-  const controlled = switches !== undefined && onChange !== undefined;
-  const value = controlled ? switches : own;
-  const set = (patch: Partial<PickerSwitches>) => {
-    const next = { ...value, ...patch };
-    if (controlled) onChange(next);
-    else setOwn(next);
-  };
+/** The caller's value when it keeps it (the tab: in the stack entry), else the sheet's own. */
+function useKept<T>(kept: T | undefined, onChange: ((next: T) => void) | undefined, initial: T) {
+  const [own, setOwn] = useState<T>(initial);
+  const controlled = kept !== undefined && onChange !== undefined;
+  const value = controlled ? kept : own;
+  const set = (next: T) => (controlled ? onChange(next) : setOwn(next));
   return [value, set] as const;
+}
+
+function useSwitches(switches: PickerSwitches | undefined, onChange: ((next: PickerSwitches) => void) | undefined) {
+  const [value, setValue] = useKept(switches, onChange, DEFAULT_PICKER_SWITCHES);
+  return [value, (patch: Partial<PickerSwitches>) => setValue({ ...value, ...patch })] as const;
+}
+
+type SearchProps = { query: string; status: string; inputRef: RefObject<HTMLInputElement>; onChange: (next: string) => void; onClear: () => void };
+
+/** Enter puts the keyboard away: there is no form to submit, and the list already shows the hits. */
+function blurOnEnter(event: KeyboardEvent<HTMLInputElement>) {
+  if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+  event.preventDefault();
+  event.currentTarget.blur();
+}
+
+function SearchBox({ query, status, inputRef, onChange, onClear }: SearchProps) {
+  const id = useId();
+  return (
+    <div className="sp-encl-search" role="search">
+      <div className="sp-encl-search-head">
+        <label className="sp-field-label" htmlFor={id}>
+          Modul suchen
+        </label>
+        <span role="status" className="sp-encl-search-status">
+          {status}
+        </span>
+      </div>
+      <div className="sp-encl-search-row">
+        <input
+          ref={inputRef}
+          id={id}
+          type="search"
+          value={query}
+          placeholder="Code, Bezeichnung oder Artikelnummer"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          enterKeyHint="search"
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={blurOnEnter}
+        />
+        {query ? (
+          <button type="button" className="sp-encl-search-clear" aria-label="Suche löschen" onClick={onClear}>
+            ×
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function NoMatch({ query, onClear }: { query: string; onClear: () => void }) {
+  return (
+    <div className="sp-encl-search-empty">
+      <p className="sp-encl-empty">{noMatchText(query)}</p>
+      <button type="button" className="sp-btn sp-encl-target" onClick={onClear}>
+        Suche löschen
+      </button>
+    </div>
+  );
 }
 
 export function ModulePickerSheet(props: Props) {
   const { document, catalog, index, field, unit, readOnly, onOp, onPlaced, onManageCatalog, onCreateEntry, onBack, onClose } = props;
   const [{ claim, adopt }, setSwitches] = useSwitches(props.switches, props.onSwitchesChange);
+  const [query, setQuery] = useKept(props.query, props.onQueryChange, "");
+  const deferredQuery = useDeferredValue(query);
+  const inputRef = useRef<HTMLInputElement>(null);
   const model = useMemo(() => pickerModel(document, catalog, index, field, unit), [document, catalog, index, field, unit]);
   const outside = useMemo(() => outsideRowCount(document, index), [document, index]);
   const cabinet = document.enclosure ? index.enclosure(document.enclosure.code) : null;
   const unitMm = cabinet?.unit_mm ?? 150;
   const manager = catalog.can_manage === true;
+  const uncatalogued = catalog.uncatalogued;
+  const shelf = useMemo(
+    () => (manager ? (uncatalogued ?? []).map((item) => ({ item, haystack: uncataloguedHaystack(item) })) : []),
+    [manager, uncatalogued],
+  );
+  const view = useMemo(() => searchPicker({ sections: model.sections, hidden: model.hidden, shelf }, deferredQuery), [model, shelf, deferredQuery]);
+  const clearSearch = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
 
   const pick = (item: PickerItem) => {
     if (item.unit === null) return;
@@ -262,7 +356,17 @@ export function ModulePickerSheet(props: Props) {
   };
 
   return (
-    <SheetFrame title={`Modul für Feld ${field + 1}`} subtitle={cabinet ? cabinet.code : undefined} onBack={onBack} onClose={onClose}>
+    <SheetFrame
+      title={`Modul für Feld ${field + 1}`}
+      subtitle={cabinet ? cabinet.code : undefined}
+      onBack={onBack}
+      onClose={onClose}
+      toolbar={
+        cabinet ? (
+          <SearchBox query={query} status={searchStatus(view.searching, view.count)} inputRef={inputRef} onChange={setQuery} onClear={clearSearch} />
+        ) : undefined
+      }
+    >
       {!cabinet ? <p className="sp-encl-empty">Noch kein Schrank geplant.</p> : null}
       {cabinet ? (
         <div className="sp-encl-switches">
@@ -277,7 +381,8 @@ export function ModulePickerSheet(props: Props) {
           ) : null}
         </div>
       ) : null}
-      {model.sections.map((section) => (
+      {view.searching && view.count === 0 ? <NoMatch query={deferredQuery} onClear={clearSearch} /> : null}
+      {view.sections.map((section) => (
         <SheetSection key={section.key} title={SECTION_TITLES[section.key]}>
           <div className="sp-palette-grid">
             {section.items.map((item) => (
@@ -286,12 +391,12 @@ export function ModulePickerSheet(props: Props) {
           </div>
         </SheetSection>
       ))}
-      {model.hidden.map(({ height, count }) => (
-        <p key={height} className="sp-encl-hint">
-          {count} Module für {height} mm Felder ausgeblendet
+      {view.hidden.map((hidden) => (
+        <p key={hidden.height} className="sp-encl-hint">
+          {hiddenHint(hidden, view.searching)}
         </p>
       ))}
-      {manager && (catalog.uncatalogued ?? []).length > 0 ? <Uncatalogued items={catalog.uncatalogued} onCreateEntry={onCreateEntry} /> : null}
+      {view.shelf.length > 0 ? <Uncatalogued items={view.shelf.map((entry) => entry.item)} onCreateEntry={onCreateEntry} /> : null}
       {manager && onManageCatalog ? (
         <button type="button" className="sp-btn sp-btn--ghost sp-encl-target" onClick={onManageCatalog}>
           Katalog verwalten

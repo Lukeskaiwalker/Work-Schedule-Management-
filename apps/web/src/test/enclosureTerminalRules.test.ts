@@ -61,7 +61,8 @@ describe("the rule order", () => {
     ]);
     const start = RULE_ORDER.indexOf("encl.terminals");
     expect(RULE_ORDER.slice(start, start + 10)).toEqual(TERMINAL_RULE_ORDER);
-    expect([RULE_ORDER[start - 1], RULE_ORDER[start + 10]]).toEqual(["encl.meter_place_invalid", "vde.nar_sls"]);
+    // Round 4 (R4 §4) put the fifteen prep rules between the meter places and these.
+    expect([RULE_ORDER[start - 1], RULE_ORDER[start + 10]]).toEqual(["encl.pen_split", "vde.nar_sls"]);
   });
 });
 

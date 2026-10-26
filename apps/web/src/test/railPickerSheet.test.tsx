@@ -78,7 +78,8 @@ describe("RailPickerSheet — the rails", () => {
     expect(dialog).toHaveTextContent("Q0");
     const items = within(dialog).getAllByRole("button", { name: /PLE frei/ }).map((button) => button.getAttribute("aria-label"));
     expect(items).toContain("Feld 1 · NAR · 12 PLE frei");
-    expect(items).toContain("Feld 1 · AAR 1 · 9 PLE frei");
+    // The Hauptschalter (3 TE) and the §14a block placeModule seeded (44,2 mm, R4-2): (210 − 52,5 − 44,2) / 17,5.
+    expect(items).toContain("Feld 1 · AAR 1 · 6,5 PLE frei");
     expect(items).toContain("Feld 1 · RfZ · 12 PLE frei");
     expect(items).toContain("Feld 2 · Verteiler 1 · 2 PLE frei");
     expect(items).toContain("Feld 2 · Verteiler 7 · 12 PLE frei");

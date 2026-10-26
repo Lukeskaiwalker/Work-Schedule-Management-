@@ -137,7 +137,9 @@ def test_modules_are_counted_in_placement_order_and_reserve_places_get_a_blind_p
         ]},
     }
     lines = planned_lines(document, builtin_catalog())
-    assert _keys(lines) == ["enclosure:ZB33S", "module:ZU37KS", "module:ZH3EL22", "accessory:KU40XXE"]
+    # Then the cabinet preparation (R4 §6): the supply kit, the infeed and the joint of the two NARs.
+    assert _keys(lines) == ["enclosure:ZB33S", "module:ZU37KS", "module:ZH3EL22", "accessory:KU40XXE",
+                            "accessory:ZY3N1SA", "accessory:K96ESA5", "accessory:ZZ55SAVE"]
     by_key = _by_key(lines)
     assert by_key["module:ZH3EL22"].planned == 2
     cover = by_key["accessory:KU40XXE"]
@@ -396,8 +398,9 @@ def test_consumption_never_ticks_a_removed_line_and_shows_as_not_planned(client:
     extra = _line(body, f"article:{hs}")
     assert (extra["kind"], extra["scanned"], extra["detail"]) == ("extra", 1, "nicht geplant")
     # Returns are not picks: the removed line stays out of every picking total
-    # (the extra counts as scanned, as any unplanned booking does).
-    assert (body["planned_total"], body["scanned_total"], body["open_lines"]) == (6, 1, 6)
+    # (the extra counts as scanned, as any unplanned booking does). The
+    # cabinet preparation adds its ZY3N1SA and K96ESA5 (R4 §6): 6 + 2.
+    assert (body["planned_total"], body["scanned_total"], body["open_lines"]) == (8, 1, 8)
     assert body["returns_open"] == 1
 
 

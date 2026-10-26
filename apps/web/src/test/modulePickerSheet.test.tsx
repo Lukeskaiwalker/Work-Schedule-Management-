@@ -3,16 +3,29 @@
  * shelf first, then what this login used lately, then the rest of the
  * catalogue; modules for the other field height hidden but counted; the
  * placement at the tapped unit when the module fits there, else at the top
- * of a free run; the claim preview and its switch; the managers' extras.
+ * of a free run; the claim preview and its switch; the managers' extras;
+ * the search box (docs/PANEL_ENCLOSURE_R4.md §8.1).
  */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import { ModulePickerSheet } from "../components/schaltplan/enclosure/ModulePickerSheet";
+import { SheetFrame } from "../components/schaltplan/enclosure/EnclosureSheetFrame";
+import {
+  countHidden,
+  filterSections,
+  hiddenHint,
+  moduleHaystack,
+  noMatchText,
+  searchPicker,
+  searchStatus,
+  uncataloguedHaystack,
+} from "../components/schaltplan/enclosure/modulePickerSearch";
 import { catalogIndex } from "../utils/enclosureCatalog";
 import { linkedRows } from "../utils/enclosureLayout";
 import { placeModule } from "../utils/enclosureOps";
-import { board, dev, INDEX, MODULES, row, testCatalog } from "./enclosureTestCatalog";
+import { buildSearchTokens } from "../utils/searchNormalize";
+import { board, deepFreeze, dev, INDEX, MODULES, row, testCatalog } from "./enclosureTestCatalog";
 import { renderSheet } from "./enclosureSheetHarness";
 import type { EnclosureCatalog, ModuleSpec } from "../types/panelEnclosure";
 import type { PanelDocument } from "../types/schaltplan";
@@ -291,5 +304,358 @@ describe("ModulePickerSheet — managers", () => {
     open(cabinet(), { onCreateEntry: vi.fn(), onManageCatalog: vi.fn() });
     expect(screen.queryByRole("region", { name: "Im Lager, nicht im Katalog" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Katalog verwalten" })).toBeNull();
+  });
+});
+
+// ── Search (docs/PANEL_ENCLOSURE_R4.md §8.1) ────────────────────────────────
+
+/** An invented stock article mapped to ZH3EH16: what the shelf calls it. */
+const ZH3EH16_ARTICLE = {
+  id: 11,
+  article_number: "WS-40817",
+  item_name: "Feldbausatz Musterhaus (erfunden)",
+  manufacturer: "Hager",
+  unit: "Stk",
+  internal_code: "INT-0042",
+  stock_available: 0,
+};
+
+function articledCatalog(): EnclosureCatalog {
+  return {
+    ...CATALOG,
+    modules: CATALOG.modules.map((entry) => (entry.code === "ZH3EH16" ? { ...entry, article: ZH3EH16_ARTICLE, article_source: "mapping" as const } : entry)),
+  };
+}
+
+/** Two invented shelf articles the catalogue lacks (managers only). */
+function shelfArticlesCatalog(): EnclosureCatalog {
+  const article = (id: number, article_number: string, item_name: string) => ({
+    id, article_number, item_name, manufacturer: "Hager", unit: "Stk", internal_code: null, stock_available: 1,
+  });
+  return {
+    ...CATALOG,
+    can_manage: true,
+    uncatalogued: [
+      { article: article(7, "ZU37X9", "Hager ZU37X9 Feldeinbausatz"), code_guess: "ZU37X9" },
+      { article: article(8, "HG-55120", "Hager Zählerplatz-Abdeckung (erfunden)"), code_guess: "ZX99B" },
+    ],
+  };
+}
+
+const searchbox = () => screen.getByRole("searchbox", { name: "Modul suchen" });
+const typeQuery = (value: string) => fireEvent.change(searchbox(), { target: { value } });
+const status = () => within(screen.getByRole("dialog", { name: /^Modul für Feld/ })).getByRole("status");
+const headings = () => screen.queryAllByRole("heading", { level: 4 }).map((heading) => heading.textContent);
+/** The module items on screen, by code, top to bottom. */
+const listedCodes = () =>
+  screen.queryAllByRole("button", { name: /^Z[A-Z0-9]+,/ }).map((button) => (button.getAttribute("aria-label") ?? "").split(",")[0]);
+
+describe("ModulePickerSheet — search box", () => {
+  it("sits between the head and the scrolling list, set up for a workshop tablet, without a form", () => {
+    open(cabinet());
+    const input = searchbox();
+    expect(input).toHaveAttribute("type", "search");
+    expect(input).toHaveAttribute("placeholder", "Code, Bezeichnung oder Artikelnummer");
+    expect(input).toHaveAttribute("autocomplete", "off");
+    expect(input).toHaveAttribute("autocorrect", "off");
+    expect(input).toHaveAttribute("autocapitalize", "none");
+    expect(input).toHaveAttribute("spellcheck", "false");
+    expect(input).toHaveAttribute("enterkeyhint", "search");
+    expect(input).not.toHaveFocus();
+    expect(input.closest("form")).toBeNull();
+    expect(screen.getByText("Modul suchen").tagName).toBe("LABEL");
+    // The toolbar does not scroll away with the 30–40 modules under it.
+    expect(input.closest(".sp-sheet-body")).toBeNull();
+    const toolbar = input.closest(".sp-encl-sheet-toolbar");
+    expect(toolbar?.previousElementSibling).toHaveClass("sp-sheet-head");
+    expect(toolbar?.nextElementSibling).toHaveClass("sp-sheet-body");
+  });
+
+  it("keeps its status mounted: empty without a query, then the number of hits", () => {
+    open(cabinet());
+    expect(status()).toBeEmptyDOMElement();
+    typeQuery("zu37");
+    expect(status()).toHaveTextContent(/^2 Treffer$/);
+    typeQuery("zu37ks");
+    expect(status()).toHaveTextContent(/^1 Treffer$/);
+    typeQuery("xyz");
+    expect(status()).toHaveTextContent(/^Kein Treffer$/);
+    typeQuery("   ");
+    expect(status()).toBeEmptyDOMElement();
+  });
+
+  it("finds a module by a fragment of its code, with or without the punctuation", () => {
+    open(cabinet());
+    typeQuery("zu37");
+    expect(listedCodes()).toEqual(["ZU37KS", "ZU37VT5APZ2"]);
+    typeQuery("ZU-37 ks");
+    expect(listedCodes()).toEqual(["ZU37KS"]);
+  });
+
+  it("finds Zähler typed as zaehler, zahler or Zähler", () => {
+    open(cabinet());
+    for (const query of ["zaehler", "zahler", "Zähler"]) {
+      typeQuery(query);
+      expect(listedCodes(), query).toEqual(["ZH3EL27", "ZH3EH16", "ZH3EL22", "ZH33X7"]);
+    }
+  });
+
+  it("finds a module by its stock article's number, internal code and name", () => {
+    open(cabinet(), { catalog: articledCatalog() });
+    for (const query of ["WS-40817", "ws40817", "int-0042", "musterhaus"]) {
+      typeQuery(query);
+      expect(listedCodes(), query).toEqual(["ZH3EH16"]);
+    }
+  });
+
+  it("finds modules by the zones they hold", () => {
+    open(cabinet());
+    typeQuery("SAS");
+    expect(listedCodes()).toEqual(["ZH3ES5"]);
+    typeQuery("RfZ");
+    expect(listedCodes()).toEqual(["ZH3EL27", "ZH3EH16", "ZH3EL22", "ZY150RFZ"]);
+    typeQuery("nar");
+    expect(listedCodes()).toEqual(["ZH3EL27", "ZH3EH16", "ZH3EL22", "ZH33X7"]);
+  });
+
+  it("keeps the sections and the order inside them, and drops a section left empty", () => {
+    open(cabinet());
+    typeQuery("7");
+    expect(headings()).toEqual(["Im Lager", "Zuletzt verwendet", "Hager univers Z"]);
+    expect(listedCodes()).toEqual(["ZU37KS", "ZH3EL27", "ZH33X7", "ZU37VT5APZ2"]);
+    expect(status()).toHaveTextContent(/^4 Treffer$/);
+    typeQuery("zh3");
+    expect(headings()).toEqual(["Zuletzt verwendet", "Hager univers Z"]);
+    typeQuery("");
+    expect(headings()).toEqual(["Im Lager", "Zuletzt verwendet", "Hager univers Z"]);
+  });
+
+  it("lists a match that does not fit, refused and counted as without a search", () => {
+    open(place(cabinet(), "ZU62A", 0, 3));
+    typeQuery("zu37ks");
+    const tall = item("ZU37KS");
+    expect(tall).toBeDisabled();
+    expect(tall).toHaveTextContent("passt hier nicht: Nicht genug Platz: 1050 mm nötig, 450 mm frei.");
+    expect(status()).toHaveTextContent(/^1 Treffer$/);
+  });
+
+  it("says when nothing matches, and its Suche löschen brings the whole list back", () => {
+    open(cabinet());
+    typeQuery("  xyz ");
+    expect(screen.getByText("Kein Modul gefunden für „xyz“.")).toBeInTheDocument();
+    expect(headings()).toEqual([]);
+    expect(screen.getAllByRole("button", { name: "Suche löschen" })).toHaveLength(2);
+    const clear = screen.getByText("Suche löschen", { selector: "button" });
+    expect(clear).toHaveClass("sp-encl-target");
+    fireEvent.click(clear);
+    expect(searchbox()).toHaveValue("");
+    expect(searchbox()).toHaveFocus();
+    expect(headings()).toEqual(["Im Lager", "Zuletzt verwendet", "Hager univers Z"]);
+    expect(screen.queryByText(/^Kein Modul gefunden/)).toBeNull();
+  });
+
+  it("offers × only while something is typed; it clears and gives the box the focus back", () => {
+    open(cabinet());
+    expect(screen.queryByRole("button", { name: "Suche löschen" })).toBeNull();
+    typeQuery("zu37");
+    const clear = screen.getByRole("button", { name: "Suche löschen" });
+    expect(clear).toHaveTextContent("×");
+    expect(clear).toHaveAttribute("type", "button");
+    fireEvent.click(clear);
+    expect(searchbox()).toHaveValue("");
+    expect(searchbox()).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Suche löschen" })).toBeNull();
+    expect(status()).toBeEmptyDOMElement();
+  });
+
+  it("Enter puts the keyboard away and keeps the query", () => {
+    open(cabinet());
+    const input = searchbox();
+    input.focus();
+    typeQuery("zu37");
+    const notCancelled = fireEvent.keyDown(input, { key: "Enter" });
+    expect(notCancelled).toBe(false);
+    expect(input).not.toHaveFocus();
+    expect(input).toHaveValue("zu37");
+    expect(listedCodes()).toEqual(["ZU37KS", "ZU37VT5APZ2"]);
+  });
+
+  it("counts a hidden module of the other field height that matches, and says nothing when none does", () => {
+    open(cabinet());
+    typeQuery("vf");
+    expect(screen.getByText("1 passendes Modul für 1350-mm-Felder ausgeblendet")).toBeInTheDocument();
+    expect(screen.getByText("Kein Modul gefunden für „vf“.")).toBeInTheDocument();
+    expect(status()).toHaveTextContent(/^Kein Treffer$/);
+    typeQuery("zu62");
+    expect(listedCodes()).toEqual(["ZU62A"]);
+    expect(screen.queryByText(/ausgeblendet/)).toBeNull();
+  });
+
+  it("says passende Module in the plural, and keeps the plain count without a query", () => {
+    open(board([], { code: "ZB52S", modules: [] }));
+    expect(screen.getByText("7 Module für 1050 mm Felder ausgeblendet")).toBeInTheDocument();
+    typeQuery("zaehler");
+    expect(listedCodes()).toEqual(["ZH5EL27"]);
+    expect(screen.getByText("4 passende Module für 1050-mm-Felder ausgeblendet")).toBeInTheDocument();
+    expect(screen.queryByText("7 Module für 1050 mm Felder ausgeblendet")).toBeNull();
+  });
+
+  it("filters the managers' shelf articles on name, number and code guess, and counts them", () => {
+    open(cabinet(), { catalog: shelfArticlesCatalog(), onCreateEntry: vi.fn(), onManageCatalog: vi.fn() });
+    const shelfRows = () => {
+      const region = screen.queryByRole("region", { name: "Im Lager, nicht im Katalog" });
+      return region ? within(region).getAllByRole("listitem").map((entry) => within(entry).getByText(/^Hager /).textContent) : [];
+    };
+    typeQuery("feldeinbau");
+    expect(shelfRows()).toEqual(["Hager ZU37X9 Feldeinbausatz"]);
+    expect(listedCodes()).toEqual([]);
+    expect(status()).toHaveTextContent(/^1 Treffer$/);
+    typeQuery("hg55120");
+    expect(shelfRows()).toEqual(["Hager Zählerplatz-Abdeckung (erfunden)"]);
+    typeQuery("zx99");
+    expect(shelfRows()).toEqual(["Hager Zählerplatz-Abdeckung (erfunden)"]);
+    typeQuery("zu37");
+    expect(shelfRows()).toEqual(["Hager ZU37X9 Feldeinbausatz"]);
+    expect(status()).toHaveTextContent(/^3 Treffer$/);
+    typeQuery("zh3");
+    expect(shelfRows()).toEqual([]);
+    // The admin stays reachable while searching.
+    expect(screen.getByRole("button", { name: "Katalog verwalten" })).toBeInTheDocument();
+  });
+
+  it("searches on a read-only board too", () => {
+    renderSheet(cabinet(), ({ document: current, onOp }) => (
+      <ModulePickerSheet document={current} catalog={CATALOG} index={SHELF_INDEX} field={0} unit={null} readOnly onOp={onOp} onClose={vi.fn()} />
+    ), SHELF_INDEX);
+    expect(searchbox()).toBeEnabled();
+    typeQuery("zu37");
+    expect(listedCodes()).toEqual(["ZU37KS", "ZU37VT5APZ2"]);
+    expect(item("ZU37KS")).toBeDisabled();
+  });
+
+  it("leaves the query to a caller that keeps it (the tab: in the stack entry)", () => {
+    const onQueryChange = vi.fn();
+    renderSheet(cabinet(), ({ document: current, onOp }) => (
+      <ModulePickerSheet
+        document={current}
+        catalog={CATALOG}
+        index={SHELF_INDEX}
+        field={0}
+        unit={null}
+        readOnly={false}
+        onOp={onOp}
+        query="zu37"
+        onQueryChange={onQueryChange}
+        onClose={vi.fn()}
+      />
+    ), SHELF_INDEX);
+    expect(searchbox()).toHaveValue("zu37");
+    expect(listedCodes()).toEqual(["ZU37KS", "ZU37VT5APZ2"]);
+    typeQuery("zu37k");
+    expect(onQueryChange).toHaveBeenCalledWith("zu37k");
+    expect(searchbox()).toHaveValue("zu37");
+    fireEvent.click(screen.getByRole("button", { name: "Suche löschen" }));
+    expect(onQueryChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("has nothing to search without a cabinet", () => {
+    open(board([]));
+    expect(screen.queryByRole("searchbox")).toBeNull();
+  });
+});
+
+describe("SheetFrame — toolbar slot", () => {
+  it("renders the toolbar between the head and the scrolling body, and no wrapper without one", () => {
+    const { container, rerender } = render(
+      <SheetFrame title="Probe" onClose={vi.fn()} toolbar={<span>Werkzeug</span>}>
+        <p>Inhalt</p>
+      </SheetFrame>,
+    );
+    const toolbar = container.querySelector(".sp-encl-sheet-toolbar");
+    expect(toolbar).toHaveTextContent("Werkzeug");
+    expect(toolbar?.previousElementSibling).toHaveClass("sp-sheet-head");
+    expect(toolbar?.nextElementSibling).toHaveClass("sp-sheet-body");
+    rerender(
+      <SheetFrame title="Probe" onClose={vi.fn()}>
+        <p>Inhalt</p>
+      </SheetFrame>,
+    );
+    expect(container.querySelector(".sp-encl-sheet-toolbar")).toBeNull();
+  });
+});
+
+describe("modulePickerSearch — pure helpers", () => {
+  const tokens = (query: string) => buildSearchTokens(query);
+
+  it("folds a module's names, family, stock article and zone types as text; codes and numbers as identifiers", () => {
+    const haystack = moduleHaystack(deepFreeze(structuredClone(MODULES.ZH3EH16)), deepFreeze({ ...ZH3EH16_ARTICLE }));
+    expect(haystack.text).toEqual(expect.arrayContaining(["modul zh3eh16", "zahlerfeld ehz", "zaehlerfeld ehz", "feldbausatz musterhaus (erfunden)", "aar", "rfz", "nar"]));
+    expect(haystack.ident).toEqual(expect.arrayContaining(["zh3eh16", "ws40817", "int0042", "modulzh3eh16"]));
+    // Only the zone types a fitter names (NAR, AAR, RfZ, APZ, SAS, VF): not the meter place itself.
+    expect(haystack.text).not.toContain("zf");
+    expect(moduleHaystack(MODULES.ZU62A, null).text).not.toContain("cover");
+  });
+
+  it("folds a shelf article on its name, number and code guess", () => {
+    const shelf = shelfArticlesCatalog().uncatalogued[1];
+    const haystack = uncataloguedHaystack(deepFreeze(structuredClone(shelf)));
+    expect(haystack.text).toEqual(expect.arrayContaining(["hager zahlerplatz-abdeckung (erfunden)", "hager zaehlerplatz-abdeckung (erfunden)"]));
+    expect(haystack.ident).toEqual(expect.arrayContaining(["hg55120", "zx99b"]));
+  });
+
+  it("filters sections without touching them, in order, dropping the empty ones", () => {
+    const hay = (code: string) => moduleHaystack(MODULES[code], null);
+    const sections = deepFreeze([
+      { key: "stock", items: [{ id: "a", haystack: hay("ZU37KS") }] },
+      { key: "recent", items: [{ id: "b", haystack: hay("ZH3EL27") }] },
+      { key: "catalog", items: [{ id: "c", haystack: hay("ZU37VT5APZ2") }, { id: "d", haystack: hay("ZH3EH16") }] },
+    ]);
+    const found = filterSections(sections, tokens("zu37"));
+    expect(found.map((section) => [section.key, section.items.map((entry) => entry.id)])).toEqual([
+      ["stock", ["a"]],
+      ["catalog", ["c"]],
+    ]);
+    expect(filterSections(sections, tokens("")).map((section) => section.items.length)).toEqual([1, 1, 2]);
+    expect(sections[2].items).toHaveLength(2);
+  });
+
+  it("counts hidden modules per height, lowest first, omitting heights without a match", () => {
+    const hidden = deepFreeze([
+      { height: 1350, haystack: moduleHaystack(MODULES.ZH5EL27, null) },
+      { height: 1050, haystack: moduleHaystack(MODULES.ZU37KS, null) },
+      { height: 1050, haystack: moduleHaystack(MODULES.ZH3EH16, null) },
+    ]);
+    expect(countHidden(hidden, tokens(""))).toEqual([{ height: 1050, count: 2 }, { height: 1350, count: 1 }]);
+    expect(countHidden(hidden, tokens("zaehler"))).toEqual([{ height: 1050, count: 1 }, { height: 1350, count: 1 }]);
+    expect(countHidden(hidden, tokens("zu37"))).toEqual([{ height: 1050, count: 1 }]);
+    expect(countHidden(hidden, tokens("xyz"))).toEqual([]);
+  });
+
+  it("words the hints, the status and the empty state", () => {
+    expect(hiddenHint({ height: 1350, count: 1 }, false)).toBe("1 Module für 1350 mm Felder ausgeblendet");
+    expect(hiddenHint({ height: 1350, count: 1 }, true)).toBe("1 passendes Modul für 1350-mm-Felder ausgeblendet");
+    expect(hiddenHint({ height: 1050, count: 3 }, true)).toBe("3 passende Module für 1050-mm-Felder ausgeblendet");
+    expect(searchStatus(false, 12)).toBe("");
+    expect(searchStatus(true, 0)).toBe("Kein Treffer");
+    expect(searchStatus(true, 1)).toBe("1 Treffer");
+    expect(searchStatus(true, 12)).toBe("12 Treffer");
+    expect(noMatchText("  ZU 99 ")).toBe("Kein Modul gefunden für „ZU 99“.");
+  });
+
+  it("searches the whole picker at once, counting visible modules and shelf articles", () => {
+    const input = deepFreeze({
+      sections: [{ key: "catalog", items: [{ id: "c", haystack: moduleHaystack(MODULES.ZU37KS, null) }] }],
+      hidden: [{ height: 1350, haystack: moduleHaystack(MODULES.ZH5EL27, null) }],
+      shelf: shelfArticlesCatalog().uncatalogued.map((entry) => ({ item: entry, haystack: uncataloguedHaystack(entry) })),
+    });
+    const all = searchPicker(input, " ");
+    expect(all.searching).toBe(false);
+    expect(all.count).toBe(3);
+    expect(all.hidden).toEqual([{ height: 1350, count: 1 }]);
+    const some = searchPicker(input, "zu37");
+    expect(some.searching).toBe(true);
+    expect(some.count).toBe(2);
+    expect(some.shelf.map((entry) => entry.item.code_guess)).toEqual(["ZU37X9"]);
+    expect(some.hidden).toEqual([]);
   });
 });

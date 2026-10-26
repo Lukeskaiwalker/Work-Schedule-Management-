@@ -160,6 +160,7 @@ function moduleSpecWithDefaults(raw: Record<string, unknown>): ModuleSpec {
     zones: list<Loose<ZoneSpec>>(raw.zones).map(zoneSpec),
     fittings: list<Loose<FittingSpec>>(raw.fittings).map(fittingSpec),
     free_place_cover: cover ? accessory(cover) : null,
+    reserve_field: raw.reserve_field === true,
   };
 }
 

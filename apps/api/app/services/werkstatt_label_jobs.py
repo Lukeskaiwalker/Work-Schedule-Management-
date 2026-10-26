@@ -36,6 +36,7 @@ from dataclasses import dataclass, fields
 from functools import lru_cache
 from typing import Callable, Iterator
 
+from app.services.schaltplan_layout import text_width_em
 from app.services.werkstatt_label_errors import (
     LabelFormatUnsupported,
     LabelLayoutOutOfBounds,
@@ -105,6 +106,8 @@ def job_footer(copies: int) -> list[str]:
 
 _LO = re.compile(r"^Lo,(-?\d+),(-?\d+),(-?\d+),(-?\d+)$")
 _AT = re.compile(r"^AT,(-?\d+),(-?\d+),(\d+),")
+# x, y, size, size, gap, rotation + style, …, text (the text may hold commas).
+_AT_ROTATION = re.compile(r"^AT,-?\d+,-?\d+,\d+,\d+,-?\d+,([0-3])[A-Z]*,[^,]*,[^,]*,(.*)$")
 _XRB = re.compile(r"^XRB(-?\d+),(-?\d+),")
 _Y = re.compile(r"^Y(-?\d+),(-?\d+),")
 
@@ -147,17 +150,36 @@ def _elements(lines: list[str]) -> Iterator[tuple[str, str]]:
             yield "other", line
 
 
-def _anchor_extent(kind: str, line: str) -> tuple[int, int, int] | None:
-    """(x_low, x_high, y) of a raising element: the AT em box, else the anchor."""
+def _at_extent(line: str) -> tuple[int, int, int, int]:
+    """The em box of an ``AT`` text in machine dots, by its rotation field.
+
+    "1" (along the feed, every text before round 4): x ∈ [x − size, x] at
+    the anchor's y. "0" and "2" (the §14a strip's vertical text, R4 §9.1):
+    the advance runs across the head, ``ceil(size × em)`` long, and the em
+    box is ``size`` deep along the feed — "0" from the anchor up in x and y,
+    "2" down from it.
+    """
+    x, y, size = (int(group) for group in _AT.match(line).groups())
+    rotated = _AT_ROTATION.match(line)
+    rotation = rotated.group(1) if rotated else "1"
+    if rotation not in ("0", "2"):
+        return x - size, x, y, y
+    advance = math.ceil(size * text_width_em(rotated.group(2)))
+    if rotation == "0":
+        return x, x + advance, y, y + size
+    return x - advance, x, y - size, y
+
+
+def _anchor_extent(kind: str, line: str) -> tuple[int, int, int, int] | None:
+    """(x_low, x_high, y_low, y_high) of a raising element: the AT em box, else the anchor."""
     if kind == "AT":
-        x, y, size = (int(group) for group in _AT.match(line).groups())
-        return x - size, x, y
+        return _at_extent(line)
     if kind == "XRB":
         x, y = (int(group) for group in _XRB.match(line).groups())
-        return x, x, y
+        return x, x, y, y
     if kind == "Y":
         x, y = (int(group) for group in _Y.match(line).groups())
-        return x, x, y
+        return x, x, y, y
     return None
 
 
@@ -190,9 +212,9 @@ def fit_to_media(profile: MaterialProfile, lines: list[str], *, form_length_dots
             continue
         extent = _anchor_extent(kind, line)
         if extent is not None:
-            x_low, x_high, y = extent
+            x_low, x_high, y_low, y_high = extent
             inside_x = 0 <= x_low and x_high <= h_px
-            inside_y = 0 <= y and (form_length_dots is None or y <= form_length_dots)
+            inside_y = 0 <= y_low and (form_length_dots is None or y_high <= form_length_dots)
             if not (inside_x and inside_y):
                 raise LabelLayoutOutOfBounds(OUT_OF_BOUNDS_MESSAGE)
         out.append(line)
@@ -237,14 +259,22 @@ def _voll_samples() -> list[Callable[[MaterialProfile], list[str]]]:
 
 
 def _strip_samples() -> list[Callable[[MaterialProfile], list[str]]]:
-    from app.services import werkstatt_labels as wl
+    from app.services import werkstatt_label_control_strip as control
+    from app.services import werkstatt_label_strips as strips
 
     return [
-        lambda p: wl._render_rail_strip(p, [("F1", 17.5), ("F2", 35)], size=36),
-        lambda p: wl._render_block_label(
+        lambda p: strips._render_rail_strip(p, [("F1", 17.5), ("F2", 35)], size=36),
+        lambda p: strips._render_block_label(
             p, name="PV Wechselrichter", x_label="X1", cells=[("N", 5), ("L1", 5), ("L2", 5), ("L3", 5), ("PE", 5)]
         ),
+        control.control_strip_sample,
     ]
+
+
+def _tube_samples() -> list[Callable[[MaterialProfile], list[str]]]:
+    from app.services import werkstatt_label_control_strip as control
+
+    return [control.wire_labels_sample]
 
 
 def dry_render_samples(profile: MaterialProfile, *, pattern: bool) -> list[Callable[[MaterialProfile], list[str]]]:
@@ -253,9 +283,11 @@ def dry_render_samples(profile: MaterialProfile, *, pattern: bool) -> list[Calla
     voll tier: machine label, klein quad, article, box and type label;
     kompakt tier: the kompakt label; mini tier and every continuous material:
     the mini label with a short, a typical and a long text; the 2009-110 also
-    the rail strip and the block label; the measuring pattern when supported.
+    the rail strip, the block label and the default §14a strip; a tube the
+    default Aderbeschriftung; the measuring pattern when supported.
     """
     from app.services import werkstatt_labels as wl
+    from app.services.werkstatt_label_builtins import TUBE_MATERIAL_IDS
     from app.services.werkstatt_label_patterns import pattern_job
 
     samples: list[Callable[[MaterialProfile], list[str]]] = []
@@ -268,6 +300,8 @@ def dry_render_samples(profile: MaterialProfile, *, pattern: bool) -> list[Calla
         samples += [lambda p, text=text: wl._render_mini(p, text) for text in ("M-0042", "F1.1", "Herd Küche 16A")]
     if profile.id == wl.MARKING_STRIP_MATERIAL_ID:
         samples += _strip_samples()
+    if profile.id in TUBE_MATERIAL_IDS:
+        samples += _tube_samples()
     if pattern:
         samples.append(lambda p: pattern_job(p)[0])
     return samples
@@ -284,7 +318,7 @@ def _inward(value: float, *, up: bool) -> float:
     return (math.ceil(scaled - 1e-9) if up else math.floor(scaled + 1e-9)) / 10
 
 
-def _sample_extents(render: Callable[[MaterialProfile], list[str]], profile: MaterialProfile) -> list[tuple[int, int, int]]:
+def _sample_extents(render: Callable[[MaterialProfile], list[str]], profile: MaterialProfile) -> list[tuple[int, int, int, int]]:
     """The raising elements' extents of one sample at offsets 0 — none when
     the sample cannot run here or leaves the material at the default offsets."""
     try:
@@ -295,8 +329,8 @@ def _sample_extents(render: Callable[[MaterialProfile], list[str]], profile: Mat
     h_px = mm_to_dots(profile.width_mm)
     form_length = None if profile.continuous else mm_to_dots(profile.length_mm)
     dx, dy = mm_to_dots(DEFAULT_ACROSS_OFFSET_MM), mm_to_dots(DEFAULT_X_OFFSET_MM)
-    for x_low, x_high, y in extents:
-        if x_low + dx < 0 or x_high + dx > h_px or y + dy < 0 or (form_length is not None and y + dy > form_length):
+    for x_low, x_high, y_low, y_high in extents:
+        if x_low + dx < 0 or x_high + dx > h_px or y_low + dy < 0 or (form_length is not None and y_high + dy > form_length):
             return []
     return extents
 
@@ -319,17 +353,17 @@ def _limits_for(key: tuple) -> OffsetLimits:
         id=profile_id, name=profile_id, part_no="", width_mm=width_mm, length_mm=length_mm,
         gap_mm=gap_mm, x_offset_mm=0.0, across_offset_mm=0.0, mark_width_mm=mark_width_mm,
     )
-    extents: list[tuple[int, int, int]] = []
+    extents: list[tuple[int, int, int, int]] = []
     with _without_guard():
         for render in dry_render_samples(profile, pattern=pattern):
             extents += _sample_extents(render, profile)
     if not extents:
         return OffsetLimits(STATIC_X_OFFSET[0], STATIC_X_OFFSET[1], STATIC_ACROSS[0], STATIC_ACROSS[1])
     h_px = mm_to_dots(width_mm)
-    min_x = min(low for low, _, _ in extents)
-    max_x = max(high for _, high, _ in extents)
-    min_y = min(y for _, _, y in extents)
-    max_y = max(y for _, _, y in extents)
+    min_x = min(low for low, _, _, _ in extents)
+    max_x = max(high for _, high, _, _ in extents)
+    min_y = min(y_low for _, _, y_low, _ in extents)
+    max_y = max(y_high for _, _, _, y_high in extents)
     x_max = STATIC_X_OFFSET[1]
     if length_mm is not None:
         x_max = min(x_max, _inward(dots_to_mm(mm_to_dots(length_mm) - max_y), up=False))

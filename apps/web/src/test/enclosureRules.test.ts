@@ -10,10 +10,14 @@
 import { describe, expect, it } from "vitest";
 
 import { enclosureFindings, formatMmText, ratingValue, RULE_ORDER } from "../utils/enclosureRules";
-import type { EnclosureModule } from "../types/panelEnclosure";
-import type { PanelDocument } from "../types/schaltplan";
+import { PREP_RULE_ORDER } from "../utils/enclosurePrepRules";
+import { TERMINAL_RULE_ORDER } from "../utils/enclosureTerminalRules";
+import { defaultControlBlock } from "../utils/enclosureControlBlock";
+import { catalogIndex } from "../utils/enclosureCatalog";
+import type { ControlBlock, EnclosureModule, ModuleSpec, PrepOverrides } from "../types/panelEnclosure";
+import type { PanelDocument, PanelSupply } from "../types/schaltplan";
 import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX } from "./enclosureFixtureBoards";
-import { board, dev, INDEX, row } from "./enclosureTestCatalog";
+import { board, CABINETS, dev, INDEX, MODULES, R4_INDEX, row, testCatalog } from "./enclosureTestCatalog";
 
 // A hand-made module: no fitting snapshot, so the derivations read the catalogue.
 const mod = (id: string, code: string, field: number, unit: number, rails: Record<string, string> = {}, extra: Partial<EnclosureModule> = {}): EnclosureModule => ({
@@ -43,7 +47,8 @@ describe("helpers", () => {
     expect(ratingValue("C 32A")).toBe(32);
     expect(ratingValue("0,5 A")).toBe(0.5);
     expect(ratingValue("")).toBeNull();
-    expect(RULE_ORDER).toHaveLength(34); // round 2: ten terminal rules where "encl.terminals" was
+    // Round 2: ten terminal rules where "encl.terminals" was; round 4: fifteen prep rules before them.
+    expect(RULE_ORDER).toHaveLength(49);
   });
 });
 
@@ -163,5 +168,146 @@ describe("direct cases", () => {
       { version: 1, rows: [], enclosure: { code: "ZB33S", modules: [{ id: "m", code: "ZH3EL22", field: 0, unit: 0, rails: { nar: 5 }, meters: null, fittings: "no" }] } },
     ] as unknown as PanelDocument[];
     for (const doc of garbage) expect(() => enclosureFindings(doc, INDEX)).not.toThrow();
+  });
+});
+
+// ── Round 4 (docs/PANEL_ENCLOSURE_R4.md §4) ──────────────────────────────────
+
+type BoardParts = { block?: unknown; prep?: Partial<PrepOverrides>; supply?: Partial<PanelSupply> };
+
+/** A ZB33S board; `block` and `prep` are stored as given (absent when omitted). */
+function r4Board(modules: EnclosureModule[], rows = board([]).rows, parts: BoardParts = {}): PanelDocument {
+  const doc = board(rows, { code: "ZB33S", modules });
+  const enclosure = {
+    ...doc.enclosure!,
+    ...("block" in parts ? { control_block: parts.block as ControlBlock } : {}),
+    ...(parts.prep ? { prep: parts.prep as PrepOverrides } : {}),
+  };
+  return { ...doc, supply: { ...doc.supply, ...parts.supply }, enclosure };
+}
+
+const messageOf = (doc: PanelDocument, rule: string, index = INDEX) =>
+  enclosureFindings(doc, index).find((finding) => finding.rule === rule);
+const block = (patch: Partial<ControlBlock> = {}): ControlBlock => ({ ...defaultControlBlock(), ...patch });
+const fullRow = (id: string) => row(id, Array.from({ length: 12 }, () => dev("mcb")));
+const indexWith = (modules: Record<string, ModuleSpec>) => catalogIndex(testCatalog({ modules }));
+
+describe("round-4 rules", () => {
+  it("sit between the meter places and the terminal rules", () => {
+    const at = RULE_ORDER.indexOf("encl.control_block_missing");
+    expect(RULE_ORDER[at - 1]).toBe("encl.meter_place_invalid");
+    expect(RULE_ORDER.slice(at, at + PREP_RULE_ORDER.length)).toEqual([...PREP_RULE_ORDER]);
+    expect(RULE_ORDER[at + PREP_RULE_ORDER.length]).toBe(TERMINAL_RULE_ORDER[0]);
+  });
+
+  it("ask for the block only with a carrier and nothing stored", () => {
+    const meter = [mod("m", "ZH3EH16", 0, 0)];
+    expect(messageOf(r4Board(meter), "encl.control_block_missing")).toEqual({
+      level: "info", scope: "", rule: "encl.control_block_missing",
+      message: "Zählerschrank ohne §14a-Steuersignal-Klemmleiste: im ersten Zählerfeld anlegen.",
+    });
+    const removed = r4Board(meter, undefined, { block: block({ off: true }) });
+    expect(rulesOf(removed).filter((rule) => rule?.startsWith("encl.control"))).toEqual([]);
+    expect(rulesOf(r4Board([mod("d", "ZU37KS", 0, 0)]))).not.toContain("encl.control_block_missing");
+    expect(rulesOf(r4Board(meter, undefined, { block: block() }))).not.toContain("encl.control_block_missing");
+  });
+
+  it("take a given block instead of the stored one", () => {
+    const doc = r4Board([mod("m", "ZH3EH16", 0, 0)], undefined, { block: block() });
+    const rules = enclosureFindings(doc, INDEX, undefined, null).map((finding) => finding.rule);
+    expect(rules).toContain("encl.control_block_missing");
+  });
+
+  it("name a reserve carrier and a 3-Punkt block without an APZ", () => {
+    const doc = r4Board([mod("r", "ZH33XL", 0, 0)], undefined, { block: block() });
+    expect(messageOf(doc, "encl.control_block_reserve", R4_INDEX)).toMatchObject({
+      level: "info", scope: "r", message: "§14a-Klemmleiste sitzt auf einem Reserve-Zählerfeld (Feld 1).",
+    });
+    expect(messageOf(doc, "encl.control_block_target", R4_INDEX)).toMatchObject({
+      level: "warn", scope: "r", message: "§14a-Steuerleitungen ohne Ziel: im Schrank fehlt ein APZ.",
+    });
+  });
+
+  it("name an eHZ carrier without RfZ or without AAR rail", () => {
+    const zones = MODULES.ZH3EH16.zones;
+    const noRfz = indexWith({ ZH3EH16: { ...MODULES.ZH3EH16, zones: zones.filter((zone) => zone.type !== "RFZ") } });
+    const doc = r4Board([mod("m", "ZH3EH16", 1, 0)], undefined, { block: block() });
+    expect(messageOf(doc, "encl.control_block_target", noRfz)?.message).toBe("§14a-Steuerleitungen ohne Ziel: Feld 2 hat keinen RfZ.");
+    const noAar = indexWith({ ZH3EH16: { ...MODULES.ZH3EH16, zones: zones.filter((zone) => zone.type !== "AAR") } });
+    expect(messageOf(doc, "encl.control_block_rail", noAar)).toMatchObject({
+      level: "warn", scope: "m", message: "§14a-Klemmleiste: Feld 2 hat keine AAR-Hutschiene.",
+    });
+  });
+
+  it("name an overflowing block, a non-BDEW count and a tube too narrow for the wire", () => {
+    const meter = [mod("m", "ZH3EH16", 0, 0, { aar1: "a1" })];
+    const full = r4Board(meter, [fullRow("a1")], { block: block({ rail: "aar1" }) });
+    expect(messageOf(full, "encl.control_block_overflow")?.message).toBe("§14a-Klemmleiste passt nicht auf F1 · AAR 1: 254,2 mm von 210 mm.");
+    const five = r4Board(meter, undefined, { block: block({ terminals: defaultControlBlock().terminals.slice(0, 5) }) });
+    expect(messageOf(five, "encl.control_block_bdew")?.message).toBe("§14a-Klemmleiste mit 5 statt 6 Klemmen — BDEW/VDE-AR-N 4100 sieht 6 vor.");
+    const narrow = r4Board(meter, undefined, { block: block({ label_material: "wago-211-501", wire_mm2: 1.5 }) });
+    expect(messageOf(narrow, "encl.control_tube")?.message).toBe("Schrumpfschlauch 211-501 passt nur auf 0,75–1 mm² — Leitung ist 1,5 mm².");
+    expect(rulesOf(r4Board(meter, undefined, { block: block() }))).not.toContain("encl.control_tube");
+  });
+
+  it("name busbar gaps, busbars at different heights and a customer busbar beside a NAR", () => {
+    const gap = r4Board([mod("a", "ZH3EL27", 0, 0), mod("d", "ZU37KS", 1, 0), mod("b", "ZH3EL27", 2, 0)]);
+    expect(messageOf(gap, "encl.busbar_unjoined")).toMatchObject({
+      level: "warn", scope: "",
+      message: "Sammelschienen in Feld 1 und Feld 3 sind nicht verbunden: dazwischen liegt kein Feld mit Sammelschiene.",
+    });
+    const customer = r4Board([mod("m", "ZH3EL27", 0, 0), mod("s", "ZH3ES5", 1, 0)]);
+    expect(messageOf(customer, "encl.busbar_role")).toMatchObject({
+      level: "info", scope: "s",
+      message: "Sammelschiene in Feld 2 ist Kundenverteilung (gezählt) und wird nicht mit dem NAR von Feld 1 verbunden.",
+    });
+    // The pre-R4-9 stack (SAS on top) holding an SLS: main, but not level with the NAR.
+    const top = MODULES.ZH3ES5.zones.map((zone) => (zone.type === "SAS" ? { ...zone, unit: 0 } : { ...zone, unit: 2 }));
+    const old = indexWith({ ZH3ES5: { ...MODULES.ZH3ES5, zones: top } });
+    const high = r4Board([mod("m", "ZH3EL27", 0, 0), mod("s", "ZH3ES5", 1, 0, { sas: "sas" })], [row("sas", [dev("sls")])]);
+    expect(messageOf(high, "encl.busbar_unjoined", old)?.message).toBe("Sammelschienen in Feld 1 und Feld 2 liegen nicht auf gleicher Höhe.");
+  });
+
+  it("name an existing tap, an assumed infeed, its fuse, an oversized infeed and the PEN split", () => {
+    const meter = [mod("m", "ZH3EH16", 0, 0, { nar: "n" })];
+    const tap = r4Board(meter, [row("n", [dev("sls"), dev("mcb", { rating: "B6", designation: "F9" })])]);
+    expect(messageOf(tap, "encl.supply_existing")?.message).toBe(
+      "Spannungsabgriff bereits geplant (F9, F1 · NAR) — Bestückungspaket nicht ergänzt; Leitungen zu RfZ/APZ prüfen.",
+    );
+    const hot = r4Board(meter, undefined, { supply: { incoming: "", fuse: " NH 125 A " } });
+    expect(messageOf(hot, "encl.infeed_assumed")?.message).toBe(
+      "Querschnitt der Zuleitung unbekannt: Einspeiseadapter K96ESA5 (bis 25 mm²) angenommen. Im Tab Daten bei „Zuleitung“ eintragen.",
+    );
+    expect(messageOf(hot, "encl.infeed_fuse")).toMatchObject({
+      level: "warn", message: "Einspeiseadapter K96ESA5 nur hinter höchstens NH00 gG 100 A: Vorsicherung „NH 125 A“ prüfen.",
+    });
+    expect(rulesOf(r4Board(meter, undefined, { supply: { fuse: "NH 125 A" }, prep: { infeed: "off" } }))).not.toContain("encl.infeed_fuse");
+    expect(rulesOf(r4Board(meter, undefined, { supply: { incoming: "NYY-J 5x50", fuse: "NH 125 A" } }))).not.toContain("encl.infeed_fuse");
+    const big = r4Board(meter, undefined, { supply: { incoming: "NYY-J 5x240" } });
+    expect(messageOf(big, "encl.infeed_size")?.message).toBe(
+      "Zuleitung 240 mm²: keine Sammelschienenklemme für 12×5 mm bis 185 mm² — Einspeisung gesondert planen.",
+    );
+    const pen = r4Board(meter, undefined, { supply: { system: "TN-C-S", incoming: "NYY-J 4x35" } });
+    expect(messageOf(pen, "encl.pen_split")?.message).toBe("Zuleitung 4-adrig im TN-C-S-System: PEN im NAR von Feld 1 in PE und N aufteilen.");
+  });
+
+  it("name a cabinet height without a Hager supply kit", () => {
+    const catalog = testCatalog();
+    const odd = { ...CABINETS.ZB33S, code: "ZB3XS", article_no: "ZB3XS", height_mm: 950 };
+    const index = catalogIndex({ ...catalog, enclosures: [...catalog.enclosures, { ...catalog.enclosures[0], code: "ZB3XS", spec: odd }] });
+    const doc = { ...r4Board([mod("m", "ZH3EH16", 0, 0)]), enclosure: { code: "ZB3XS", modules: [mod("m", "ZH3EH16", 0, 0)] } };
+    expect(messageOf(doc, "encl.supply_height", index)).toMatchObject({
+      level: "warn", scope: "",
+      message: "Spannungsversorgung RfZ/APZ: Schrankhöhe 950 mm nicht im Hager-Programm — Bestückungspaket selbst wählen.",
+    });
+  });
+
+  it("never throw on a garbage block, prep or supply", () => {
+    const meter = [mod("m", "ZH3EH16", 0, 0)];
+    for (const parts of [{ block: "x" }, { block: { terminals: [null, 5] } }, { prep: { supply: 7 } as never }]) {
+      expect(() => enclosureFindings(r4Board(meter, undefined, parts), INDEX)).not.toThrow();
+    }
+    const noSupply = { ...r4Board(meter), supply: undefined } as unknown as PanelDocument;
+    expect(() => enclosureFindings(noSupply, INDEX)).not.toThrow();
   });
 });

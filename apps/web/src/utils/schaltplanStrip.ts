@@ -298,6 +298,54 @@ export function boardFontSize(document: DocumentLike, stripWidthMm: number): Boa
   return fontSizeForSegments(labelledSegments(document), stripWidthMm, SEG_PAD_DOTS);
 }
 
+// ── The §14a block strip (docs/PANEL_ENCLOSURE_R4.md §9.1) ──────────────────
+//
+// Twin of the size rule in `werkstatt_label_control_strip.py`, pinned on the
+// fixture table `control_strip_size`. A 5,2 mm 2002-1671 cannot hold "UNSM"
+// along the feed, so the labels run ACROSS the 11 mm strip (bottom → top):
+// the text's room is the strip's height less the BMK pad at both edges, and
+// one size serves the whole block. Loops run left → right on purpose: the
+// twin must not use Python's compensated `sum()`.
+
+/** Across the 2009-110: the run a vertical label has. */
+export const CONTROL_STRIP_HEIGHT_MM = STRIP_HEIGHT_MM;
+/** One 2002-1671 — `CONTROL_PARTS["2002-1671"].width_mm` (a test keeps them equal). */
+export const CONTROL_SEGMENT_MM = 5.2;
+export const CONTROL_STRIP_MAX_DOTS = 48;
+/** A text never starts closer than this to its segment's cut line (`_STRIP_TEXT_GUARD`). */
+export const STRIP_TEXT_GUARD_DOTS = 2;
+/** The em box lies along the feed inside the 5,2 mm segment, clear of its cut marks. */
+export const CONTROL_STRIP_CAP_DOTS = Math.min(
+  CONTROL_STRIP_MAX_DOTS,
+  mmToDots(CONTROL_SEGMENT_MM) - 2 * STRIP_TEXT_GUARD_DOTS,
+);
+/** Below this a label is never printed: 2 mm capitals, as on every strip. */
+export const CONTROL_LABEL_MIN_DOTS = MIN_FONT_DOTS;
+
+/** The run across the strip, in dots (a float, as the twin computes it). */
+export function controlStripBudgetDots(): number {
+  return CONTROL_STRIP_HEIGHT_MM * DOTS_PER_MM - 2 * SEG_PAD_DOTS;
+}
+
+/** ONE size for the block strip: the tightest label's fit, at most 48 dots; all blank → 48. */
+export function controlStripSize(labels: readonly string[]): number {
+  const budget = controlStripBudgetDots();
+  let tightest: number | null = null;
+  for (const label of labels) {
+    if (!label) continue;
+    const fit = budget / textWidthEm(label);
+    if (tightest === null || fit < tightest) tightest = fit;
+  }
+  if (tightest === null) return CONTROL_STRIP_MAX_DOTS;
+  return Math.min(Math.floor(tightest), CONTROL_STRIP_CAP_DOTS);
+}
+
+/** Can this label be printed across the strip at 24 dots or more? A blank always can. */
+export function controlLabelFits(label: string): boolean {
+  if (!label) return true;
+  return Math.floor(controlStripBudgetDots() / textWidthEm(label)) >= CONTROL_LABEL_MIN_DOTS;
+}
+
 /**
  * Chip values for the inspector's "Breite (mm)" field: the nominal DIN
  * width and the 18 mm-per-module rounding some makers use, for the

@@ -35,6 +35,14 @@
  * "Klemmen Feld {n}" and the close-up sheet. Strip moves, the order reset
  * and every "Vorschlag ausführen" go through `useTerminalActions`: the op
  * runner's pins and confirmation, then the same note and Rückgängig.
+ *
+ * Round 4 (docs/PANEL_ENCLOSURE_R4.md §5, §8.2, §8.4): the board's cabinet
+ * preparation (`cabinetPrep`, derived once per document) gives the open
+ * view its leads and "Automatisch ergänzt" its rows, whose overrides run as
+ * ops. The §14a sheet opens from the field bar's "§14a-Klemmen", a tap on
+ * the block, and the finding's "§14a-Klemmleiste anlegen" (after creating
+ * the block); its "Aderbeschriftung drucken" hands over to the page's label
+ * dialog (`onPrintWires`).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -42,7 +50,10 @@ import { DropNote } from "./DropNote";
 import { describeDrop } from "./dropNoteText";
 import { Enclosure3DPane, type Enclosure3DLoader } from "./Enclosure3DBoundary";
 import { EnclosureFieldBar } from "./EnclosureFieldBar";
-import { EnclosureFindings } from "./EnclosureFindings";
+import { EnclosureFindings, findingKey, type FindingAction } from "./EnclosureFindings";
+import { EnclosurePrepList } from "./EnclosurePrepList";
+import { CREATE_LABEL } from "./ControlBlockSheet";
+import { controlBarEntry, controlSheetState } from "./controlBlockLayout";
 import { EnclosureFrontSvg } from "./EnclosureFrontSvg";
 import { cabinetLine } from "./EnclosurePickerSheet";
 import { EnclosureSheetHost, type TabSheet, type TerminalSheetContext } from "./EnclosureSheetHost";
@@ -60,14 +71,16 @@ import type { PanelDocumentEditor } from "../../../hooks/usePanelDocumentEditor"
 import type { CatalogIndex } from "../../../utils/enclosureCatalog";
 import { buildEnclosureScene } from "../../../utils/enclosureGeometry";
 import { orderRowsPhysically } from "../../../utils/enclosureOps";
+import { addControlBlock, setPrepOverride, type PrepOverrideKey } from "../../../utils/enclosureOpsControlBlock";
 import { dropDevice, type DropTarget } from "../../../utils/enclosureOpsDrag";
+import { cabinetPrep } from "../../../utils/enclosurePrep";
 import { enclosureFindings } from "../../../utils/enclosureRules";
 import { terminalCloseup } from "../../../utils/enclosureTerminalCloseup";
 import { terminalSuggestions } from "../../../utils/enclosureTerminalSuggest";
 import { terminalRailKeys, type BoardTerminals } from "../../../utils/enclosureTerminals";
 import { reloadAfterSave, savedPdfClick } from "../../../utils/openAfterSave";
 import { aufbauPdfUrl } from "../../../utils/schaltplanEnclosureApi";
-import type { EnclosureSpec, TerminalPlacement, TerminalSuggestion } from "../../../types/panelEnclosure";
+import type { CabinetPrep, EnclosureSpec, PrepRun, TerminalPlacement, TerminalSuggestion } from "../../../types/panelEnclosure";
 import type { PanelDocument, PanelFinding, PanelPlan } from "../../../types/schaltplan";
 import "../../../styles/schaltplan-enclosure-tab.css";
 
@@ -97,11 +110,17 @@ export interface EnclosureTabProps {
    * print do. Without it the tab derives its own (memoised by document).
    */
   boardTerminals?: BoardTerminalsState;
+  /**
+   * The page's label dialog in mode `adern` (R4 §9.2), from the §14a sheet's
+   * "Aderbeschriftung drucken"; the stack closes first. Absent = no button.
+   */
+  onPrintWires?: () => void;
 }
 
 const NO_RAILS: ReadonlySet<string> = new Set();
 const NO_SUGGESTIONS: readonly TerminalSuggestion[] = Object.freeze([]);
 const NO_FINDINGS: readonly PanelFinding[] = Object.freeze([]);
+const NO_RUNS: readonly PrepRun[] = Object.freeze([]);
 
 /** What the tab reads of the board's WAGO terminals, derived once per document. */
 interface TabTerminals {
@@ -168,6 +187,45 @@ function useTerminalUi(args: TerminalUiArgs) {
   const openTerminals = useCallback((field: number, stripId: string | null) => resetSheets({ kind: "terminals", field, stripId }), [resetSheets]);
   const dropStrip = useCallback((stripId: string, drop: StripDrop) => moveStrip(stripId, { field: drop.field, rail: drop.rail, at: drop.at }), [moveStrip]);
   return { actions, sheet, stripSource, openTerminals, dropStrip };
+}
+
+interface ControlUiArgs {
+  document: PanelDocument | null;
+  index: CatalogIndex | null;
+  readOnly: boolean;
+  runOp: ReturnType<typeof useEnclosureOpRunner>;
+  resetSheets: (entry?: TabSheet) => void;
+  /** The terminal findings' actions, merged with the block's. */
+  actions: ReadonlyMap<string, FindingAction>;
+}
+
+/**
+ * Round 4's share of the tab: the cabinet preparation (leads, "Automatisch
+ * ergänzt"), the field bar's "§14a-Klemmen", the way into the §14a sheet,
+ * and the finding's "§14a-Klemmleiste anlegen" next to the terminal actions.
+ */
+function useControlUi({ document, index, readOnly, runOp, resetSheets, actions }: ControlUiArgs) {
+  const prep = useMemo<CabinetPrep | null>(() => (document?.enclosure && index ? cabinetPrep(document, index) : null), [document, index]);
+  const state = useMemo(() => (document?.enclosure && index ? controlSheetState(document, index) : null), [document, index]);
+  const openControl = useCallback(() => resetSheets({ kind: "control-block" }), [resetSheets]);
+  const allActions = useMemo<ReadonlyMap<string, FindingAction>>(() => {
+    if (readOnly) return actions;
+    const create: FindingAction = { label: CREATE_LABEL, run: () => runOp((current) => addControlBlock(current), openControl) };
+    return new Map([...actions, [findingKey("encl.control_block_missing", ""), create]]);
+  }, [readOnly, actions, runOp, openControl]);
+  const onOverride = useCallback(
+    (key: PrepOverrideKey, value: string | number | null) => runOp((current) => setPrepOverride(current, key, value)),
+    [runOp],
+  );
+  return {
+    prep,
+    runs: prep?.runs ?? NO_RUNS,
+    bar: state ? controlBarEntry(state) : null,
+    terminalCount: state?.kind === "present" ? state.block.terminals.length : 0,
+    openControl,
+    actions: allActions,
+    onOverride,
+  };
 }
 
 /** What the drawing marks for the sheets that are open: the rail, the device, the module. */
@@ -289,6 +347,7 @@ export function EnclosureTab(props: EnclosureTabProps) {
   const terminalUi = useTerminalUi({
     document, index, terminals, readOnly, drops, mutate, confirmRegroup, onError, onNotice, entries: stack.entries, resetSheets: stack.reset,
   });
+  const control = useControlUi({ document, index, readOnly, runOp, resetSheets: stack.reset, actions: terminalUi.actions });
 
   if (!document) return null;
   if (!catalog || !index) return <CatalogNotReady state={catalogState} />;
@@ -309,6 +368,7 @@ export function EnclosureTab(props: EnclosureTabProps) {
       onDropDevice={dropFromPicker}
       reservedRails={reserved}
       terminals={terminalUi.sheet}
+      onPrintWires={props.onPrintWires}
     />
   );
   const note = <DropNote note={drops.note} onUndo={drops.undo} onDismiss={drops.dismiss} />;
@@ -346,6 +406,8 @@ export function EnclosureTab(props: EnclosureTabProps) {
         onAddModule={(field) => stack.reset({ kind: "module-picker", field, unit: null })}
         terminals={terminals.fields}
         onOpenTerminals={(field) => terminalUi.openTerminals(field, null)}
+        control={control.bar}
+        onOpenControl={control.openControl}
       />
       <EnclosureDrawing
         document={document}
@@ -369,8 +431,10 @@ export function EnclosureTab(props: EnclosureTabProps) {
           onMoveStrip: readOnly ? undefined : terminalUi.dropStrip,
           stripSource: readOnly ? undefined : terminalUi.stripSource,
         }}
+        control={{ runs: control.runs, onOpen: control.openControl, terminals: control.terminalCount }}
       />
-      <EnclosureFindings findings={terminals.findings} actions={terminalUi.actions} />
+      <EnclosureFindings findings={terminals.findings} actions={control.actions} />
+      <EnclosurePrepList prep={control.prep} readOnly={readOnly} onOverride={control.onOverride} />
       {host}
       {note}
     </div>
@@ -394,6 +458,8 @@ type DrawingProps = {
   onMoveDevice?: (deviceId: string, drop: DeviceDrop) => void;
   dragSource?: (deviceId: string) => DeviceDragSource | null;
   terminals: DrawingTerminals;
+  /** The leads of the open view and the §14a block's target (R4 §5, §8.2). */
+  control: { runs: readonly PrepRun[]; onOpen: () => void; terminals: number };
 };
 
 /** The drawing's WAGO terminals: strips and reserved rails, the close-up, and the strip drag. */
@@ -409,7 +475,7 @@ interface DrawingTerminals {
 
 /** The 2D front (open or closed) or the 3D pane; a cabinet code the catalogue lacks has no picture. */
 function EnclosureDrawing(props: DrawingProps) {
-  const { document, scene, view, zoomStep, unitMm, readOnly, focus, load3D, onReloadPage, onView, onZoomStep, onOpen, onMoveDevice, dragSource, terminals } = props;
+  const { document, scene, view, zoomStep, unitMm, readOnly, focus, load3D, onReloadPage, onView, onZoomStep, onOpen, onMoveDevice, dragSource, terminals, control } = props;
   if (!scene) {
     return (
       <p className="sp-encl-tab-state">
@@ -439,6 +505,9 @@ function EnclosureDrawing(props: DrawingProps) {
       onOpenTerminals={terminals.onOpen}
       onMoveStrip={view === "open" ? terminals.onMoveStrip : undefined}
       stripSource={terminals.stripSource}
+      runs={control.runs}
+      onOpenControl={control.onOpen}
+      controlTerminals={control.terminals}
     />
   );
 }

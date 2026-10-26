@@ -69,7 +69,8 @@ export const DEFAULT_PICKER_SWITCHES: PickerSwitches = Object.freeze({ claim: tr
 /** The sheets of the Schrank tab. The tab may use its own union; this one names every sheet §11 lists. */
 export type EnclosureSheet =
   | { kind: "enclosure-picker" }
-  | { kind: "module-picker"; field: number; unit: number | null; switches?: PickerSwitches }
+  /** `switches` and `query` (R4 §8.1) ride here for the same reason as PickerSwitches. */
+  | { kind: "module-picker"; field: number; unit: number | null; switches?: PickerSwitches; query?: string }
   | { kind: "module"; moduleId: string }
   | { kind: "rail"; moduleId: string; railKey: string; deviceId: string | null }
   | { kind: "inspector"; deviceId: string }
@@ -78,6 +79,8 @@ export type EnclosureSheet =
   /** The close-up of a field's terminal rails (R2 §7.2); `stripId` = the selected strip. */
   | { kind: "terminals"; field: number; stripId: string | null }
   | { kind: "regroup"; before: PanelDocument; after: PanelDocument; regrouped: Regroup[]; apply: () => void }
+  /** The §14a block (R4 §8.2); its carrier is derived, so it is not dropped with a removed module. */
+  | { kind: "control-block" }
   | { kind: "catalog-admin" };
 
 // ── The stack ────────────────────────────────────────────────────────────────

@@ -32,8 +32,10 @@ from reportlab.pdfgen import canvas as pdfcanvas
 from app.models.schaltplan import PanelPlan
 from app.services.panel_enclosure_geometry import mm_text
 from app.services.panel_enclosure_pdf_terminal_legend import legend_pages
-from app.services.panel_enclosure_pdf_terminal_sheet import (
+from app.services.panel_enclosure_pdf_terminal_sheet import (  # noqa: F401  (CONTROL, CONTROL_MM re-exported)
     BOTTOM,
+    CONTROL,
+    CONTROL_MM,
     MARGIN,
     MM,
     TOP,
@@ -42,25 +44,27 @@ from app.services.panel_enclosure_pdf_terminal_sheet import (
     PageShape,
     PageText,
     Sheet,
+    control_measure,
     page_header,
+    sheet_scale,
 )
 from app.services.schaltplan_pdf_style import FONT_BOLD, GRID, INK, MUTED, WARN, text_of
 
-__all__ = ["LayoutPage", "PageShape", "PageText", "closeup_layout", "draw_terminal_closeup_pages"]
+__all__ = [
+    "LayoutPage", "PageShape", "PageText", "closeup_layout", "draw_layout_pages", "draw_terminal_closeup_pages",
+]
 
 TITLE = "Reihenklemmen · Feld {n} · {vt} {name}"
 SCALE_NOTE = "Maßstab 1:1 (Breite) — zum Anlegen an die Hutschiene"
 SHRUNK_NOTE = "Verkleinert: die Hutschiene ist länger als das Blatt — nicht zum Anlegen"
 CONVENTION_NOTE = "Beschriftung oben gezeichnet (WAGO: Mitte/seitlich) · Abschlussplatte rechts angenommen"
 L2_L3_NOTE = " · Ebenen der 2003-7642 (L2, L3) angenommen"
-CONTROL = "Kontrollmaß 100 mm"
 RAIL_HEADING = "Hutschiene {r} · {title} · {used} von {cap} mm"
 U84T_FACTORY, U84T_SET = "U84T ab Werk", "U84T: 1 Satz"
 PLATE = "Abschlussplatte {part}"
 UNPLACED = "Ohne Platz: "
 MORE = " … und {n} weitere"
 
-CONTROL_MM = 100.0
 HEAD_H = 12 * MM
 BLOCK_H = 84 * MM
 HEADING_H = 4 * MM
@@ -94,7 +98,7 @@ def _scale(rails: Sequence[Mapping[str, Any]]) -> float:
         extent = max(extent, float(rail["capacityMm"]))
         for part in [*rail.get("devices", []), *rail.get("items", [])]:
             extent = max(extent, float(part["offsetMm"]) + float(part["widthMm"]))
-    return min(1.0, USABLE_W / (extent * MM)) if extent > 0 else 1.0
+    return sheet_scale(extent)
 
 
 def _title_block(sheet: Sheet, field: Mapping[str, Any], plan: PanelPlan, scale: float) -> None:
@@ -106,11 +110,7 @@ def _title_block(sheet: Sheet, field: Mapping[str, Any], plan: PanelPlan, scale:
                color=MUTED if scale >= 1.0 else WARN)
     l2_l3 = any(item["partId"] == "2003-7642" for rail in field["rails"] for item in rail["items"])
     sheet.line(CONVENTION_NOTE + (L2_L3_NOTE if l2_l3 else ""), MARGIN, TOP - 33, width, 9, size=6.5, color=MUTED)
-    left = MARGIN + USABLE_W - CONTROL_MM * MM
-    sheet.line(CONTROL, left, TOP - 14, CONTROL_MM * MM, 14, size=7.5, align="right")
-    sheet.rect(left, TOP - 22, CONTROL_MM * MM, 1.2 * MM, fill=INK)
-    for tick in (0.0, 50.0, 100.0):  # end and middle marks, so the bar is read at its ends
-        sheet.rect(left + tick * MM - 0.2, TOP - 26, 0.4, 4 * MM, fill=INK)
+    control_measure(sheet)
 
 
 def _heading(rail: Mapping[str, Any]) -> str:
@@ -204,7 +204,11 @@ def closeup_layout(closeup: Sequence[Mapping[str, Any]], *, plan: PanelPlan,
 def draw_terminal_closeup_pages(c: pdfcanvas.Canvas, *, plan: PanelPlan, closeup: Sequence[Mapping[str, Any]],
                                 company_name: str | None = None) -> int:
     """Draw the close-up pages (each ended with ``showPage``); returns how many, legends included."""
-    pages = closeup_layout(closeup, plan=plan, company_name=company_name)
+    return draw_layout_pages(c, closeup_layout(closeup, plan=plan, company_name=company_name))
+
+
+def draw_layout_pages(c: pdfcanvas.Canvas, pages: Sequence[LayoutPage]) -> int:
+    """Draw laid-out landscape pages (each ended with ``showPage``); returns how many."""
     for page in pages:
         c.setPageSize(landscape(A4))
         _render(c, page)

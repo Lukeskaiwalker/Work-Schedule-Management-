@@ -26,6 +26,7 @@ shapes without re-checking them.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -231,6 +232,129 @@ class TerminalOrderEntry(BaseModel):
     rail2_from: str | None = None
 
 
+# ── The §14a block and the prep overrides (docs/PANEL_ENCLOSURE_R4.md §2) ─────
+#
+# Constants the parsers need live here (the schema must not import the
+# derivations); ``panel_enclosure_control_block`` re-exports them.
+
+WIRE_COLOURS: tuple[str, ...] = ("braun", "schwarz", "grau", "rot", "violett", "weiß", "orange", "rosa")
+MAX_CONTROL_TERMINALS = 12
+CONTROL_LABEL_MAX = 12  # code points
+DEFAULT_WIRE_MM2 = 2.5
+WIRE_MM2_CHOICES: tuple[float, ...] = (1.5, 2.5)
+DEFAULT_LABEL_MATERIAL = "wago-211-502"
+TUBE_MATERIAL_IDS: frozenset[str] = frozenset({"wago-211-501", "wago-211-502"})
+LENGTH_MIN_M, LENGTH_MAX_M = 0.5, 20.0
+PREP_CHOICES: dict[str, tuple[str, ...]] = {
+    "supply": ("auto", "SA", "LS", "SI", "off"),
+    "infeed": ("auto", "K96ESA5", "clamps", "off"),
+    "joints": ("auto", "off"),
+    "network": ("auto", "off"),
+}
+_TERMINAL_ID = re.compile(r"t[0-9]{1,3}", re.ASCII)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def parse_length_m(value: Any) -> float | None:
+    """Rule 8 of §2.1: a finite number, ``round1`` half up, kept in [0,5; 20]."""
+    if not _number(value) or not math.isfinite(value) or abs(value) > 1e9:
+        return None
+    rounded = math.floor(value * 10 + 0.5) / 10
+    return rounded if LENGTH_MIN_M <= rounded <= LENGTH_MAX_M else None
+
+
+def _terminal_ids(entries: list[dict[str, Any]]) -> list[str]:
+    kept: list[str | None] = []
+    for entry in entries:
+        value = entry.get("id")
+        ok = isinstance(value, str) and _TERMINAL_ID.fullmatch(value) and value not in kept
+        kept.append(value if ok else None)
+    taken = {value for value in kept if value is not None}
+    out: list[str] = []
+    for value in kept:
+        if value is None:
+            n = 1
+            while f"t{n}" in taken:
+                n += 1
+            value = f"t{n}"
+            taken.add(value)
+        out.append(value)
+    return out
+
+
+def _control_label(value: Any) -> str:
+    text = _CONTROL_CHARS.sub("", value) if isinstance(value, str) else ""
+    return text.strip(" ")[:CONTROL_LABEL_MAX]
+
+
+def parse_control_block(value: Any) -> dict[str, Any] | None:
+    """``enclosure.control_block`` as far as it makes sense; never raises (§2.1).
+
+    Twin: ``parseControlBlock``; the fixture table ``control_block_parse``
+    pins every branch. Every derivation reads the block through this.
+    """
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("terminals")
+    entries = [e for e in (raw if isinstance(raw, list) else []) if isinstance(e, dict)][:MAX_CONTROL_TERMINALS]
+    terminals = [
+        {"id": ident, "label": _control_label(entry.get("label")),
+         "color": entry.get("color") if entry.get("color") in WIRE_COLOURS else WIRE_COLOURS[index % 8]}
+        for index, (entry, ident) in enumerate(zip(entries, _terminal_ids(entries)))
+    ]
+    rail = value.get("rail")
+    mm2 = value.get("wire_mm2")
+    material = value.get("label_material")
+    tube = material if isinstance(material, str) and material in TUBE_MATERIAL_IDS else DEFAULT_LABEL_MATERIAL
+    return {
+        "terminals": terminals,
+        "rail": rail if isinstance(rail, str) and KEY_PATTERN.fullmatch(rail) else None,
+        "wire_mm2": float(mm2) if _number(mm2) and mm2 in WIRE_MM2_CHOICES else DEFAULT_WIRE_MM2,
+        "wire_length_m": parse_length_m(value.get("wire_length_m")),
+        "label_material": tube,
+        "off": value.get("off") is True,
+    }
+
+
+def parse_prep(value: Any) -> dict[str, Any] | None:
+    """``enclosure.prep`` (§2.2): unknown values are ``auto`` / ``None``; never raises."""
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, Any] = {key: value.get(key) if value.get(key) in choices else "auto"
+                           for key, choices in PREP_CHOICES.items()}
+    out["network_m"] = parse_length_m(value.get("network_m"))
+    return out
+
+
+class ControlTerminal(BaseModel):
+    id: str
+    label: str
+    color: str
+
+
+class ControlBlock(BaseModel):
+    """Only what ``parse_control_block`` returns reaches it (keys in its order)."""
+
+    terminals: list[ControlTerminal]
+    rail: str | None
+    wire_mm2: float
+    wire_length_m: float | None
+    label_material: str
+    off: bool
+
+
+class EnclosurePrep(BaseModel):
+    supply: str
+    infeed: str
+    joints: str
+    network: str
+    network_m: float | None
+
+
 class EnclosureModule(BaseModel):
     model_config = _KEEP_UNKNOWN
 
@@ -280,6 +404,12 @@ class PanelEnclosure(BaseModel):
 
     code: CatalogCode
     modules: list[EnclosureModule] = Field(default_factory=list, max_length=MAX_MODULES)
+    # Round 4 (R4 §2): lenient like ``terminal_order``; None is never dumped,
+    # so a board without them keeps exactly the keys it had.
+    control_block: Annotated[ControlBlock | None, BeforeValidator(parse_control_block)] = Field(
+        default=None, exclude_if=lambda value: value is None)
+    prep: Annotated[EnclosurePrep | None, BeforeValidator(parse_prep)] = Field(
+        default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _one_owner_each(self) -> PanelEnclosure:
@@ -417,6 +547,9 @@ class ModuleSpec(_CatalogSpec):
     zones: list[ZoneSpec] = Field(max_length=12)
     fittings: list[FittingSpec] = Field(default_factory=list, max_length=MAX_FITTINGS_PER_MODULE)
     free_place_cover: AccessorySpec | None = None
+    # R4-12: a reserve meter field is never the §14a carrier while a meter
+    # field in use exists. Not frozen; the admin form leaves it alone.
+    reserve_field: bool = False
 
     @model_validator(mode="after")
     def _fits_together(self) -> ModuleSpec:

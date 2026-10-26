@@ -31,6 +31,10 @@ the open view every placed strip is one ``terminal_strip`` box on its rail.
 A hand-placed "Reihenklemme N/PE" on a terminal rail is a placeholder the
 strips replace (R2 §3.6), so it is not drawn there.
 
+The §14a block (docs/PANEL_ENCLOSURE_R4.md §5) is one ``control_block`` box
+on its carrier's AAR rail, open view only, at the placement's (rounded)
+``railX + offsetMm``; the runs of the cabinet preparation are no boxes.
+
 The display sizes below are drawing approximations, not catalogue facts:
 a device is drawn 90 × 70 mm, an eHZ 110 × 210 mm, a 3-Punkt meter
 180 × 330 mm, an SLS on a busbar 78.75 mm wide (``panel_enclosure_layout``),
@@ -45,6 +49,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Literal, Mapping
 
 from app.services.panel_enclosure_catalog import EnclosureCatalog
+from app.services.panel_enclosure_control_block import DERIVE, control_block_layout
 from app.services.panel_enclosure_layout import (
     PLE_MM,
     as_int,
@@ -146,11 +151,12 @@ class _Context:
 
 
 def build_enclosure_scene(document: Any, catalog: EnclosureCatalog, *, view: View = "open",
-                          placement: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+                          placement: Mapping[str, Any] | None = None, block: Any = DERIVE) -> dict[str, Any] | None:
     """Every box of the cabinet in one view; None without a known cabinet.
 
     ``placement``: the board's ``place_terminals`` result, when the caller
-    already has it; derived here otherwise.
+    already has it; derived here otherwise. ``block``: the parsed §14a block
+    (``DERIVE`` reads it from the document, ``None``: no block).
     """
     enclosure = enclosure_of(document)
     code = enclosure.get("code") if enclosure is not None else None
@@ -170,6 +176,8 @@ def build_enclosure_scene(document: Any, catalog: EnclosureCatalog, *, view: Vie
     boxes = [*_cabinet_boxes(cabinet)]
     for module in modules_of(document):
         boxes.extend(_module_boxes(context, module))
+    if not context.closed:
+        boxes.extend(_control_block_box(document, catalog, block))
     boxes.extend(_door_boxes(cabinet))
     boxes.sort(key=lambda box: (box["z"], box["y"], box["x"], box["id"]))
     return {
@@ -183,6 +191,17 @@ def _cabinet_boxes(cab: _Cabinet) -> Iterator[Box]:
     for index in range(cab.fields):
         yield _box(f"field:{index}", "field", cab.margin + index * cab.field_width, cab.margin, 10,
                    cab.field_width, cab.units_per_field * cab.unit, 2, label=f"Feld {index + 1}")
+
+
+def _control_block_box(document: Any, catalog: EnclosureCatalog, block: Any) -> Iterator[Box]:
+    layout = control_block_layout(document, catalog, block=block)
+    if layout is None:
+        return
+    placed = layout.as_dict()
+    yield _box("control:block", "control_block", placed["railX"] + placed["offsetMm"], placed["railY"] - _STRIP_H / 2,
+               _STRIP_Z, placed["widthMm"], _STRIP_H, _STRIP_D, label="§14a", module=placed["moduleId"],
+               rail=placed["railKey"], row=layout.rail.row_id, zone="AAR",
+               flags=["overflow"] if placed["overflow"] else [])
 
 
 def _door_boxes(cab: _Cabinet) -> Iterator[Box]:

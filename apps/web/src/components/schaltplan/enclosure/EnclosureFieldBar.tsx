@@ -10,6 +10,10 @@
  * Fields with terminal rails also get "Klemmen Feld {n}" (R2 §7.2), with
  * " · {k} ohne Platz" while strips fit neither rail: the close-up, also on
  * a board the viewer may only read.
+ *
+ * The first meter field from the left (the §14a block's carrier) gets
+ * "§14a-Klemmen" with its state — "{n} Klemmen", "fehlt", "entfernt",
+ * "passt nicht" (docs/PANEL_ENCLOSURE_R4.md §8.2) — read-only boards too.
  */
 import { useMemo } from "react";
 
@@ -18,6 +22,7 @@ import type { EnclosureModule } from "../../../types/panelEnclosure";
 import type { PanelDocument } from "../../../types/schaltplan";
 import "../../../styles/schaltplan-enclosure.css";
 import "../../../styles/schaltplan-enclosure-terminals.css";
+import "../../../styles/schaltplan-enclosure-control.css";
 
 export interface EnclosureFieldBarProps {
   document: PanelDocument;
@@ -33,6 +38,10 @@ export interface EnclosureFieldBarProps {
   terminals?: readonly { field: number; unplaced: number }[];
   /** "Klemmen Feld {n}": the field's close-up. */
   onOpenTerminals?: (field: number) => void;
+  /** "§14a-Klemmen" on the carrier's field (0-based) with its state line; null without a meter field. */
+  control?: { field: number; sub: string } | null;
+  /** "§14a-Klemmen": the §14a sheet. */
+  onOpenControl?: () => void;
 }
 
 function terminalsLabel(field: number, unplaced: number): string {
@@ -72,7 +81,7 @@ function moduleSubline(module: EnclosureModule, index: CatalogIndex): string {
 }
 
 export function EnclosureFieldBar(props: EnclosureFieldBarProps) {
-  const { document, index, onOpenModule, onAddModule, readOnly, selectedModuleId = null, terminals = [], onOpenTerminals } = props;
+  const { document, index, onOpenModule, onAddModule, readOnly, selectedModuleId = null, terminals = [], onOpenTerminals, control = null, onOpenControl } = props;
   const groups = useMemo(() => fieldGroups(document, index), [document, index]);
   const terminalFields = new Map(terminals.map((entry) => [entry.field, entry.unplaced] as const));
   const visible = groups.filter((group) => group.modules.length > 0 || (!readOnly && group.freeMm > 0));
@@ -109,6 +118,17 @@ export function EnclosureFieldBar(props: EnclosureFieldBarProps) {
               {(terminalFields.get(group.field) ?? 0) > 0 ? (
                 <span className="sp-encl-fieldbar-sub">{`${terminalFields.get(group.field)} ohne Platz`}</span>
               ) : null}
+            </button>
+          ) : null}
+          {control && onOpenControl && control.field === group.field ? (
+            <button
+              type="button"
+              className="sp-encl-fieldbar-btn sp-encl-fieldbar-btn--control"
+              onClick={onOpenControl}
+              aria-label={`§14a-Klemmen · ${control.sub}`}
+            >
+              <span className="sp-encl-fieldbar-title">§14a-Klemmen</span>
+              <span className="sp-encl-fieldbar-sub">{control.sub}</span>
             </button>
           ) : null}
           {!readOnly && group.freeMm > 0 && (

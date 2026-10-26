@@ -20,7 +20,9 @@
  *
  * Round 2 (docs/PANEL_ENCLOSURE_R2.md §4.1) replaced the one `encl.terminals`
  * note with ten WAGO terminal rules (`enclosureTerminalRules.ts`), which read
- * the board's precomputed terminals and placement.
+ * the board's precomputed terminals and placement. Round 4
+ * (docs/PANEL_ENCLOSURE_R4.md §4) added the §14a block, busbar, supply-kit
+ * and infeed rules (`enclosurePrepRules.ts`) before them.
  *
  * `validateDocument` stays untouched: these are appended, not merged.
  */
@@ -39,24 +41,25 @@ import {
   type RailLink,
 } from "./enclosureLayout";
 import { formatMmText } from "./enclosureGeometry";
+import { DERIVE, type BlockArg } from "./enclosureControlBlock";
+import { isSmallTap, ratingValue } from "./enclosurePrep";
+import { PREP_RULE_ORDER, prepFindings } from "./enclosurePrepRules";
 import { TERMINAL_RULE_ORDER, terminalFindings, type TerminalPrecomputed } from "./enclosureTerminalRules";
 import type { EnclosureModule, EnclosureSpec, ModuleSpec, RailSpec, ZoneSpec, ZoneType } from "../types/panelEnclosure";
 import type { DeviceKind, PanelDevice, PanelDocument, PanelFinding, PanelRow } from "../types/schaltplan";
 
-export { formatMmText };
+export { formatMmText, ratingValue };
 
 export const RULE_ORDER = [
   "encl.unknown_code", "encl.out_of_bounds", "encl.overlap", "encl.height_mismatch", "encl.field_gap",
   "encl.row_unlinked", "encl.stale_rail", "encl.row_order", "encl.rail_overflow", "encl.supplied_dangling",
   "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid",
-  ...TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
+  ...PREP_RULE_ORDER, ...TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
   "vde.3p_main_switch", "vde.rfz_devices", "vde.apz_missing", "vde.apz_position", "vde.meter_place_empty",
 ] as const;
 const RANK = new Map<string, number>(RULE_ORDER.map((rule, rank) => [rule, rank]));
 const VDE = "VDE-AR-N 4100: ";
 
-/** An LS up to 10 A may tap the NAR or sit on the RfZ (Spannungsabgriff). */
-const SMALL_TAP_A = 10;
 const AAR_MAX_A = 16;
 const AAR_PER_PLACE = 3;
 const SLS_MAX_A: Readonly<Record<10 | 16, number>> = { 10: 35, 16: 50 };
@@ -131,20 +134,12 @@ function finding(rule: string, level: "warn" | "info", scope: string, message: s
   return { level, scope, message: rule.startsWith("vde.") ? VDE + message : message, rule };
 }
 
-/** The last number in a rating ("B16" → 16, "C 32A" → 32, "0,5 A" → 0.5); null when there is none. */
-export function ratingValue(rating: string | null | undefined): number | null {
-  const matches = String(rating ?? "").match(/\d+(?:[.,]\d+)?/g);
-  return matches ? Number(matches[matches.length - 1].replace(",", ".")) : null;
-}
-
 const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
 const shortName = (device: PanelDevice): string => catalogEntry(device.kind).short;
 const bmk = (device: PanelDevice): string => trimmed(device.designation) || shortName(device);
 const rowName = (row: PanelRow): string => trimmed(row.label) || row.id;
-const isSmallMcb = (device: PanelDevice): boolean => {
-  const amps = ratingValue(device.rating);
-  return device.kind === "mcb" && amps !== null && amps <= SMALL_TAP_A;
-};
+/** An LS up to 10 A may tap the NAR or sit on the RfZ (Spannungsabgriff); shared with the prep. */
+const isSmallMcb = isSmallTap;
 
 function meterPlaces(module: EnclosureModule): Set<number> {
   const places = new Set<number>();
@@ -553,8 +548,11 @@ const byOrder = (a: PanelFinding, b: PanelFinding): number =>
  * thrown: the editor must keep drawing whatever the board looks like.
  * `pre`: the board's `boardTerminals` and `placeTerminals`, when the caller
  * already has them (round 2, §6.7); the terminal rules derive them otherwise.
+ * `block`: the parsed §14a block (R4 §4); DERIVE reads it from the document.
  */
-export function enclosureFindings(document: PanelDocument, index: CatalogIndex, pre?: TerminalPrecomputed): PanelFinding[] {
+export function enclosureFindings(
+  document: PanelDocument, index: CatalogIndex, pre?: TerminalPrecomputed, block: BlockArg = DERIVE,
+): PanelFinding[] {
   if (!document.enclosure) return [];
   let board: Board;
   try {
@@ -571,5 +569,14 @@ export function enclosureFindings(document: PanelDocument, index: CatalogIndex, 
       return [];
     }
   });
-  return [...findings, ...terminalFindings(document, index, pre)].sort(byOrder);
+  return [...findings, ...roundFourFindings(document, index, block), ...terminalFindings(document, index, pre)].sort(byOrder);
+}
+
+function roundFourFindings(document: PanelDocument, index: CatalogIndex, block: BlockArg): PanelFinding[] {
+  try {
+    return prepFindings(document, index, block);
+  } catch (error) {
+    console.warn("Schrank-Prüfung (Zählerschrank-Vorbereitung) übersprungen", error);
+    return [];
+  }
 }

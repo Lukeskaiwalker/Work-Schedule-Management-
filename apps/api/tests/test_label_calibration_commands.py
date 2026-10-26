@@ -47,6 +47,8 @@ MARK = MaterialProfile(
         (M["wago-210-812"], ["^G1", "^XSET,SENSING,1", "^Q50,3", "^W25"]),
         (M["wago-210-805"], ["^G1", "^XSET,SENSING,1", "^Q15,3", "^W6"]),
         (M["wago-211-501"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W5"]),
+        # 7,5 mm = 89 dots → 7,4 printer-mm, rounded up.
+        (M["wago-211-502"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W8"]),
         (M["wago-2009-110"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W11"]),
         (replace(M["wago-211-501"], sensor_mode="none"), ["^XSET,SENSING,2", "^Q15,0", "^W5"]),
         (CUSTOM, ["^G2", "^XSET,SENSING,1", "^Q38,3", "^W23"]),
@@ -154,6 +156,7 @@ def test_pattern_on_continuous_stock() -> None:
     assert lines[0] == "^Q42,0"
     assert geometry.kind == "continuous" and geometry.feed_measurable is False
     assert pattern_job(M["wago-211-501"])[0][0] == "^Q32,0"
+    assert pattern_job(M["wago-211-502"])[0][0] == "^Q32,0"  # every tube: the 30 mm pattern
     assert not any(line.startswith("AT,") for line in pattern_job(M["wago-211-501"])[0])  # no letter under 10 mm
 
 

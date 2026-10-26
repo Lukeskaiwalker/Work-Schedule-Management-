@@ -39,9 +39,12 @@ from app.services import werkstatt_article_labels
 from app.services import werkstatt_box_labels
 from app.services import werkstatt_label_builtins
 from app.services import werkstatt_label_calibration
+from app.services import werkstatt_label_control_strip
+from app.services import werkstatt_label_frame
 from app.services import werkstatt_label_jobs
 from app.services import werkstatt_label_patterns
 from app.services import werkstatt_label_profile
+from app.services import werkstatt_label_strips
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
 from app.services.werkstatt_label_calibration import setup_commands
@@ -320,6 +323,9 @@ RENDERING_MODULES = (
     werkstatt_label_builtins,
     schaltplan_layout,
     schaltplan_terminals,
+    werkstatt_label_frame,
+    werkstatt_label_strips,
+    werkstatt_label_control_strip,
 )
 _PRINTER_UNIT_NAMES = {"DOTS_PER_MM", "_DOTS_PER_MM", "STRIP_DOTS_PER_MM"}
 

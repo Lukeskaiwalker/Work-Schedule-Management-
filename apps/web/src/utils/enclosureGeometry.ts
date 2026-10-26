@@ -20,9 +20,14 @@
  * is one `terminal_strip` box on its rail. A hand-placed "Reihenklemme N/PE"
  * on a terminal rail is a placeholder the strips replace (R2 §3.6), so it is
  * not drawn there.
+ *
+ * The §14a block (docs/PANEL_ENCLOSURE_R4.md §5) is one `control_block` box
+ * on its carrier's AAR rail, open view only, at the placement's (rounded)
+ * `railX + offsetMm`; the runs of the cabinet preparation are no boxes.
  */
 
 import { catalogEntry } from "./schaltplanDevices";
+import { DERIVE, blockPlacement, controlBlockLayout, type BlockArg } from "./enclosureControlBlock";
 import { enclosureModules, meterZones, type CatalogIndex } from "./enclosureCatalog";
 import {
   enclosureDeviceWidthMm,
@@ -332,6 +337,19 @@ function meterPlaceBoxes(ctx: Context, moduleId: string, place: number, rect: Re
   ];
 }
 
+// ── The §14a block (R4 §5) ───────────────────────────────────────────────────
+
+function controlBlockBoxes(document: PanelDocument, index: CatalogIndex, block: BlockArg): SceneBox[] {
+  const layout = controlBlockLayout(document, index, block);
+  if (!layout) return [];
+  const placed = blockPlacement(layout);
+  const rect = { x: placed.railX + placed.offsetMm, y: placed.railY - STRIP_H / 2, w: placed.widthMm, h: STRIP_H };
+  return [box("control:block", "control_block", rect, Z.strip, {
+    label: "§14a", moduleId: placed.moduleId, railKey: placed.railKey, rowId: layout.rail.rowId, zoneType: "AAR",
+    flags: placed.overflow ? ["overflow"] : [],
+  })];
+}
+
 // ── Scene ────────────────────────────────────────────────────────────────────
 
 function compareBoxes(a: SceneBox, b: SceneBox): number {
@@ -343,10 +361,11 @@ function compareBoxes(a: SceneBox, b: SceneBox): number {
  * the board has no cabinet or its cabinet code does not resolve. Devices of
  * rows not in the cabinet, and fittings without a device, produce no box.
  * `placement`: the board's `placeTerminals` result, when the caller already
- * has it; derived here otherwise (memoised by document identity).
+ * has it; derived here otherwise (memoised by document identity). `block`:
+ * the parsed §14a block (R4 §5; DERIVE reads it from the document, null: none).
  */
 export function buildEnclosureScene(
-  document: PanelDocument, index: CatalogIndex, view: SceneView, placement?: TerminalPlacement,
+  document: PanelDocument, index: CatalogIndex, view: SceneView, placement?: TerminalPlacement, block: BlockArg = DERIVE,
 ): EnclosureScene | null {
   const enclosure = document.enclosure;
   const cabinet = enclosure ? index.enclosure(enclosure.code) : null;
@@ -364,7 +383,11 @@ export function buildEnclosureScene(
       ),
     ),
   };
-  const boxes = [...cabinetBoxes(cabinet), ...enclosureModules(document).flatMap((module) => moduleBoxes(ctx, module))];
+  const boxes = [
+    ...cabinetBoxes(cabinet),
+    ...enclosureModules(document).flatMap((module) => moduleBoxes(ctx, module)),
+    ...(view === "open" ? controlBlockBoxes(document, index, block) : []),
+  ];
   return {
     width: round1(cabinet.width_mm),
     height: round1(cabinet.height_mm),

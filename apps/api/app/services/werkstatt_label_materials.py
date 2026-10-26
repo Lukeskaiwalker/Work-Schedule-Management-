@@ -9,10 +9,10 @@ them in the same runtime-settings key as the printer address, and the ACTIVE
 profile mirrors what is physically loaded — the printer can sense gaps but
 not identity, so this selection is the software's only source of truth.
 
-Six workshop materials ship as builtins (``werkstatt_label_builtins``): print
+Seven workshop materials ship as builtins (``werkstatt_label_builtins``): print
 geometry from the WAGO catalogue, sensor mode and the carriage's reading on
 the housing scale from WAGO's handling sheets transferred to the owner's
-printer, roller 258-5006 for all six. The 210-805 is printed one lane 6 × 15
+printer, roller 258-5006 for all seven. The 210-805 is printed one lane 6 × 15
 while its physical roll (``web``) is two lanes — guide and verify use the
 roll, the renderers the print geometry. Builtins can be edited (measured
 reality beats the catalogue) but not removed: a deleted profile whose stock

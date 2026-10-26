@@ -11,7 +11,14 @@
  * (docs/PANEL_ENCLOSURE.md §2.1, D7): the free-text "Zählernummer" is not
  * offered there — two places to type a meter number are two places to
  * disagree — and the cabinet's meters are listed read-only instead.
+ *
+ * Under "Zuleitung" the page's `infeedHint` says what the cabinet
+ * preparation read from it and what that led to (docs/PANEL_ENCLOSURE_R4.md
+ * §8.5): the field's description, not a live region — it changes per key.
  */
+import { useId } from "react";
+
+
 import { meterSummary } from "./enclosure/enclosureEditorModel";
 import { PANEL_TYPE_LABELS, SUPPLY_SYSTEMS } from "../../utils/schaltplanDevices";
 import type { UpdatePanelPayload } from "../../utils/schaltplanApi";
@@ -27,9 +34,13 @@ type Props = {
   onPatchSupply: (patch: Partial<PanelSupply>) => void;
   onSaveMeta: (patch: UpdatePanelPayload) => void | Promise<void>;
   onDelete: () => void | Promise<void>;
+  /** "Querschnitt erkannt: …" (R4 §8.5); null while the catalogue loads, without a cabinet or a main busbar. */
+  infeedHint?: string | null;
 };
 
-export function PanelDataTab({ panel, document, panels, readOnly, canEdit, onPatchSupply, onSaveMeta, onDelete }: Props) {
+export function PanelDataTab({ panel, document, panels, readOnly, canEdit, onPatchSupply, onSaveMeta, onDelete, infeedHint = null }: Props) {
+  const incomingLabelId = useId();
+  const incomingHintId = useId();
   return (
     <div className="sp-data">
       <section className="sp-data-block">
@@ -59,14 +70,23 @@ export function PanelDataTab({ panel, document, panels, readOnly, canEdit, onPat
             />
           </label>
           <label className="sp-field">
-            <span className="sp-field-label">Zuleitung</span>
+            <span className="sp-field-label" id={incomingLabelId}>
+              Zuleitung
+            </span>
             <input
               type="text"
               value={document.supply.incoming}
               disabled={readOnly}
               placeholder="NYY-J 5x16 mm²"
+              aria-labelledby={incomingLabelId}
+              aria-describedby={infeedHint ? incomingHintId : undefined}
               onChange={(event) => onPatchSupply({ incoming: event.target.value })}
             />
+            {infeedHint ? (
+              <small id={incomingHintId} className="sp-field-hint">
+                {infeedHint}
+              </small>
+            ) : null}
           </label>
           <label className="sp-field">
             <span className="sp-field-label">Vorsicherung</span>

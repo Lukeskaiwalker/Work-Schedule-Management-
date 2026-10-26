@@ -487,6 +487,23 @@ The overview became a dashboard each user arranges per device class (Handy < 768
 
 Tests: `apps/api/tests/test_dashboard_*.py`, `test_auth_me_responses.py`, `test_permissions_role_upgrade.py`, `test_werkstatt_dashboard_preview_limit.py`; web `src/test/dashboard*.test.ts(x)`, `adminDashboardDefaults.test.tsx`, `schaltplanHandoff.test.ts`, `userUpdate.test.ts`, `twoFactorDisableMerge.test.tsx`.
 
+## Verteiler round 4 — §14a-Klemmleiste, Zählerschrank-Vorbereitung, Modulsuche, Stromlaufplan allpolig (2026-10-26)
+
+Contracts: `docs/PANEL_ENCLOSURE_R4.md`, `docs/SCHALTPLAN_STROMLAUF.md`. Python ⇄ TS twins are pinned by `apps/web/src/test/fixtures/enclosureFixtures.json` (`scripts/write_enclosure_fixtures.py`).
+
+| Module | Role |
+|---|---|
+| `services/cable_section_parse.py` ⇄ `utils/cableSectionParse.ts` | Cross-section, cores, aluminium and fuse amps from free text ("NYY-J 5x16 mm²", "NH 63 A") |
+| `services/panel_enclosure_control_block.py` ⇄ `utils/enclosureControlBlock.ts` | The stored §14a block (`enclosure.control_block`), its carrier (first in-use meter field) and its placement on an AAR rail |
+| `services/panel_enclosure_prep.py`, `panel_enclosure_prep_rules.py` ⇄ `utils/enclosurePrep.ts`, `enclosurePrepRules.ts` | Derived cabinet preparation (supply kit, infeed, ZZ55SAVE joints, network lead, block parts, wires, Lüsterklemme, PEN split), runs, per-board overrides (`enclosure.prep`), the round-4 findings |
+| `services/panel_enclosure_prep_material.py` | Materialliste lines of the preparation (`accessory:`/`part:`/`wire:`/`prep:` keys) |
+| `services/panel_enclosure_pdf_control.py` | The Aufbau PDF's §14a page |
+| `services/werkstatt_label_frame.py`, `werkstatt_label_strips.py`, `werkstatt_label_control_strip.py`; `routers/workflow_schaltplan_labels.py` | Label frame and strip renderers split out of `werkstatt_labels.py`; the vertical §14a strip and the Aderbeschriftung (target `adern`); the print route moved out of `workflow_schaltplan.py` |
+| `services/schaltplan_pdf_overview.py`, `schaltplan_conductors.py`, `schaltplan_stromlauf_*.py` | The Übersicht (moved and paginated), conductors per device/cable/supply, the Stromlaufplan allpolig: model, layout (bands, cabinet sheet, control band, routes), renderer and symbols |
+| `components/schaltplan/enclosure/modulePickerSearch.ts` | The module picker's search |
+| `utils/enclosureOpsControlBlock.ts`, `enclosure/ControlBlockSheet.tsx`, `ControlBlockSvg.tsx`, `controlBlockLayout.ts`, `EnclosurePrepList.tsx`, `prepListModel.ts`, `components/schaltplan/usePanelControlBlock.ts` | The §14a sheet and its ops, "Automatisch ergänzt", the page wiring (Klemmen print ids, wire print, Daten hint) |
+| `utils/schaltplanControlStrip.ts`, `components/schaltplan/LabelPrintDialogWires.tsx` | Web side of the §14a strip and the Aderbeschriftung print mode |
+
 ## Label printer calibration and IR sensor guide (2026-10-13)
 
 Contract: `docs/LABEL_PRINTER_CALIBRATION.md` (data model, EZPL allow-list, endpoints, German strings, physical test plan T0–T17). Built against a simulated printer; nothing is "verified" until the physical tests.

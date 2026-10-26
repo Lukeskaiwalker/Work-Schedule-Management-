@@ -120,6 +120,47 @@ describe("useLabelPrinting", () => {
     );
   });
 
+  it("prints the Aderbeschriftung by its one id on the board's tube and counts the sleeves", async () => {
+    printMock.mockResolvedValue({
+      ...RESULT,
+      printed: 12,
+      material: "wago-211-502",
+      strips: [{ row_id: "control:wires", row_label: "Aderbeschriftung", length_mm: 180, part_count: 12 }],
+      font_size_dots: 48,
+    });
+    const { result, deps } = renderPrinting({ panel: PANEL });
+    act(() => result.current.open(["control:wires"], "adern"));
+    expect(result.current.dialog).toEqual({ open: true, ids: ["control:wires"], mode: "adern" });
+    await act(() => result.current.print(["control:wires"], "wago-211-502", { target: "adern" }));
+    expect(printMock).toHaveBeenCalledWith("t", 7, {
+      stripIds: ["control:wires"],
+      materialId: "wago-211-502",
+      target: "adern",
+    });
+    expect(deps.setNotice).toHaveBeenCalledWith("12 Aderetiketten gedruckt");
+    expect(result.current.dialog.open).toBe(false);
+  });
+
+  it("has its own fallback when the Aderbeschriftung fails without a message", async () => {
+    printMock.mockRejectedValue(new Error(""));
+    const { result, deps } = renderPrinting({ panel: PANEL });
+    await act(() => result.current.print(["control:wires"], "wago-211-502", { target: "adern" }));
+    expect(deps.setError).toHaveBeenCalledWith("Aderbeschriftung konnte nicht gedruckt werden");
+  });
+
+  // The §14a strip sizes itself; the size the server reports is the Leisten's.
+  it("leaves the Leiste size out of a print that was only the §14a strip", async () => {
+    printMock.mockResolvedValue({
+      ...RESULT,
+      printed: 6,
+      strips: [{ row_id: "control:block", row_label: "§14a-Klemmleiste", length_mm: 31.2, part_count: 6 }],
+      font_size_dots: 93,
+    });
+    const { result, deps } = renderPrinting({ panel: PANEL });
+    await act(() => result.current.print(["control:block"], "wago-2009-110", { target: "reihenklemmen" }));
+    expect(deps.setNotice).toHaveBeenCalledWith("1 Klemmen-Etikett gedruckt (6 Klemmen)");
+  });
+
   it("surfaces the server's message when the print fails", async () => {
     printMock.mockRejectedValue(new Error("Keine Klemmenleiste ausgewählt — mindestens eine wählen."));
     const { result, deps } = renderPrinting({ panel: PANEL });

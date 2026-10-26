@@ -32,6 +32,8 @@ USABLE_W = PAGE_W - 2 * MARGIN  # 273 mm
 TOP = PAGE_H - MARGIN  # the header bar fills the top margin
 BOTTOM = MARGIN
 HEADER_H = 34.0
+CONTROL = "Kontrollmaß 100 mm"
+CONTROL_MM = 100.0
 
 
 @dataclass(frozen=True)
@@ -118,3 +120,18 @@ def page_header(sheet: Sheet, company: str) -> None:
     sheet.line("Aufbau", 34, PAGE_H - HEADER_H, 300, HEADER_H, font=FONT_BOLD, size=13, color=colors.white)
     sheet.line(company, PAGE_W - 34 - 300, PAGE_H - HEADER_H, 300, HEADER_H, size=9, color=colors.white,
                align="right")
+
+
+def sheet_scale(extent_mm: float) -> float:
+    """1 (1:1) when ``extent_mm`` fits the sheet's width, else the factor that makes it fit."""
+    return min(1.0, USABLE_W / (extent_mm * MM)) if extent_mm > 0 else 1.0
+
+
+def control_measure(sheet: Sheet) -> None:
+    """The Kontrollmaß bar top right: 100 mm with end and middle marks, so a
+    fitter sees whether the printer scaled the page (an iPad's "fit to page")."""
+    left = MARGIN + USABLE_W - CONTROL_MM * MM
+    sheet.line(CONTROL, left, TOP - 14, CONTROL_MM * MM, 14, size=7.5, align="right")
+    sheet.rect(left, TOP - 22, CONTROL_MM * MM, 1.2 * MM, fill=INK)
+    for tick in (0.0, 50.0, 100.0):  # end and middle marks, so the bar is read at its ends
+        sheet.rect(left + tick * MM - 0.2, TOP - 26, 0.4, 4 * MM, fill=INK)

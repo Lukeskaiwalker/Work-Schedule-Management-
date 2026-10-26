@@ -50,6 +50,24 @@ because they are what the built-in catalogue ships. Each board's purpose:
 * ``three_point_zb53s`` — round 3's current 3-Punkt kits: VF over AAR over one
   place (ZH53W9SNT, ZH50D53ST) and a Doppelstock (ZH53X3T) with a free place,
   their Trennvorrichtungen and HLAK as placed pre-fitted parts.
+
+Round 4 (docs/PANEL_ENCLOSURE_R4.md §10): the §14a block and the cabinet
+preparation.
+
+* ``control_ehz_zb33s`` — ZH3EH16 and ZH3EL27 side by
+  side (one ZZ55SAVE), ZU37VT5APZ2; the seeded default block on the
+  ZH3EH16's AAR 1, wired to its RfZ; ZY3N2SA; the network lead from the
+  Hager table.
+* ``control_3p_zb53s`` — ZH53X9ST beside a ZH53XS whose Sammelschiene is a
+  customer distribution (``busbar_role``, no joint), ZU59VT7APZ2; a block with
+  a renamed and a removed terminal, one colour twice, a stored wire length and
+  the 211-501 tube on 2,5 mm² (``control_tube``); "NYY-J 5x50 mm²" → K96F × 5.
+* ``busbar_gap_zb34s`` — meter fields 1 and 3 with a Verteilerfeld between
+  (``busbar_unjoined``, K96ESA5 × 2); no infeed text (``infeed_assumed``), an
+  NH 125 A fuse (``infeed_fuse``), no block (``control_block_missing``) and the
+  overrides supply LS, network off.
+* ``reserve_zb33s`` — a ZH33XL left of a ZH33X7: the carrier is the ZH33X7; a
+  4-core TN-C-S infeed "NYY-J 4x35" (``pen_split``, K96F × 4).
 """
 
 from __future__ import annotations
@@ -59,6 +77,7 @@ from typing import Any
 from app.schemas.panel_enclosure import ModuleSpec
 from app.schemas.schaltplan import PanelDocument
 from app.services.panel_enclosure_catalog import builtin_catalog
+from app.services.panel_enclosure_control_block import default_control_block
 from app.services.schaltplan_layout import DEVICE_CATALOG
 
 CUSTOM_APZ_MIDDLE = "ZX37APZM"
@@ -160,15 +179,27 @@ def meter(place: int, number: str = "", label: str = "") -> dict[str, Any]:
     return {"place": place, "number": number, "label": label}
 
 
-def document(cabinet: str, modules: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Validated and dumped: the exact shape a stored board has."""
+DEFAULT_SUPPLY: dict[str, str] = {"system": "TN-C-S", "voltage": "400/230 V", "incoming": "NYY-J 5x16 mm²",
+                                  "fuse": "NH 63 A", "meter_number": "", "note": ""}
+
+
+def document(cabinet: str, modules: list[dict[str, Any]], rows: list[dict[str, Any]], *,
+             supply: dict[str, str] | None = None, control_block: dict[str, Any] | None = None,
+             prep: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Validated and dumped: the exact shape a stored board has. ``supply``
+    overrides keys of the default Hausanschluss; ``control_block``/``prep``
+    are stored as given (round 4) and dropped when None."""
+    enclosure: dict[str, Any] = {"code": cabinet, "modules": modules}
+    if control_block is not None:
+        enclosure["control_block"] = control_block
+    if prep is not None:
+        enclosure["prep"] = prep
     raw = {
         "version": 1,
-        "supply": {"system": "TN-C-S", "voltage": "400/230 V", "incoming": "NYY-J 5x16 mm²",
-                   "fuse": "NH 63 A", "meter_number": "", "note": ""},
+        "supply": {**DEFAULT_SUPPLY, **(supply or {})},
         "rows": rows,
         "terminal_labels": {},
-        "enclosure": {"code": cabinet, "modules": modules},
+        "enclosure": enclosure,
     }
     return PanelDocument.model_validate(raw).model_dump(mode="json")
 
@@ -418,6 +449,101 @@ def three_point_zb53s() -> dict[str, Any]:
     return document("ZB53S", modules, rows)
 
 
+# ── Round 4: §14a block and cabinet preparation (docs/PANEL_ENCLOSURE_R4.md §10) ──
+
+
+def _meter_rows(prefix: str, field_no: int, sls: str, switch: str, *, aar: str = "aar1",
+                part: str | None = None, module_id: str = "") -> list[dict[str, Any]]:
+    """The NAR SLS and the Hauptschalter/Trennvorrichtung behind it."""
+    claim = {"supplied_by": supplied(module_id, part)} if part else {}
+    return [
+        row(f"row-{prefix}-nar", f"F{field_no} · NAR", [dev(f"dev-{prefix}-q0", "sls", designation=sls, rating="E35")]),
+        row(f"row-{prefix}-{aar}", f"F{field_no} · AAR {aar[-1]}", [
+            dev(f"dev-{prefix}-q1", "hauptschalter", designation=switch, parent_id=f"dev-{prefix}-q0", **claim)]),
+    ]
+
+
+def control_ehz_zb33s() -> dict[str, Any]:
+    modules = [
+        module("mod-a", "ZH3EH16", 0, {"nar": "row-a-nar", "aar1": "row-a-aar1", "aar2": "row-a-aar2"},
+               label="Allgemein", meters=[meter(0, "1XYZ0000000061", "Allgemein")]),
+        module("mod-b", "ZH3EL27", 1, {"nar": "row-b-nar", "aar1": "row-b-aar1"},
+               meters=[meter(0, "1XYZ0000000062", "Wärmepumpe")]),
+        module("mod-c", "ZU37VT5APZ2", 2, {"r3": "row-c3"}),
+    ]
+    rows = [
+        *_meter_rows("a", 1, "Q0", "Q1", part="hs", module_id="mod-a"),
+        row("row-a-aar2", "F1 · AAR 2", [dev("dev-a-x0", "hlak", designation="X0", supplied_by=supplied("mod-a", "hlak"))]),
+        *_meter_rows("b", 2, "Q10", "Q11"),
+        row("row-c3", "F3 · Verteiler 3", [
+            fi("dev-c-f1", "F1", parent_id="dev-a-q1"), ls("dev-c-1", "F1.1", "1", "Licht", terminal_block=True)]),
+    ]
+    return document("ZB33S", modules, rows, control_block=default_control_block())
+
+
+def control_3p_zb53s() -> dict[str, Any]:
+    block = {
+        "terminals": [
+            {"id": "t1", "label": "UNSM", "color": "braun"},
+            {"id": "t2", "label": "P60", "color": "schwarz"},  # renamed on site
+            {"id": "t3", "label": "30%", "color": "grau"},
+            # t4 ("0%") removed
+            {"id": "t5", "label": "UStve", "color": "violett"},
+            {"id": "t6", "label": "Stve", "color": "braun"},  # braun twice
+        ],
+        "rail": None, "wire_mm2": 2.5, "wire_length_m": 1.2, "label_material": "wago-211-501", "off": False,
+    }
+    modules = [
+        module("mod-p", "ZH53X9ST", 0, {"nar": "row-p-nar", "aar2": "row-p-aar2", "vf1": "row-p-vf1"},
+               meters=[meter(0, "1XYZ0000000071", "WE 1")]),
+        module("mod-s", "ZH53XS", 1, {"r1": "row-s1"}),
+        module("mod-a", "ZU59VT7APZ2", 2, {"r3": "row-a3"}),
+    ]
+    rows = [
+        *_meter_rows("p", 1, "Q0", "Q1", aar="aar2", part="trenn", module_id="mod-p"),
+        row("row-p-vf1", "F1 · Verteilerfeld 1", [
+            fi("dev-p-f1", "F1", parent_id="dev-p-q1"), ls("dev-p-1", "F1.1", "1", "Licht", terminal_block=True)]),
+        row("row-s1", "F2 · Verteiler 1", [
+            fi("dev-s-f2", "F2", parent_id="dev-p-q1"), ls("dev-s-1", "F2.1", "2", "Steckdosen", terminal_block=True)]),
+        row("row-a3", "F3 · Verteiler 3", [fi("dev-a-f3", "F3", parent_id="dev-p-q1"), ls("dev-a-1", "F3.1", "3", "Garage")]),
+    ]
+    return document("ZB53S", modules, rows, supply={"incoming": "NYY-J 5x50 mm²"}, control_block=block)
+
+
+def busbar_gap_zb34s() -> dict[str, Any]:
+    modules = [
+        module("mod-e", "ZH3EL27", 0, {"nar": "row-e-nar", "aar1": "row-e-aar1"},
+               meters=[meter(0, "1XYZ0000000081", "WE 1")]),
+        module("mod-v", "ZU37KS", 1, {"r3": "row-v3"}),
+        module("mod-p", "ZH33X7", 2, {"nar": "row-p-nar", "aar1": "row-p-aar1"},
+               meters=[meter(0, "1XYZ0000000082", "WE 2")]),
+        module("mod-a", "ZU37VT5APZ2", 3, {}),
+    ]
+    rows = [
+        *_meter_rows("e", 1, "Q0", "Q1"),
+        row("row-v3", "F2 · Verteiler 3", [
+            fi("dev-v-f1", "F1", parent_id="dev-e-q1"), ls("dev-v-1", "F1.1", "1", "Licht", terminal_block=True)]),
+        *_meter_rows("p", 3, "Q10", "Q11"),
+    ]
+    return document("ZB34S", modules, rows, supply={"incoming": "", "fuse": "NH 125 A"},
+                    prep={"supply": "LS", "network": "off"})
+
+
+def reserve_zb33s() -> dict[str, Any]:
+    modules = [
+        module("mod-r", "ZH33XL", 0, {}),
+        module("mod-p", "ZH33X7", 1, {"nar": "row-p-nar", "aar1": "row-p-aar1"},
+               meters=[meter(0, "1XYZ0000000091", "WE 1")]),
+        module("mod-a", "ZU37VT5APZ2", 2, {"r3": "row-a3"}),
+    ]
+    rows = [
+        *_meter_rows("p", 2, "Q0", "Q1"),
+        row("row-a3", "F3 · Verteiler 3", [
+            fi("dev-a-f1", "F1", parent_id="dev-p-q1"), ls("dev-a-1", "F1.1", "1", "Licht", terminal_block=True)]),
+    ]
+    return document("ZB33S", modules, rows, supply={"incoming": "NYY-J 4x35"}, control_block=default_control_block())
+
+
 BOARDS = {
     "meter_dist_zb33s": meter_dist_zb33s,
     "violations_zb34s": violations_zb34s,
@@ -428,4 +554,8 @@ BOARDS = {
     "terminals_rk_zb53s": terminals_rk_zb53s,
     "terminals_overflow_zb32s": terminals_overflow_zb32s,
     "three_point_zb53s": three_point_zb53s,
+    "control_ehz_zb33s": control_ehz_zb33s,
+    "control_3p_zb53s": control_3p_zb53s,
+    "busbar_gap_zb34s": busbar_gap_zb34s,
+    "reserve_zb33s": reserve_zb33s,
 }

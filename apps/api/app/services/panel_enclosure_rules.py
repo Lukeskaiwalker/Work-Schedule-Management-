@@ -31,13 +31,14 @@ What both twins keep identical beyond the table in §5:
 
 Round 2 (docs/PANEL_ENCLOSURE_R2.md §4.1) replaced the one ``encl.terminals``
 note with ten WAGO terminal rules (``panel_enclosure_terminal_rules``), which
-read the board's precomputed terminals and placement.
+read the board's precomputed terminals and placement. Round 4
+(docs/PANEL_ENCLOSURE_R4.md §4) added the §14a block, busbar, supply-kit and
+infeed rules (``panel_enclosure_prep_rules``) before them.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Mapping
 
@@ -67,6 +68,9 @@ from app.services.panel_enclosure_layout import (
     text,
     zone_field,
 )
+from app.services.panel_enclosure_control_block import DERIVE
+from app.services.panel_enclosure_prep import is_small_tap, rating  # noqa: F401  (rating: re-exported)
+from app.services.panel_enclosure_prep_rules import PREP_RULE_ORDER, prep_findings
 from app.services.panel_enclosure_terminal_rules import TERMINAL_RULE_ORDER, terminal_findings
 from app.services.panel_enclosure_terminals import BoardTerminals
 from app.services.schaltplan_layout import DEVICE_CATALOG, build_topology
@@ -77,13 +81,12 @@ RULE_ORDER: tuple[str, ...] = (
     "encl.unknown_code", "encl.out_of_bounds", "encl.overlap", "encl.height_mismatch", "encl.field_gap",
     "encl.row_unlinked", "encl.stale_rail", "encl.row_order", "encl.rail_overflow", "encl.supplied_dangling",
     "encl.cross_module_feed", "encl.unverified", "encl.meter_device", "encl.meter_place_invalid",
-    *TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
+    *PREP_RULE_ORDER, *TERMINAL_RULE_ORDER, "vde.nar_sls", "vde.nar_contents", "vde.sls_rating", "vde.aar_contents", "vde.aar_circuits",
     "vde.3p_main_switch", "vde.rfz_devices", "vde.apz_missing", "vde.apz_position", "vde.meter_place_empty",
 )
 _RANK = {rule: index for index, rule in enumerate(RULE_ORDER)}
 VDE_PREFIX = "VDE-AR-N 4100: "
 
-_SMALL_TAP_A = 10.0  # an LS up to 10 A may tap the NAR / sit on the RfZ (Spannungsabgriff)
 _AAR_MAX_A = 16.0
 _AAR_PER_PLACE = 3
 _SLS_MAX_A = {10: 35, 16: 50}  # field wiring mm² → largest SLS (E35 / E50)
@@ -92,7 +95,6 @@ _RFZ_FORBIDDEN = frozenset({
     "rcd", "rcbo", "hauptschalter", "sls", "fuse", "contactor", "impulse", "timer", "bell_transformer",
     "knx_actuator", "wallbox", "pv", "sub_feed",
 })
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 
 Finding = dict[str, str]
 
@@ -208,12 +210,6 @@ def _kind(device: Mapping[str, Any]) -> str:
 
 def _is_circuit(device: Mapping[str, Any]) -> bool:
     return bool(DEVICE_CATALOG.get(_kind(device), {}).get("circuit"))
-
-
-def rating(device: Mapping[str, Any]) -> float | None:
-    """The last number in the rating ("B16" → 16, "E35" → 35); None if none."""
-    numbers = _NUMBER.findall(text(device.get("rating")))
-    return float(numbers[-1].replace(",", ".")) if numbers else None
 
 
 def _occupied(module: _Module) -> list[int]:
@@ -334,7 +330,9 @@ def _row_order(board: _Board) -> Iterator[Finding]:
 def _rail_overflow(board: _Board) -> Iterator[Finding]:
     for rail in board.rails:
         ple = as_int(rail.rail.get("ple"), 1)
-        total = sum(enclosure_device_width_mm(device, rail.rail) for device in rail.devices)
+        total = 0.0
+        for device in rail.devices:  # left → right, as the TS reduce
+            total += enclosure_device_width_mm(device, rail.rail)
         slots = as_int(rail.row.get("slots"), 12) or 12
         if total > ple * PLE_MM + 0.05 and slots != ple:
             yield _finding("encl.rail_overflow", "warn", rail.row["id"],
@@ -454,17 +452,11 @@ def _nar_contents(board: _Board) -> Iterator[Finding]:
             kind = _kind(device)
             if kind == "fuse":
                 message = f"NAR {art}: NH/Neozed ist nicht als Trennvorrichtung zulässig — SLS verwenden."
-            elif kind in ("rcd", "rcbo") or (_is_circuit(device) and not _small_mcb(device)):
+            elif kind in ("rcd", "rcbo") or (_is_circuit(device) and not is_small_tap(device)):
                 message = f"NAR {art}: {_short(device)} gehört nicht in den NAR."
             else:
                 continue
             yield _finding("vde.nar_contents", "warn", ident(device.get("id")), message)
-
-
-def _small_mcb(device: Mapping[str, Any]) -> bool:
-    """An LS up to 10 A: the Spannungsabgriff the NAR and the RfZ allow."""
-    amps = rating(device)
-    return _kind(device) == "mcb" and amps is not None and amps <= _SMALL_TAP_A
 
 
 def _sls_rating(board: _Board) -> Iterator[Finding]:
@@ -519,7 +511,7 @@ def _rfz_devices(board: _Board) -> Iterator[Finding]:
             continue
         for device in rail.devices:
             kind = _kind(device)
-            if kind in _RFZ_FORBIDDEN or (kind == "mcb" and not _small_mcb(device)):
+            if kind in _RFZ_FORBIDDEN or (kind == "mcb" and not is_small_tap(device)):
                 yield _finding("vde.rfz_devices", "warn", ident(device.get("id")),
                                f"RfZ/APZ ({rail.module.art}) ist nur für Geräte des Netz-/Messstellenbetreibers.")
 
@@ -576,17 +568,19 @@ _CHECKS: tuple[Callable[[_Board], Iterator[Finding]], ...] = (
 
 
 def enclosure_findings(document: Any, catalog: EnclosureCatalog, terms: BoardTerminals | None = None,
-                       placement: Mapping[str, Any] | None = None) -> list[Finding]:
+                       placement: Mapping[str, Any] | None = None, *, block: Any = DERIVE) -> list[Finding]:
     """Every cabinet finding of a board, sorted; [] without a cabinet. Never raises.
 
     ``terms``/``placement``: the board's ``board_terminals`` and
-    ``place_terminals``, when the caller already has them.
+    ``place_terminals``, when the caller already has them; ``block``: the
+    parsed §14a block (``DERIVE`` reads it from the document).
     """
     try:
         board = _read_board(document, catalog)
         if board is None:
             return []
         findings = [finding for check in _CHECKS for finding in check(board)]
+        findings += prep_findings(document, catalog, block=block)
         findings += terminal_findings(document, catalog, terms, placement)
     except Exception:  # noqa: BLE001 — a finding must never take a board's page down
         # Last resort only: the readers above are tolerant by construction, and

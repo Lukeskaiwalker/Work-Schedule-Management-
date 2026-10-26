@@ -6,10 +6,12 @@
  * Fullness is measured as the drawing measures it (`railUsedMm`, shared with
  * the drag's drop label): an SLS on a busbar is 4.5 PLE, not its 3 TE, so
  * "frei" here matches the overflow flag in the drawing and the
- * `encl.rail_overflow` finding.
+ * `encl.rail_overflow` finding. The §14a block takes its width of the AAR
+ * rail it sits on (docs/PANEL_ENCLOSURE_R4.md §3.2 "Occupancy").
  */
 import { railUsedMm } from "./enclosureDropTargets";
 import { enclosureModules, type CatalogIndex } from "../../../utils/enclosureCatalog";
+import { controlBlockMmOn } from "../../../utils/enclosureControlBlock";
 import {
   catalogFittings,
   generatedRowLabel,
@@ -52,13 +54,14 @@ export function railZoneName(zone: ZoneSpec, rail: RailSpec): string {
 
 function info(
   document: PanelDocument,
+  index: CatalogIndex,
   module: EnclosureModule,
   railKey: string,
   ref: { zone: ZoneSpec; rail: RailSpec },
   rowId: string | null,
 ): RailInfo {
   const row = rowId ? document.rows.find((candidate) => candidate.id === rowId) ?? null : null;
-  const usedMm = railUsedMm(ref.rail, row?.devices ?? []);
+  const usedMm = railUsedMm(ref.rail, row?.devices ?? []) + controlBlockMmOn(document, index, module.id, railKey);
   const usedPle = tenth(usedMm / MODULE_WIDTH_MM);
   return {
     moduleId: module.id,
@@ -88,7 +91,7 @@ export function moduleRails(
   const links = linkedRows(document, index);
   const rails: RailInfo[] = [];
   for (const [railKey, ref] of resolvableRails(module, index)) {
-    const entry = info(document, module, railKey, ref, railRowId(links, module, railKey));
+    const entry = info(document, index, module, railKey, ref, railRowId(links, module, railKey));
     if (ref.rail.retired && (options.retired === "never" || (entry.row?.devices.length ?? 0) === 0)) continue;
     rails.push(entry);
   }
@@ -102,7 +105,7 @@ export function railInfo(document: PanelDocument, index: CatalogIndex, moduleId:
   if (!module) return null;
   const ref = resolvableRails(module, index).get(railKey);
   if (!ref) return null;
-  return info(document, module, railKey, ref, railRowId(linkedRows(document, index), module, railKey));
+  return info(document, index, module, railKey, ref, railRowId(linkedRows(document, index), module, railKey));
 }
 
 /** Every module ordered as the cabinet reads, left → right, top → bottom. */

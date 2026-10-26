@@ -359,13 +359,16 @@ U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF to U+0020. Python compiles with
 `re.ASCII`; TS uses no `u` flag; patterns use `" *"`, never `\s`:
 
 ```text
-PAIR = (?<![0-9.])([0-9]) *[xg] *([0-9]+(?:\.[0-9]+)?)(?![0-9.])(?! *a\b)
+PAIR = (?<![0-9.])([0-9]) *[xg] *([0-9]+(?:\.[0-9]+)?)(?![0-9]|\.[0-9])(?! *a\b)
 EXTRA = ^ *[/+] *[0-9]          # applied right after the chosen pair: cores += 1 (clamped to 5)
 MM   = (?<![0-9.])([0-9]+(?:\.[0-9]+)?) *mm
 FUSE = (?<![0-9.])([0-9]+) *a(?:mpere)?\b
 ALU  = \bna[a-z0-9]*y|\bna2x|\balu?(?:minium)?\b
 ```
 
+Built (2026-10-26): the PAIR lookahead is `(?![0-9]|\.[0-9])`, not `(?![0-9.])` — the
+normalised comma of "NYY-J 5x16, 3x63A" is a "." and must not hide the pair; TS has no
+lookbehind (Safari < 16.4) and applies `(?<![0-9.])` by hand (`afterNoNumber`).
 PAIR matches left → right; drop pairs with mm² outside [1.5, 300]; take the
 **first** pair with the largest mm²; cores = int if 2 ≤ cores ≤ 5 else `None`;
 then `EXTRA` on the text after that pair. No pair → the first MM match within
@@ -423,7 +426,11 @@ Netzbetreibers.** (update PANEL_ENCLOSURE.md §5 and its test).
 * Runs are not boxes. The 2D SVG (open view) and the Aufbau PDF draw
   `prep.runs`: supply thin dashed ink (2/2), network dashed `#0f8b8d` (4/3),
   control dashed `#7547c9` (6/4); a small label at the midpoint of the longest
-  segment. Closed view and 3D draw no runs.
+  segment. Closed view and 3D draw no runs. Built (2026-10-26): the Aufbau PDF turns the
+  label 90° on a vertical segment and moves it along the run (stops 0,5 · 0,3 · 0,7 ·
+  0,15 · 0,85, longest segment first) until it covers no box label and no other run
+  label — at the midpoint it hid the meter number and the SLS's BMK. The 2D SVG keeps
+  the midpoint (it zooms).
 * `panel_enclosure_control_block.py` takes `round1` from
   `panel_enclosure_terminals` and never imports `panel_enclosure_geometry`
   (geometry imports it).
@@ -547,7 +554,9 @@ or without a `main` busbar zone). Rendered inside the Zuleitung `<label>` as
 
 ## 9. Printing
 
-**First, behaviour-preserving extractions** (file caps): `services/werkstatt_label_strips.py`
+**First, behaviour-preserving extractions** (file caps; built: also `services/werkstatt_label_frame.py`,
+the frame helpers, so the strips module never imports `werkstatt_labels` at load time; web twins of
+§9.1/§9.2 in `utils/schaltplanControlStrip.ts` and `components/schaltplan/LabelPrintDialogWires.tsx`): `services/werkstatt_label_strips.py`
 (`_render_rail_strip`, `_render_block_label`, `print_marking_strips`, strip
 constants; `werkstatt_labels` re-exports them) and `routers/workflow_schaltplan_labels.py`
 (`_PrintPlan`, `_bmk_print_plan`, `_terminal_print_plan`, `print_panel_labels`

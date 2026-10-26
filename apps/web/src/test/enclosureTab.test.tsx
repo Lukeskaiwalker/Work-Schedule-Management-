@@ -208,6 +208,32 @@ describe("EnclosureTab — module picker", () => {
     expect(q1?.supplied_by ?? null).toBeNull();
   });
 
+  it("keeps the picker's search when a sheet opened on top of it closes again (R4 §8.1)", () => {
+    const catalog: EnclosureCatalog = { ...testCatalog(), can_manage: true };
+    render(<Host initial={board([], { code: "ZB33S", modules: [] })} catalog={catalog} />);
+    fireEvent.click(screen.getByRole("button", { name: /^\+ Modul in Feld 1/ }));
+    const search = () => within(screen.getByRole("dialog", { name: "Modul für Feld 1" })).getByRole("searchbox", { name: "Modul suchen" });
+    fireEvent.change(search(), { target: { value: "zu37" } });
+    // Escape typed into the box is the box's: the picker stays.
+    fireEvent.keyDown(search(), { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Modul für Feld 1" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Katalog verwalten" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Schrankkatalog" })).getByRole("button", { name: "Zurück" }));
+    const picker = screen.getByRole("dialog", { name: "Modul für Feld 1" });
+    expect(search()).toHaveValue("zu37");
+    // ZU37KS, ZU37RK, ZU37VT5APZ2 (nothing is archived in the plain test catalogue).
+    expect(within(picker).getByRole("status")).toHaveTextContent("3 Treffer");
+    expect(within(picker).queryByRole("button", { name: /^ZH3EH16,/ })).toBeNull();
+
+    // A placed module ends the picker, and its query with it.
+    fireEvent.click(within(picker).getByRole("button", { name: /^ZU37KS,/ }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Feld 1 · ZU37KS" })).getByRole("button", { name: "Schließen" }));
+    fireEvent.click(screen.getByRole("button", { name: /^\+ Modul in Feld 2/ }));
+    expect(screen.getByRole("dialog", { name: "Modul für Feld 2" })).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog", { name: "Modul für Feld 2" })).getByRole("searchbox", { name: "Modul suchen" })).toHaveValue("");
+  });
+
   it("from the admin's form, Escape and the backdrop go back to its list — asking first when something was typed", () => {
     const catalog: EnclosureCatalog = { ...testCatalog(), can_manage: true };
     render(<Host initial={board([], { code: "ZB33S", modules: [] })} catalog={catalog} />);
@@ -487,7 +513,12 @@ describe("EnclosureTab — views and findings", () => {
     render(<Host initial={meterBoard()} />);
     const findings = screen.getByRole("region", { name: "Hinweise zum Schrank" });
     expect(within(findings).getByText("Prüfhilfe nach VDE-AR-N 4100:2026-04 — ersetzt nicht die TAB des Netzbetreibers.")).toBeInTheDocument();
-    expect(within(findings).getByText(/^Nicht automatisch geprüft: Spannungsabgriff für SMGW\/APZ vor dem SLS/)).toBeInTheDocument();
+    // R4 §4: the supply kit and the APZ are derived now; what no rule can see is the VNB's SABO approval.
+    expect(
+      within(findings).getByText(
+        "Nicht automatisch geprüft: Zulassung der SABO durch den Netzbetreiber · RJ45-Dose im RfZ · Einführung des Hauptkabels nicht von oben · Montagehöhe und Arbeitsraum · TAB des Netzbetreibers.",
+      ),
+    ).toBeInTheDocument();
     expect(within(findings).getByText(/Kein APZ im Schrank/)).toBeInTheDocument();
   });
 

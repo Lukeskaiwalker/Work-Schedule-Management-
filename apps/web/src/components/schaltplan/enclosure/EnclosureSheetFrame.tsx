@@ -1,7 +1,9 @@
 /**
  * The frame every sheet of the Schrank tab shares (docs/PANEL_ENCLOSURE.md
- * §11): head with ‹ (back to the sheet below), title and ×, a scrolling
- * body, an optional action row — and no backdrop of its own. The stack has
+ * §11): head with ‹ (back to the sheet below), title and ×, an optional
+ * toolbar that stays put while the body scrolls (the module picker's search,
+ * docs/PANEL_ENCLOSURE_R4.md §8.1), a scrolling body, an optional action
+ * row — and no backdrop of its own. The stack has
  * one backdrop (`SheetBackdrop`, rendered once by the tab), so a sheet
  * opened on top of another does not darken the screen twice and a tap
  * outside closes only the top sheet.
@@ -21,6 +23,8 @@ type FrameProps = {
   onBack?: () => void;
   onClose: () => void;
   children: ReactNode;
+  /** Between head and body, outside the scroller: what must stay in reach while the list scrolls. */
+  toolbar?: ReactNode;
   /** The action row at the bottom (primary actions). */
   footer?: ReactNode;
   /** "alertdialog" for a question that must be answered (RegroupConfirm). */
@@ -28,7 +32,7 @@ type FrameProps = {
   className?: string;
 };
 
-export function SheetFrame({ title, subtitle, onBack, onClose, children, footer, role = "dialog", className }: FrameProps) {
+export function SheetFrame({ title, subtitle, onBack, onClose, children, toolbar, footer, role = "dialog", className }: FrameProps) {
   const titleId = useId();
   return (
     <div
@@ -51,6 +55,7 @@ export function SheetFrame({ title, subtitle, onBack, onClose, children, footer,
           ×
         </button>
       </div>
+      {toolbar ? <div className="sp-encl-sheet-toolbar">{toolbar}</div> : null}
       <div className="sp-sheet-body">{children}</div>
       {footer ? <div className="sp-sheet-actions">{footer}</div> : null}
     </div>
@@ -73,10 +78,14 @@ export function SheetSection({ title, children, className }: { title: string; ch
   );
 }
 
-/** The catalogue's "not fully checked" flag (§3.1 `verified: false`). */
-export function UnverifiedBadge() {
+/**
+ * The catalogue's "not fully checked" flag (§3.1 `verified: false`); `title`
+ * says what is unchecked elsewhere ("Automatisch ergänzt": derived from the
+ * drawing, docs/PANEL_ENCLOSURE_R4.md §8.4).
+ */
+export function UnverifiedBadge({ title = "Katalogdaten nicht vollständig geprüft" }: { title?: string } = {}) {
   return (
-    <span className="sp-encl-badge sp-encl-badge--unverified" title="Katalogdaten nicht vollständig geprüft">
+    <span className="sp-encl-badge sp-encl-badge--unverified" title={title}>
       ungeprüft
     </span>
   );

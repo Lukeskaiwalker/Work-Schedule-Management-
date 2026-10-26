@@ -77,7 +77,7 @@ MODULES = {
     "ZU37RK": ("distribution", 1050, "VT 0-6 r1..r7", None, None, U84T),
     "ZU37VT5APZ2": ("distribution_apz", 1050, "VT 0-4 r1..r5 | APZ 5-6 apz(6)", None, None, RJ45),
     "ZU37VT4APZ2": ("distribution_apz", 1050, "VT 0-3 r1..r4 | RFZ 4 rfz | APZ 5-6 apz(6)", None, None, RJ45),
-    "ZH3ES5": ("busbar", 1050, "SAS 0-1 sas* | VT 2-6 r1..r5", None, None, BUSBAR | PE_N),
+    "ZH3ES5": ("busbar", 1050, "VT 0-4 r1..r5 | SAS 5-6 sas*", None, None, BUSBAR | PE_N),
     "ZH33SAR2": ("communication", 1050, "APZ 0-1 apz(6) | RFZ 2-4 rfz1..rfz3 | SAS 5-6 sas*", None, None, BUSBAR),
     "ZH5EL27": ("meter_ehz", 1350, E1350, (1, "ehz"), None, BUSBAR | BKE),
     "ZH5EL22": ("meter_ehz", 1350, E1350, (2, "ehz"), None, BUSBAR | BKE),
@@ -86,7 +86,7 @@ MODULES = {
     "ZU59KS": ("distribution", 1350, "VT 0-8 r1..r9", None, None, PE_N),
     "ZU59RK": ("distribution", 1350, "VT 0-8 r1..r9", None, None, U84T),
     "ZU59VT7APZ2": ("distribution_apz", 1350, "VT 0-6 r1..r7 | APZ 7-8 apz(6)", None, None, RJ45),
-    "ZH53XS": ("busbar", 1350, "SAS 0-1 sas* | VT 2-8 r1..r7", None, None, BUSBAR | PE_N),
+    "ZH53XS": ("busbar", 1350, "VT 0-6 r1..r7 | SAS 7-8 sas*", None, None, BUSBAR | PE_N),
     "ZH55SAR2": ("communication", 1350, "APZ 0-1 apz(6) | RFZ 2-6 rfz1..rfz5 | SAS 7-8 sas*", None, None, BUSBAR),
     "ZY150RFZ": ("communication", None, "RFZ 0 rfz", None, None, {}),
     "ZU62A": ("cover", None, "COVER 0", None, None, {}),
@@ -95,8 +95,8 @@ MODULES = {
     # Round 2 (docs/PANEL_ENCLOSURE_R2.md §10): the RK siblings, appended.
     "ZU37V5RKAPZ2": ("distribution_apz", 1050, "VT 0-4 r1..r5 | APZ 5-6 apz(6)", None, None, U84T),
     "ZU59V7RKAPZ2": ("distribution_apz", 1350, "VT 0-6 r1..r7 | APZ 7-8 apz(6)", None, None, U84T),
-    "ZH3ES5RK": ("busbar", 1050, "SAS 0-1 sas* | VT 2-6 r1..r5", None, None, BUSBAR | U84T),
-    "ZH53XSRK": ("busbar", 1350, "SAS 0-1 sas* | VT 2-8 r1..r7", None, None, BUSBAR | U84T),
+    "ZH3ES5RK": ("busbar", 1050, "VT 0-4 r1..r5 | SAS 5-6 sas*", None, None, BUSBAR | U84T),
+    "ZH53XSRK": ("busbar", 1350, "VT 0-6 r1..r7 | SAS 7-8 sas*", None, None, BUSBAR | U84T),
     # Round 3: the current 3-Punkt range (2026-10-26), appended.
     "ZH33X7T": ("meter_3p", 1050, P1050, ONE, 10, BUSBAR | TRENN),
     "ZH33X16T": ("meter_3p", 1050, P1050, ONE, 16, BUSBAR | HLAK | TRENN),
@@ -268,11 +268,34 @@ def test_meter_fields_are_unverified_and_name_their_stack() -> None:
 
 
 def test_every_busbar_zone_position_is_flagged_as_derived() -> None:
+    """Round 4 (R4-9): the busbar Verteilerfelder have their SAS at the bottom,
+    read off the Hager photos; the communication fields keep the derived note."""
     for code in MODULES:
         spec = builtin_catalog().module(code)
         if any(zone["type"] == "SAS" for zone in spec["zones"]):
             assert spec["verified"] is False, code
-            assert "Lage der Sammelschienenzone aus Rechnung abgeleitet" in spec["unverified"], code
+            note = ("Sammelschienenzone unten laut Hager-Produktfoto" if spec["family"] == "busbar"
+                    else "Lage der Sammelschienenzone aus Rechnung abgeleitet")
+            assert note in spec["unverified"], code
+
+
+def test_the_busbar_fields_have_their_sas_at_the_bottom_level_with_a_nar() -> None:
+    """R4-9: a ZZ55SAVE joint needs the SAS beside a meter field's NAR."""
+    for code, nar_code in (("ZH3ES5", "ZH3EL27"), ("ZH3ES5RK", "ZH3EL27"), ("ZH53XS", "ZH5EL27"),
+                           ("ZH53XSRK", "ZH5EL27")):
+        spec, meter = builtin_catalog().module(code), builtin_catalog().module(nar_code)
+        sas = next(zone for zone in spec["zones"] if zone["type"] == "SAS")
+        nar = next(zone for zone in meter["zones"] if zone["type"] == "NAR")
+        assert (sas["unit"], sas["units"]) == (nar["unit"], nar["units"]) == (spec["height_units"] - 2, 2), code
+
+
+def test_only_the_three_reserve_kits_are_reserve_fields() -> None:
+    """R4-12: never the §14a carrier while a meter field in use exists."""
+    catalog = builtin_catalog()
+    flagged = [code for code in MODULES if catalog.module(code)["reserve_field"]]
+    assert flagged == ["ZH33XL", "ZH53XL", "ZH52XL"]
+    assert not any(spec["reserve_field"] for spec in (catalog.module(code) for code in MODULES) if spec["family"] not in (
+        "meter_ehz", "meter_3p"))
 
 
 def test_the_unverified_facts_of_section_3_2_are_flagged() -> None:
@@ -339,7 +362,7 @@ def test_the_four_rk_built_ins_of_round_two() -> None:
         "ZH3ES5RK": "Verteilerfeld mit Sammelschienen, 5 Reihen, für Reihenklemmen, 1050 mm",
         "ZH53XSRK": "Verteilerfeld mit Sammelschienen, 7 Reihen, für Reihenklemmen, 1350 mm",
     }
-    sas = ["Lage der Sammelschienenzone aus Rechnung abgeleitet", "Sammelschienenzone als plombierbar angenommen"]
+    sas = ["Sammelschienenzone unten laut Hager-Produktfoto", "Sammelschienenzone als plombierbar angenommen"]
     unverified = {
         "ZU37V5RKAPZ2": ["APZ-Höhe wie ZU37VT5APZ2 angenommen"],
         "ZU59V7RKAPZ2": ["APZ-Höhe wie ZU59VT7APZ2 angenommen"],

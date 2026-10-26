@@ -25,11 +25,19 @@ from app.core.db import SessionLocal
 from app.models.schaltplan import PanelPlan
 from app.schemas.schaltplan import PanelMaterialArticleOut, PanelMaterialLineOut, PanelMaterialOut, PanelMaterialPanelOut
 from app.services.panel_enclosure_catalog import builtin_catalog
-from app.services.panel_enclosure_pdf import MM, _fill, _stroke, build_aufbau_pdf, pick_scale
+from app.services.panel_enclosure_pdf import MM, _draw_front, _fill, _stroke, build_aufbau_pdf, pick_scale
+from app.services.panel_enclosure_pdf_control import control_page, with_control_page
+from app.services.panel_enclosure_pdf_terminal_sheet import LayoutPage
 from app.services.panel_enclosure_pdf_terminals import closeup_layout, draw_terminal_closeup_pages
 from app.services.panel_enclosure_terminal_closeup import terminal_closeup
+from app.services.panel_enclosure_terminals import place_terminals
 from app.services.schaltplan_material_pdf import build_material_pdf
+from app.services.panel_enclosure_prep import cabinet_prep
+from scripts import enclosure_fixture_boards as fixture_boards
 from scripts.write_enclosure_fixtures import (
+    busbar_gap_zb34s,
+    control_3p_zb53s,
+    control_ehz_zb33s,
     document as board,
     fi,
     ls,
@@ -41,6 +49,7 @@ from scripts.write_enclosure_fixtures import (
     violations_zb34s,
 )
 from tests.panel_enclosure_helpers import auth, create_panel, employee, hidden_project
+from tests.pdf_recorder import Recorder
 from tests.test_schaltplan import _pdf_text
 
 BOX = 180 * MM
@@ -343,3 +352,141 @@ def test_the_front_view_draws_strips_and_terminal_rails_in_the_schrank_tab_s_col
     assert _stroke("terminal_strip", set()) == colors.HexColor("#2d3a48")
     assert _fill("rail", {"terminals"}, "VT") == colors.HexColor("#f8d6b7")
     assert _fill("rail", set(), "VT") == colors.HexColor("#9ca3af")
+
+
+# ── Round 4: the §14a page and the runs (docs/PANEL_ENCLOSURE_R4.md §9.4, §5) ──
+
+CONTROL_TITLE = "§14a-Klemmleiste · Feld 1 · VT-0042 Zählerschrank Haus A"
+
+
+def _texts(page: LayoutPage) -> list[str]:
+    return [text.text for text in page.texts]
+
+
+def _page(field: int, legend: bool = False) -> LayoutPage:
+    return LayoutPage(field, legend, (), (), False)
+
+
+def test_the_control_page_draws_the_block_1_to_1_with_rotated_markers_and_a_table() -> None:
+    document = control_ehz_zb33s()
+    page = control_page(document, CATALOG, plan=_plan(document), company_name="Beispiel Elektro")
+    assert page is not None and page.field == 0 and not page.legend
+    texts = _texts(page)
+    for expected in (CONTROL_TITLE, "Maßstab 1:1 (Breite) — zum Anlegen an die Hutschiene", "Kontrollmaß 100 mm",
+                     "Klemme", "Bezeichnung", "Aderfarbe", "Ziel", "Lüsterklemme",
+                     "Aderbeschriftung: WAGO 211-502 (Ø 4,8 mm), jede Bezeichnung zweimal"):
+        assert expected in texts, expected
+    # Each 2002-1671 carries its marker, turned to read bottom → top, at 6 pt down to 5 pt.
+    markers = [text for text in page.texts if text.text in ("UNSM", "60%", "30%", "0%", "UStve", "Stve")
+               and text.rotated]
+    assert [text.text for text in markers] == ["UNSM", "60%", "30%", "0%", "UStve", "Stve"]
+    assert all(5.0 <= text.size <= 6.0 for text in markers)
+    assert texts.count("RfZ Feld 1") == 6
+    assert [f"Pol {i}" in texts for i in range(1, 7)] == [True] * 6 and "Pol 7" not in texts
+    assert "Braun" in texts and "Weiß" in texts
+    # 1:1 across: the rail's 210 mm, the block right-aligned at 165,8 mm, every part at its width.
+    widths = [round(shape.w / MM, 1) for shape in page.shapes]
+    assert 210.0 in widths and 100.0 in widths
+    assert widths.count(5.2) >= 6 and widths.count(6.0) >= 2 and 1.0 in widths
+    first_stop = min(shape.x for shape in page.shapes if round(shape.w / MM, 1) == 6.0)
+    assert abs(first_stop - (12 * MM + 165.8 * MM)) < 0.01
+
+
+def test_a_renamed_3_punkt_block_names_the_apz_and_the_thin_tube() -> None:
+    document = control_3p_zb53s()
+    page = control_page(document, CATALOG, plan=_plan(document))
+    assert page is not None
+    texts = _texts(page)
+    assert "P60" in texts and "0%" not in texts
+    assert texts.count("APZ Feld 3") == 5 and texts.count("Braun") == 2
+    assert "Aderbeschriftung: WAGO 211-501 (Ø 3,2 mm), jede Bezeichnung zweimal" in texts
+
+
+def test_no_block_no_page_and_no_target_no_pole() -> None:
+    assert control_page(meter_dist_zb33s(), CATALOG, plan=_plan(meter_dist_zb33s())) is None
+    switched_off = control_ehz_zb33s()
+    switched_off["enclosure"]["control_block"]["off"] = True
+    assert control_page(switched_off, CATALOG, plan=_plan(switched_off)) is None
+    # Without the RfZ module the wires have no target: the table says so, no Lüsterklemme.
+    no_target = control_3p_zb53s()
+    no_target["enclosure"]["modules"] = [m for m in no_target["enclosure"]["modules"] if m["code"] != "ZU59VT7APZ2"]
+    page = control_page(no_target, CATALOG, plan=_plan(no_target))
+    assert page is not None
+    texts = _texts(page)
+    assert not any(text.startswith("Pol ") for text in texts) and "APZ Feld 3" not in texts
+
+
+def test_no_string_on_the_control_page_is_wider_than_its_cell() -> None:
+    long_labels = control_ehz_zb33s()
+    for terminal in long_labels["enclosure"]["control_block"]["terminals"]:
+        terminal["label"] = "Wärmepumpe12"  # twelve code points, the most a label may have
+    for document in (control_ehz_zb33s(), control_3p_zb53s(), long_labels):
+        page = control_page(document, CATALOG, plan=_plan(document))
+        assert page is not None
+        for text in page.texts:
+            length, cross = (text.h, text.w) if text.rotated else (text.w, text.h)
+            assert text.text and stringWidth(text.text, text.font, text.size) <= length + 0.01, text
+            assert text.size <= cross + 0.01, text
+
+
+def test_the_control_page_follows_its_field_s_close_up_and_legend_else_page_1() -> None:
+    control = _page(1)
+    assert with_control_page([_page(0), _page(1), _page(1, True), _page(2)], control) == [
+        _page(0), _page(1), _page(1, True), control, _page(2)]
+    assert with_control_page([_page(1), _page(2)], _page(0)) == [_page(0), _page(1), _page(2)]
+    assert with_control_page([_page(2)], None) == [_page(2)]
+    assert with_control_page([], control) == [control]
+
+
+def test_the_aufbau_of_a_board_with_a_block_has_the_control_page() -> None:
+    material = _pages(build_material_pdf(material=_material([]), company_name="Beispiel Elektro"))
+    pages = _pages(_aufbau(control_ehz_zb33s(), []))
+    # Page 1, the §14a page (its field has no close-up), Feld 3's close-up, the Materialliste.
+    assert len(pages) == 1 + 1 + 1 + len(material)
+    assert all(w > h for w, h in pages[:3])
+    text = _pdf_text(_aufbau(control_ehz_zb33s(), []))
+    assert b"Klemmleiste \\267 Feld 1" in text or "Klemmleiste · Feld 1".encode("cp1252") in text
+    assert len(_pages(_aufbau(busbar_gap_zb34s(), []))) == 1 + 1 + len(material)  # no block, no page
+
+
+def test_the_front_view_draws_the_block_and_the_runs_dashed_with_their_labels() -> None:
+    document = control_ehz_zb33s()
+    recorder = Recorder()
+    _draw_front(recorder, document, CATALOG, place_terminals(document, CATALOG))
+    texts = recorder.texts()
+    for label in ("§14a", "ZY3N2SA · SABO 1,6 A → RfZ", "ZY3N2SA · SABO 1,6 A → APZ", "ZZ45WAN100 · RJ45",
+                  "6 × H07V-K 2,5 mm²"):
+        assert label in texts, label
+    lines = [p for p in recorder.primitives if p.kind == "line"]
+    styles = {(p.stroke, p.dash) for p in lines}
+    assert ("#7547c9", (6.0, 4.0)) in styles and ("#0f8b8d", (4.0, 3.0)) in styles
+    assert any(dash == (2.0, 2.0) for _, dash in styles)
+    assert _fill("control_block", set(), "AAR") == colors.HexColor("#b9c0c8")
+    # A switched-off network lead is not drawn.
+    gap = Recorder()
+    _draw_front(gap, busbar_gap_zb34s(), CATALOG, place_terminals(busbar_gap_zb34s(), CATALOG))
+    assert not any("RJ45" in text for text in gap.texts())
+    assert "ZY3N2LS · LS 6 A → RfZ" in gap.texts()
+
+
+def _overlaps(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    return a[0] < b[2] - 0.2 and b[0] < a[2] - 0.2 and a[1] < b[3] - 0.2 and b[1] < a[3] - 0.2
+
+
+@pytest.mark.parametrize("name", sorted(fixture_boards.BOARDS))
+def test_a_run_label_never_covers_another_text_of_the_front_view(name: str) -> None:
+    """Slice D's render review: "ZY3N2SA · SABO 1,6 A → RfZ" sat on the meter number
+    and "… → APZ" on the SLS's BMK. A label follows its segment (turned 90° on a
+    vertical one) and moves along the run until it covers no box label and no other run label."""
+    document = fixture_boards.BOARDS[name]()
+    prep = cabinet_prep(document, CATALOG)
+    labels = {run["label"] for run in (prep["runs"] if prep is not None else [])}
+    recorder = Recorder()
+    _draw_front(recorder, document, CATALOG, place_terminals(document, CATALOG))
+    strings = [p for p in recorder.primitives if p.kind == "string"]
+    run_labels = [p for p in strings if p.text in labels]
+    assert {p.text for p in run_labels} == labels
+    for label in run_labels:
+        for other in strings:
+            if other is not label:
+                assert not _overlaps(label.bbox, other.bbox), (label.text, other.text)

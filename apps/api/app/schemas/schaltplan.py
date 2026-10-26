@@ -299,7 +299,8 @@ class DeviceCatalogEntry(BaseModel):
     rating_hint: str
 
 
-PrintTarget = Literal["bmk", "reihenklemmen"]
+# "adern": the §14a block's wire labels on its own tube (docs/PANEL_ENCLOSURE_R4.md §9.2).
+PrintTarget = Literal["bmk", "reihenklemmen", "adern"]
 
 
 class PanelLabelsPrintRequest(BaseModel):
@@ -315,7 +316,12 @@ class PanelLabelsPrintRequest(BaseModel):
     N L1 L2 L3 PE) — ``strip_ids`` absent or null = every strip; an explicit
     empty list = no strip, refused with a 400, because the sheet sends
     exactly the ticked strips. Continuous stock only — a 5.2 mm terminal has
-    no room for a 6 × 15 mm label.
+    no room for a 6 × 15 mm label. The §14a block strip (``control:block``)
+    is one of those strips, always the last.
+
+    ``target="adern"`` prints the §14a block's wire labels, every named
+    terminal twice, on the tube the block names; ``strip_ids`` and
+    ``material_id`` are ignored.
     """
 
     row_ids: list[str] | None = Field(default=None, max_length=64)

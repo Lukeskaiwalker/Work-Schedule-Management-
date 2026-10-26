@@ -1,4 +1,4 @@
-"""The six workshop materials SMPL ships, with their provenance.
+"""The seven workshop materials SMPL ships, with their provenance.
 
 Print geometry is unchanged since 2026-08 (WAGO catalogue). The sensor and
 loading fields come from WAGO's handling sheets (08.2020), the roller table
@@ -9,7 +9,12 @@ are transferred to that scale — 3,4 for the label rolls (the "triangle",
 and stay approximate ("ca.") until the physical test T0. Every hint carries
 its own qualifier; the UI shows them verbatim.
 
-All six use roller 258-5006 (black, smooth). 258-5007 is for WMB-Inline
+The 211-502 tube (Ø 4,8 mm, for 1–2,5 mm² — the §14a wires, R4 §9.3) came
+in round 4. Its flat width is computed, not measured (ungeprüft): one test
+print on the office printer is owed. It is not in the frozen v1 shape below
+— no v1 blob ever stored it — so an install heals it from code.
+
+All seven use roller 258-5006 (black, smooth). 258-5007 is for WMB-Inline
 2009-113/-114/-115 only — the old advice to swap it in for strips was wrong.
 """
 
@@ -89,6 +94,20 @@ DEFAULT_MATERIALS: tuple[MaterialProfile, ...] = (
         web=MediaWeb(liner_width_mm=5.0, source="estimate"),
     ),
     MaterialProfile(
+        id="wago-211-502",
+        # Ø 4.8 mm tube lies ~7.5 mm flat under the head (π · 4.8 / 2; ungeprüft).
+        name="Schrumpfschlauch Ø 4,8 (weiß, Endlos)",
+        part_no="WAGO 211-502",
+        width_mm=7.5,
+        length_mm=None,
+        builtin=True,
+        sensor_mode="see_through",
+        sensor_scale=_CENTRE_SCALE,
+        guide="fit",
+        feed_path="external",
+        web=MediaWeb(liner_width_mm=7.5, source="estimate"),
+    ),
+    MaterialProfile(
         id="wago-2009-110",
         name="Beschriftungsstreifen 11 mm (TopJob, Endlos)",
         part_no="WAGO 2009-110",
@@ -158,6 +177,12 @@ BUILTIN_HINTS: dict[str, list[tuple[str, str]]] = {
         _SEE_THROUGH_DERIVED,
         _ROLLER_HINT,
     ],
+    "wago-211-502": [
+        ("sensor_position", "Sensorposition ca. 3 der Skala (Mitte): WAGO-Handhabungshinweis 211-502 (gilt für 211-500 … -506), auf die Skala Ihres Druckers übertragen"),
+        ("web", "Breite flach ≈ 7,5 mm: berechnet (π · 4,8 / 2), nicht gemessen"),
+        _SEE_THROUGH_DERIVED,
+        _ROLLER_HINT,
+    ],
     "wago-2009-110": [
         ("sensor_position", "Sensorposition ca. 3 der Skala (Mitte): WAGO-Handhabungshinweis 2009-110 (08.2020), auf die Skala Ihres Druckers übertragen"),
         ("sensor_mode", "Sensor Durchlicht für Endlosmaterial: Ergebnis der WAGO-Software GoDoctor (2017)"),
@@ -174,14 +199,17 @@ AUTOSENSE_COST_HINT: dict[str, str] = {
     "wago-210-812": "voraussichtlich 2–3 Etiketten (≈ 11–16 cm, Schätzung)",
     "wago-210-805": "voraussichtlich einige Etikettenreihen (wenige cm, Schätzung)",
     "wago-211-501": "Menge unbekannt – für Endlosschlauch nennt keine Quelle eine Grenze",
+    "wago-211-502": "Menge unbekannt – für Endlosschlauch nennt keine Quelle eine Grenze",
     "wago-2009-110": "Menge unbekannt – für Endlosstreifen nennt keine Quelle eine Grenze",
 }
 _CUSTOM_CONTINUOUS_COST = "Menge unbekannt – für Endlosmaterial nennt keine Quelle eine Grenze"
 
-# Measuring pattern on continuous stock: 40 mm, 30 mm on the tube (§4.11).
+# Measuring pattern on continuous stock: 40 mm, 30 mm on a tube (§4.11).
 PATTERN_LENGTH_MM = 40
 PATTERN_LENGTH_TUBE_MM = 30
-TUBE_MATERIAL_ID = "wago-211-501"
+# The heat-shrink tubes. Equal to ``schemas.panel_enclosure.TUBE_MATERIAL_IDS``
+# (the §14a block's choice; a test keeps the two the same).
+TUBE_MATERIAL_IDS: frozenset[str] = frozenset({"wago-211-501", "wago-211-502"})
 
 
 def autosense_cost_hint(profile: MaterialProfile) -> str:
@@ -195,7 +223,7 @@ def autosense_cost_hint(profile: MaterialProfile) -> str:
 
 
 def pattern_length_mm(profile: MaterialProfile) -> int:
-    return PATTERN_LENGTH_TUBE_MM if profile.id == TUBE_MATERIAL_ID else PATTERN_LENGTH_MM
+    return PATTERN_LENGTH_TUBE_MM if profile.id in TUBE_MATERIAL_IDS else PATTERN_LENGTH_MM
 
 
 def pattern_cost_hint(profile: MaterialProfile, *, supported: bool) -> str:
@@ -204,5 +232,5 @@ def pattern_cost_hint(profile: MaterialProfile, *, supported: bool) -> str:
     if not profile.continuous:
         return "1 Etikett"
     fed = mm_int(pattern_length_mm(profile) + profile.x_offset_mm)
-    what = "Schlauch" if profile.id == TUBE_MATERIAL_ID else "Streifen"
+    what = "Schlauch" if profile.id in TUBE_MATERIAL_IDS else "Streifen"
     return f"≈ {fed} mm {what} (Schätzung)"

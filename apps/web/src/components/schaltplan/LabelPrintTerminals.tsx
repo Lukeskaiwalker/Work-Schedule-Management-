@@ -6,9 +6,29 @@
  * server prints with. A Leiste is drawn at the board font size with a
  * divider on every boundary, exactly like the BMK strip; a Block is the
  * owner's 60 mm blueprint with its three rows.
+ *
+ * The §14a block strip (docs/PANEL_ENCLOSURE_R4.md §9.1) is the list's last
+ * row whenever the board has a block: its labels run across the strip at
+ * its own size, so it is drawn larger and says which way it goes in. A
+ * label too long for the 5,2 mm terminal disables the row — that strip is
+ * never sent, the server would refuse it.
  */
-import { BlockSvg, StripSvg, layoutSegments } from "./StripSvg";
-import { STRIP_LEAD_MM, formatFontMm, formatMm, type BoardFontSize } from "../../utils/schaltplanStrip";
+import { useId } from "react";
+
+import { BlockSvg, StripSvg, VERTICAL_PX_PER_MM, layoutSegments, previewFontPx } from "./StripSvg";
+import {
+  CONTROL_STRIP_ID,
+  klemmenStripIds,
+  labelTooLongDetail,
+  type ControlStripItem,
+} from "../../utils/schaltplanControlStrip";
+import {
+  CONTROL_SEGMENT_MM,
+  STRIP_LEAD_MM,
+  formatFontMm,
+  formatMm,
+  type BoardFontSize,
+} from "../../utils/schaltplanStrip";
 import type { TerminalPart } from "../../utils/schaltplanTerminalRules";
 import {
   STRIP_KIND_BLOCK,
@@ -56,19 +76,43 @@ function printedMarkers(item: TerminalStripItem): number {
   return item.kind === STRIP_KIND_BLOCK ? item.cells.length : item.segments.length;
 }
 
+/** The §14a row's second line: "6 Klemmen · senkrecht · 31,2 mm". */
+export function controlStripMeta(control: ControlStripItem): string {
+  return `${terminalCountLabel(control.partCount)} · senkrecht · ${formatMm(control.lengthMm)} mm`;
+}
+
 /**
  * The preview's one-line total. `skipped` is the selection's count from
  * `terminalStrips`, not a sum over the strips: a ticked Leiste with no text
  * at all has no strip, and its terminals would otherwise vanish from the line.
+ * `control` is the ticked §14a strip: it adds its piece, its blanks and its
+ * own size (" · §14a: 3,0 mm"); without a Leiste or Block ticked the board
+ * size is left out, because nothing would print at it.
  */
-export function terminalSummary(strips: readonly TerminalStripItem[], board: BoardFontSize, skipped: number): string {
-  if (strips.length === 0) {
+export function terminalSummary(
+  strips: readonly TerminalStripItem[],
+  board: BoardFontSize,
+  skipped: number,
+  control: ControlStripItem | null = null,
+): string {
+  if (strips.length === 0 && !control) {
     return skipped > 0 ? `Nichts zu drucken · ${skipped} ohne Beschriftung` : "Keine Klemmenleiste ausgewählt.";
   }
-  const labelled = strips.reduce((sum, strip) => sum + printedMarkers(strip), 0);
-  const total = strips.reduce((sum, strip) => sum + stripTotal(strip), 0);
-  const tail = skipped > 0 ? ` · ${skipped} ohne Beschriftung` : "";
-  return `${strips.length} Streifen · ${labelled} Klemmen · ${formatMm(total)} mm Material · Schriftgröße: ${formatFontMm(board.sizeDots)} mm${tail}`;
+  const pieces = strips.length + (control ? 1 : 0);
+  const ownMarkers = control ? control.partCount - control.blankCount : 0;
+  const ownTotal = control ? controlStripTotal(control) : 0;
+  const labelled = strips.reduce((sum, strip) => sum + printedMarkers(strip), 0) + ownMarkers;
+  const total = strips.reduce((sum, strip) => sum + stripTotal(strip), 0) + ownTotal;
+  const unmarked = skipped + (control ? control.blankCount : 0);
+  const font = strips.length > 0 ? ` · Schriftgröße: ${formatFontMm(board.sizeDots)} mm` : "";
+  const own = control ? ` · §14a: ${formatFontMm(control.sizeDots)} mm` : "";
+  const tail = unmarked > 0 ? ` · ${unmarked} ohne Beschriftung` : "";
+  return `${pieces} Streifen · ${labelled} Klemmen · ${formatMm(total)} mm Material${font}${own}${tail}`;
+}
+
+/** Strip the printer feeds for the §14a piece: lead + 5,2 mm per terminal + lead. */
+function controlStripTotal(control: ControlStripItem): number {
+  return STRIP_LEAD_MM + control.lengthMm + STRIP_LEAD_MM;
 }
 
 /** Every strip of the board in order — the list's rows and the "Alle" set. */
@@ -78,24 +122,63 @@ export function boardStrips(groups: readonly TerminalGroup[]): TerminalStrip[] {
 
 type ListProps = {
   groups: readonly TerminalGroup[];
+  /** The board's §14a strip — the list's last row; null without a block. */
+  control?: ControlStripItem | null;
   selectedIds: readonly string[];
   onToggle: (stripId: string) => void;
   onToggleAll: () => void;
 };
 
-export function TerminalStripList({ groups, selectedIds, onToggle, onToggleAll }: ListProps) {
+type ControlRowProps = {
+  control: ControlStripItem;
+  selectedIds: readonly string[];
+  onToggle: (stripId: string) => void;
+};
+
+/** The §14a row: ticked like the others, disabled with the reason when a label cannot be printed. */
+function ControlStripRow({ control, selectedIds, onToggle }: ControlRowProps) {
+  const reasonId = useId();
+  const refused = control.tooLong !== null;
+  const checked = !refused && selectedIds.includes(CONTROL_STRIP_ID);
+  return (
+    <li className={checked ? "sp-label-row sp-label-row--on" : "sp-label-row"}>
+      <label className="sp-label-row-main">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={refused}
+          onChange={() => onToggle(CONTROL_STRIP_ID)}
+          aria-label={`${control.title} drucken`}
+          aria-describedby={refused ? reasonId : undefined}
+        />
+        <span className="sp-label-row-text">
+          <b>{control.title}</b>
+          <small>{controlStripMeta(control)}</small>
+          {control.tooLong !== null && (
+            <small id={reasonId} className="sp-field-hint">
+              {labelTooLongDetail(control.tooLong)}
+            </small>
+          )}
+        </span>
+      </label>
+    </li>
+  );
+}
+
+export function TerminalStripList({ groups, control = null, selectedIds, onToggle, onToggleAll }: ListProps) {
   const strips = boardStrips(groups);
-  const allSelected = strips.length > 0 && strips.every((strip) => selectedIds.includes(strip.stripId));
+  const every = klemmenStripIds(groups, control);
+  const allSelected = every.length > 0 && every.every((id) => selectedIds.includes(id));
   const itemsById = new Map(terminalStrips(groups).strips.map((item) => [item.stripId, item] as const));
   return (
     <div className="sp-field">
       <div className="sp-label-rows-head">
         <span className="sp-field-label">Klemmenleisten</span>
-        <button type="button" className="sp-label-toggle" onClick={onToggleAll} disabled={strips.length === 0}>
+        <button type="button" className="sp-label-toggle" onClick={onToggleAll} disabled={every.length === 0}>
           {allSelected ? "Keine" : "Alle"}
         </button>
       </div>
-      {strips.length === 0 ? (
+      {strips.length === 0 && !control ? (
         <p className="sp-label-empty">
           Noch keine Reihenklemmen — im Gerätedialog „Reihenklemme am Abgang“ setzen oder auf dem Klemmen-Tab
           alle auf einmal.
@@ -121,6 +204,7 @@ export function TerminalStripList({ groups, selectedIds, onToggle, onToggleAll }
               </li>
             );
           })}
+          {control && <ControlStripRow control={control} selectedIds={selectedIds} onToggle={onToggle} />}
         </ul>
       )}
     </div>
@@ -129,6 +213,8 @@ export function TerminalStripList({ groups, selectedIds, onToggle, onToggleAll }
 
 type PreviewProps = {
   strips: readonly TerminalStripItem[];
+  /** The ticked §14a strip, printable; drawn last. */
+  control?: ControlStripItem | null;
   /** The selection's unmarked Leiste terminals, dropped strips included (see `terminalSummary`). */
   skipped: number;
   board: BoardFontSize;
@@ -158,12 +244,44 @@ function StripPiece({ item, fontPx }: { item: TerminalStripItem; fontPx: number 
   );
 }
 
-export function TerminalPreview({ strips, skipped, board, fontPx, unverified }: PreviewProps) {
+/** The §14a piece: every terminal's segment, labels across it, and which way it goes in. */
+function ControlPiece({ control }: { control: ControlStripItem }) {
+  const segments = layoutSegments(
+    control.labels.map((text, index) => ({ key: `${index}-${text}`, text, widthMm: CONTROL_SEGMENT_MM })),
+  );
+  const first = control.labels.find((label) => label !== "");
+  return (
+    <div className="sp-strip-preview">
+      <div className="sp-strip-head">
+        <b>{control.title}</b>
+        <small>
+          {`${formatMm(controlStripTotal(control))} mm (${STRIP_LEAD_MM} + ${formatMm(control.lengthMm)} + ${STRIP_LEAD_MM})`}
+        </small>
+      </div>
+      {first !== undefined && (
+        <small className="sp-field-hint">
+          {`Schrift liest von unten nach oben — so einsetzen, dass „${first}“ links steht.`}
+        </small>
+      )}
+      <div className="sp-strip-scroll">
+        <StripSvg
+          vertical
+          label={control.title}
+          segments={segments}
+          lengthMm={control.lengthMm}
+          fontPx={previewFontPx(control.sizeDots, VERTICAL_PX_PER_MM)}
+        />
+      </div>
+    </div>
+  );
+}
+
+export function TerminalPreview({ strips, control = null, skipped, board, fontPx, unverified }: PreviewProps) {
   return (
     <section className="sp-label-preview" aria-label="Vorschau">
       <div className="sp-label-rows-head">
         <span className="sp-field-label">Vorschau</span>
-        <small className="sp-label-summary">{terminalSummary(strips, board, skipped)}</small>
+        <small className="sp-label-summary">{terminalSummary(strips, board, skipped, control)}</small>
       </div>
       {unverified.length > 0 && (
         <p className="sp-label-warn" role="status">
@@ -188,6 +306,7 @@ export function TerminalPreview({ strips, skipped, board, fontPx, unverified }: 
           </div>
         </div>
       ))}
+      {control && <ControlPiece control={control} />}
     </section>
   );
 }

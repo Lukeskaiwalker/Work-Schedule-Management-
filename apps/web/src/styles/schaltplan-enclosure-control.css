@@ -1,0 +1,369 @@
+/* ── Schrank: §14a block and the cabinet preparation (docs/PANEL_ENCLOSURE_R4.md §5, §8) ──
+ *
+ * Page-local sheet like schaltplan-enclosure-terminals.css, imported by the
+ * components themselves: the §14a sheet (.sp-encl-control-*), the block and
+ * the leads in the cabinet drawing (.sp-encl-control-block*, .sp-encl-run*),
+ * the field bar's "§14a-Klemmen" and "Automatisch ergänzt" (.sp-encl-prep-*).
+ * Theme colours come from the --sp-* tokens of styles.css; the WAGO housings
+ * keep their physical grey and the marker its physical white, with dark text
+ * on it in both themes.
+ *
+ * Workshop tablets and gloves: every control is 56 px, every text field 16 px
+ * (iOS Safari zooms below that). The drawing scrolls sideways in its own
+ * container (.sp-term-scroll): the app root clips overflow-x, and a 12-terminal
+ * block is wider than a phone. Grids give their text columns min-width: 0.
+ *
+ * Sections: sheet · drawing in the sheet · cabinet drawing · field bar ·
+ * Automatisch ergänzt.
+ */
+
+:root {
+  --sp-encl-control-violet: #7547c9;
+  --sp-encl-run-network: #0f8b8d;
+}
+
+/* ── Sheet ───────────────────────────────────────────────────────────────── */
+
+.sp-encl-control-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-encl-control-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) minmax(8rem, 10rem) auto;
+  grid-template-areas:
+    "pos name colour remove"
+    ". note note note";
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.sp-encl-control-pos {
+  grid-area: pos;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--muted);
+}
+
+.sp-encl-control-input {
+  grid-area: name;
+}
+
+.sp-encl-control-select {
+  grid-area: colour;
+}
+
+.sp-encl-control-row > .sp-btn {
+  grid-area: remove;
+}
+
+.sp-encl-control-row-note {
+  grid-area: note;
+}
+
+/* Below 480 px the name takes the whole first line; colour and remove share the second. */
+@media (max-width: 480px) {
+  .sp-encl-control-row {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "pos name name"
+      ". colour remove"
+      ". note note";
+  }
+}
+
+.sp-encl-control-input,
+.sp-encl-control-select,
+.sp-encl-control-sheet .sp-field input[type="text"],
+.sp-encl-control-sheet .sp-field select,
+.sp-encl-prep-item select,
+.sp-encl-prep-item .sp-field input[type="text"] {
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--sp-ink);
+  font-family: inherit;
+  /* 16 px: iOS Safari zooms the viewport on focus below that. */
+  font-size: 16px;
+}
+
+.sp-encl-control-input:disabled,
+.sp-encl-control-select:disabled,
+.sp-encl-prep-item select:disabled,
+.sp-encl-prep-item .sp-field input[type="text"]:disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.sp-encl-control-input:focus-visible,
+.sp-encl-control-select:focus-visible,
+.sp-encl-prep-item select:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 1px;
+}
+
+.sp-encl-control-actions,
+.sp-encl-control-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sp-encl-control-actions > .sp-btn,
+.sp-encl-control-footer > .sp-btn {
+  flex: 1 1 12rem;
+  min-height: 56px;
+}
+
+/* The footer row (.sp-sheet-actions wraps): the button pair, or the remove question, takes the whole row. */
+.sp-encl-control-footer,
+.sp-encl-control-sheet .sp-sheet-actions > .sp-encl-confirm {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.sp-encl-control-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 12px;
+}
+
+.sp-encl-control-warn {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--sp-warn);
+  overflow-wrap: anywhere;
+}
+
+.sp-encl-control-facts {
+  margin: 0;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--sp-ink);
+  overflow-wrap: anywhere;
+}
+
+/* ── Drawing in the sheet (ControlBlockSvg) ──────────────────────────────── */
+
+.sp-encl-control-scroll {
+  padding: 8px;
+}
+
+.sp-encl-control-svg {
+  margin: 0 auto;
+}
+
+.sp-encl-control-part {
+  stroke: var(--sp-term-outline, #2d3a48);
+  stroke-width: 1px;
+}
+
+.sp-encl-control-part--terminal {
+  fill: var(--sp-term-grey, #c9ced4);
+  fill-opacity: 0.85;
+}
+
+.sp-encl-control-part--endstop {
+  fill: #9aa3ad;
+}
+
+.sp-encl-control-part--plate {
+  fill: #7d8691;
+}
+
+.sp-encl-control-marker {
+  fill: #fff;
+  stroke: var(--sp-term-outline, #2d3a48);
+  stroke-width: 0.5px;
+}
+
+/* The marker is white on every theme: its text stays dark. */
+.sp-encl-control-svg text {
+  fill: #1c2024;
+  font-weight: 700;
+}
+
+/* ── Cabinet drawing (EnclosureFrontBoxes): the block and the leads ─────── */
+
+.sp-encl-control-block-body {
+  fill: var(--sp-term-grey, #c9ced4);
+  stroke: var(--sp-encl-control-violet);
+  stroke-width: 1.5px;
+}
+
+.sp-encl-control-block--overflow .sp-encl-control-block-body {
+  fill: #fbe9e9;
+  stroke: var(--danger);
+}
+
+.sp-encl-text--control {
+  fill: #1c2024;
+  font-weight: 700;
+}
+
+.sp-encl-run-line {
+  fill: none;
+  stroke-linecap: butt;
+  stroke-linejoin: round;
+}
+
+.sp-encl-run--supply .sp-encl-run-line {
+  stroke: var(--sp-ink);
+}
+
+.sp-encl-run--network .sp-encl-run-line {
+  stroke: var(--sp-encl-run-network);
+}
+
+.sp-encl-run--control .sp-encl-run-line {
+  stroke: var(--sp-encl-control-violet);
+}
+
+.sp-encl-run-label {
+  font-family: inherit;
+  font-weight: 600;
+  fill: var(--sp-ink);
+  stroke: var(--surface, #fff);
+  paint-order: stroke;
+  stroke-linejoin: round;
+}
+
+.sp-encl-run--network .sp-encl-run-label {
+  fill: var(--sp-encl-run-network);
+}
+
+.sp-encl-run--control .sp-encl-run-label {
+  fill: var(--sp-encl-control-violet);
+}
+
+/* ── Field bar ───────────────────────────────────────────────────────────── */
+
+.sp-encl-fieldbar-btn--control {
+  min-height: 56px;
+  border-color: var(--sp-encl-control-violet);
+}
+
+.sp-encl-fieldbar-btn--control .sp-encl-fieldbar-title {
+  color: var(--sp-encl-control-violet);
+}
+
+/* ── Automatisch ergänzt (EnclosurePrepList) ─────────────────────────────── */
+
+.sp-encl-prep {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.sp-encl-prep h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--sp-ink);
+}
+
+.sp-encl-prep-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sp-encl-prep-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 56px;
+  padding: 6px 0;
+  border-top: 1px solid var(--sp-line);
+}
+
+.sp-encl-prep-item:first-child {
+  border-top: none;
+}
+
+.sp-encl-prep-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--sp-ink);
+}
+
+.sp-encl-prep-text small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sp-encl-prep-item.is-suppressed .sp-encl-prep-line {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.sp-encl-prep-off {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sp-warn);
+}
+
+.sp-encl-prep-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sp-encl-prep-controls select {
+  width: auto;
+  max-width: 100%;
+}
+
+.sp-encl-prep-controls .sp-field {
+  width: 7.5rem;
+}
+
+.sp-encl-prep-controls .sp-btn {
+  min-height: 56px;
+}
+
+/* Phones: the controls go under the text, full width, so the text keeps its line. */
+@media (max-width: 600px) {
+  .sp-encl-prep-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sp-encl-prep-controls {
+    justify-content: flex-start;
+  }
+
+  .sp-encl-prep-controls select {
+    flex: 1 1 12rem;
+  }
+}

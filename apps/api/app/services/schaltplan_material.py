@@ -55,6 +55,7 @@ from app.schemas.schaltplan import (
     PanelMaterialSummaryOut,
 )
 from app.services import panel_enclosure_material as enclosure_material
+from app.services import panel_enclosure_prep_material as prep_material
 from app.services import panel_enclosure_terminal_material as terminal_material
 from app.services import panel_work
 from app.services.panel_enclosure_catalog import EnclosureCatalog, builtin_catalog, load_catalog
@@ -140,8 +141,10 @@ def planned_lines(
     """The board's parts: device types in catalog order, then the WAGO terminals.
 
     In a cabinet: the cabinet, modules and accessories first (U84T for the
-    WAGO rails among them), the parts taken out of a module last, and a
-    pre-fitted device is not a device line (the module counts it). The
+    WAGO rails among them), then what the cabinet preparation derives (R4 §6:
+    supply kit, infeed, joints, network lead, the §14a block and its wires),
+    the parts taken out of a module last, and a pre-fitted device is not a
+    device line (the module counts it). The
     terminals then come from the placement: no AAR/NAR/RfZ/APZ circuit, the
     end plates added (docs/PANEL_ENCLOSURE_R2.md §5). ``catalog`` defaults to
     the built-ins for pure callers; ``material_lines`` passes the merged one,
@@ -151,8 +154,11 @@ def planned_lines(
         return [*_device_lines(document), *_terminal_lines(document)]
     catalog = catalog if catalog is not None else builtin_catalog()
     terms, placement = terminal_material.board_placement(document, catalog, terms, placement)
+    prep = prep_material.prep_items(document, catalog)
     return [
-        *enclosure_material.enclosure_planned_lines(document, catalog, rail_sets=insulation_sets(placement)),
+        *enclosure_material.enclosure_planned_lines(document, catalog, rail_sets=insulation_sets(placement),
+                                                    prep_items=prep),
+        *prep_material.prep_planned_lines(prep, enclosure_material.accessory_quantities(document, catalog)),
         *_device_lines(document, skip=enclosure_material.supplied_device_ids(document, catalog), cabinet=True),
         *terminal_material.terminal_lines(document, catalog, terms, placement),
         *enclosure_material.removed_planned_lines(document, catalog),

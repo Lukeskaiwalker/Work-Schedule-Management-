@@ -11,15 +11,17 @@
  *   field bar / drawing → Reihenklemmen · Feld {n} (close-up) → Hutschiene ("Geräte bearbeiten")
  *   Hutschiene (reserved) → Reihenklemmen · Feld {n}
  *   Modul wählen        → Schrankkatalog (managers; prefilled for a shelf article)
+ *   field bar / drawing / finding → §14a-Klemmleiste → (Aderbeschriftung drucken: all sheets close, the label dialog opens)
  *   any op that re-feeds a circuit → Stromkreise ändern ihre Einspeisung
  *
  * ‹, Escape and the backdrop go back one step (`stack.back`: one sheet, or
  * the catalogue admin's form back to its list), × closes the stack — except
  * the inspector, palette and rail picker, whose × returns to the sheet
  * they were opened from: closing the inspector gives the rail back. The
- * module picker's switches ride in its stack entry, so a sheet opened on
- * top of the picker and closed again leaves them as they were.
+ * module picker's switches and search ride in its stack entry, so a sheet
+ * opened on top of the picker and closed again leaves them as they were.
  */
+import { ControlBlockSheet } from "./ControlBlockSheet";
 import { EnclosureCatalogAdmin } from "./EnclosureCatalogAdmin";
 import { EnclosurePickerSheet } from "./EnclosurePickerSheet";
 import { SheetBackdrop, SheetFrame } from "./EnclosureSheetFrame";
@@ -87,6 +89,8 @@ export interface EnclosureSheetHostProps {
   reservedRails?: ReadonlySet<string>;
   /** The terminal close-up's data; without it the close-up says it has none. */
   terminals?: TerminalSheetContext | null;
+  /** The page's label dialog in mode `adern` (R4 §9.2); the host closes the stack first. Absent = no print button. */
+  onPrintWires?: () => void;
 }
 
 const NO_RAILS: ReadonlySet<string> = new Set();
@@ -146,6 +150,8 @@ function TopSheet(props: Shared & { sheet: TabSheet }) {
           unit={sheet.unit}
           switches={sheet.switches ?? DEFAULT_PICKER_SWITCHES}
           onSwitchesChange={(switches) => stack.replaceTop({ ...sheet, switches })}
+          query={sheet.query ?? ""}
+          onQueryChange={(query) => stack.replaceTop({ ...sheet, query })}
           onPlaced={(moduleId) => stack.replaceTop({ kind: "module", moduleId })}
           onManageCatalog={() => stack.push({ kind: "catalog-admin", create: null })}
           onCreateEntry={(item) => stack.push({ kind: "catalog-admin", create: item })}
@@ -210,6 +216,8 @@ function TopSheet(props: Shared & { sheet: TabSheet }) {
           onCancel={stack.pop}
         />
       );
+    case "control-block":
+      return <ControlBlockSheet {...common} onPrintWires={printWires(stack, props.onPrintWires)} />;
     case "catalog-admin":
       return (
         <EnclosureCatalogAdmin
@@ -281,6 +289,15 @@ function TerminalsSheet(props: Shared & { sheet: Extract<TabSheet, { kind: "term
       onClose={stack.close}
     />
   );
+}
+
+/** "Aderbeschriftung drucken": the sheets close, then the page's label dialog opens over the tab. */
+function printWires(stack: SheetStack<TabSheet>, open: (() => void) | undefined): (() => void) | undefined {
+  if (!open) return undefined;
+  return () => {
+    stack.close();
+    open();
+  };
 }
 
 /** The module a sheet is about, so removing that module can drop every sheet on it. */

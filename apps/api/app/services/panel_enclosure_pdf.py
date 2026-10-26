@@ -9,11 +9,19 @@ their way to the shelf, and the warn findings as a Prüfhilfe. Each list
 stops at the column bottom with "… und {n} weitere"; when the hints did not
 all fit, the full list follows on the Materialliste's last page.
 
+The front view also draws the cabinet preparation's runs (docs/PANEL_ENCLOSURE_R4.md
+§5): the supply leads thin dashed ink, the network lead dashed teal, the
+§14a wires dashed violet, each with a small label on its longest segment
+(turned 90° on a vertical one): at the middle, else moved along the run until it
+covers no box label and no other run's label (slice D's render review).
+
 Then one WAGO close-up page per field whose terminal rails hold a strip, at
 1:1 across the rail, with a legend page where a text had to be cut
-(``panel_enclosure_pdf_terminals``, docs/PANEL_ENCLOSURE_R2.md §7.3), and
-the Materialliste pages, portrait, drawn by the same function as their own
-PDF (``schaltplan_material_pdf.draw_material_pages``).
+(``panel_enclosure_pdf_terminals``, docs/PANEL_ENCLOSURE_R2.md §7.3), the
+§14a page after its field's close-up, else right after page 1
+(``panel_enclosure_pdf_control``, R4 §9.4), and the Materialliste pages,
+portrait, drawn by the same function as their own PDF
+(``schaltplan_material_pdf.draw_material_pages``).
 
 Every position comes from ``build_enclosure_scene`` — this module only maps
 millimetres to points and draws boxes, so the sheet is the picture the
@@ -36,7 +44,9 @@ from app.models.schaltplan import PanelPlan
 from app.schemas.schaltplan import PanelMaterialOut
 from app.services.panel_enclosure_catalog import EnclosureCatalog
 from app.services.panel_enclosure_geometry import build_enclosure_scene
-from app.services.panel_enclosure_pdf_terminals import draw_terminal_closeup_pages
+from app.services.panel_enclosure_pdf_control import control_page, with_control_page
+from app.services.panel_enclosure_pdf_terminals import closeup_layout, draw_layout_pages
+from app.services.panel_enclosure_prep import cabinet_prep
 from app.services.panel_enclosure_terminal_closeup import terminal_closeup
 from app.services.panel_enclosure_terminals import BoardTerminals, board_terminals, place_terminals
 from app.services.panel_enclosure_layout import (
@@ -84,12 +94,21 @@ _FILL: Mapping[str, Any] = {
     "device": colors.white, "meter": colors.HexColor("#dbeafe"), "module": colors.white,
     # A placed WAGO strip, with its X label: the Schrank tab's WAGO grey (--sp-term-grey, R2 §8).
     "terminal_strip": colors.HexColor("#c9ced4"),
+    # The §14a block (R4 §5): the 3D view's grey.
+    "control_block": colors.HexColor("#b9c0c8"),
 }
 #: Its outline, the Schrank tab's --sp-term-outline.
 _TERMINAL_STRIP_STROKE = colors.HexColor("#2d3a48")
 #: A rail reserved for the WAGO strips (R2 §8): the Schrank tab's orange tint
 #: (--sp-term-reserved under its hatch) as one opaque print colour.
 _TERMINAL_RAIL_FILL = colors.HexColor("#f8d6b7")
+#: The runs (R4 §5): colour, line width (pt), dash (on, off in pt).
+_RUN_STYLE: Mapping[str, tuple[Any, float, tuple[float, float]]] = {
+    "supply": (INK, 0.4, (2, 2)),
+    "network": (colors.HexColor("#0f8b8d"), 0.6, (4, 3)),
+    "control": (colors.HexColor("#7547c9"), 0.6, (6, 4)),
+}
+_RUN_LABEL_SIZE = 4.5
 _ZONE_FILL: Mapping[str, Any] = {
     "NAR": colors.HexColor("#fef3c7"), "SAS": colors.HexColor("#fef3c7"), "ZF": colors.HexColor("#e0f2fe"),
     "AAR": colors.HexColor("#fff7ed"), "RFZ": colors.HexColor("#ede9fe"), "APZ": colors.HexColor("#ede9fe"),
@@ -133,8 +152,10 @@ def build_aufbau_pdf(
     sections = _sections(document, catalog, material, warnings)
     complete = column.lists(sections)
     c.showPage()
-    draw_terminal_closeup_pages(c, plan=plan, closeup=terminal_closeup(document, catalog, terms, placement),
-                                company_name=company_name)
+    closeup = closeup_layout(terminal_closeup(document, catalog, terms, placement), plan=plan,
+                             company_name=company_name)
+    draw_layout_pages(c, with_control_page(closeup, control_page(document, catalog, plan=plan,
+                                                                  company_name=company_name)))
     hints_cut = not complete.get(HINTS_TITLE, True)
     draw_material_pages(c, material=material, company_name=company_name,
                         notes_title=HINTS_TITLE if hints_cut else "", notes=warnings if hints_cut else ())
@@ -170,9 +191,100 @@ def _draw_front(c: pdfcanvas.Canvas, document: Any, catalog: EnclosureCatalog, p
               item["w"] * factor, item["h"] * factor) for item in drawn]
     for item, rect in zip(drawn, rects):
         _draw_box(c, item, rect)
+    prep = cabinet_prep(document, catalog)
+    runs = [_on_paper(run, origin_x, origin_top, factor) for run in (prep["runs"] if prep is not None else [])]
+    for run in runs:
+        _draw_run(c, run)
     # Labels last: a zone's fill (z 15) would cover its module's (z 12) otherwise.
     for item, rect in zip(drawn, rects):
         _draw_label(c, item, rect)
+    _draw_run_labels(c, runs, _text_obstacles(drawn, rects))
+
+
+def _on_paper(run: Mapping[str, Any], origin_x: float, origin_top: float, factor: float) -> dict[str, Any]:
+    """The run with its points in page points (y up)."""
+    points = [(origin_x + float(x) * factor, origin_top - float(y) * factor) for x, y in run["points"]]
+    return {"kind": run["kind"], "label": str(run.get("label") or ""), "points": points}
+
+
+def _draw_run(c: pdfcanvas.Canvas, run: Mapping[str, Any]) -> None:
+    colour, width, dash = _RUN_STYLE.get(run["kind"], _RUN_STYLE["supply"])
+    c.setStrokeColor(colour)
+    c.setLineWidth(width)
+    c.setDash(*dash)
+    points = run["points"]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        c.line(x0, y0, x1, y1)
+    c.setDash()
+
+
+_Box = tuple[float, float, float, float]  # x0, y0, x1, y1 on the page
+#: Where a run label may sit along a segment, in order of preference.
+_LABEL_STOPS = (0.5, 0.3, 0.7, 0.15, 0.85)
+
+
+def _text_obstacles(drawn: Sequence[Mapping[str, Any]], rects: Sequence[tuple[float, float, float, float]]) -> list[_Box]:
+    """Where the front view writes: every box with a centred label, and each corner label's line."""
+    boxes: list[_Box] = []
+    for item, (x, y, w, h) in zip(drawn, rects):
+        if item["kind"] in ("device", "meter", "meter_place", "terminal_strip", "control_block"):
+            boxes.append((x, y, x + w, y + h))
+        elif item["kind"] in ("module", "field") and item["label"]:
+            base = (y - _LABEL_SIZE - 1) if item["kind"] == "field" else (y + h - _LABEL_SIZE - 1)
+            width = min(stringWidth(item["label"], FONT_BOLD, _LABEL_SIZE), w - 4)
+            boxes.append((x + 2, base - 1, x + 2 + width, base + _LABEL_SIZE))
+    return boxes
+
+
+def _label_box(x: float, y: float, width: float, vertical: bool) -> _Box:
+    half_w, half_h = width / 2 + 1, _RUN_LABEL_SIZE / 2 + 1
+    return (x - half_h, y - half_w, x + half_h, y + half_w) if vertical else (x - half_w, y - half_h, x + half_w, y + half_h)
+
+
+def _clear(box: _Box, taken: Sequence[_Box]) -> bool:
+    return not any(box[0] < o[2] and o[0] < box[2] and box[1] < o[3] and o[1] < box[3] for o in taken)
+
+
+def _label_spot(run: Mapping[str, Any], taken: Sequence[_Box]) -> tuple[float, float, bool, _Box] | None:
+    """(x, y, vertical, box): the first stop, longest segment first (the first on a tie), whose
+    label box is clear; the middle of the longest segment when none is."""
+    points = run["points"]
+    if not run["label"] or len(points) < 2:
+        return None
+    width = stringWidth(run["label"], FONT, _RUN_LABEL_SIZE)
+    segments = sorted(zip(points, points[1:]), key=lambda seg: -(abs(seg[1][0] - seg[0][0]) + abs(seg[1][1] - seg[0][1])))
+    first = None
+    for (x0, y0), (x1, y1) in segments:
+        vertical = abs(y1 - y0) > abs(x1 - x0)
+        for t in _LABEL_STOPS:
+            x, y = x0 + (x1 - x0) * t, y0 + (y1 - y0) * t
+            spot = (x, y, vertical, _label_box(x, y, width, vertical))
+            first = first or spot
+            if _clear(spot[3], taken):
+                return spot
+    return first
+
+
+def _draw_run_labels(c: pdfcanvas.Canvas, runs: Sequence[Mapping[str, Any]], obstacles: Sequence[_Box]) -> None:
+    """Each run's label on a white ground; a later label also keeps clear of the earlier ones."""
+    taken = list(obstacles)
+    for run in runs:
+        spot = _label_spot(run, taken)
+        if spot is None:
+            continue
+        x, y, vertical, box = spot
+        taken.append(box)
+        width = stringWidth(run["label"], FONT, _RUN_LABEL_SIZE)
+        c.saveState()
+        c.translate(x, y)
+        if vertical:
+            c.rotate(90)  # reads bottom → top, like the drawing's other turned labels
+        c.setFillColor(colors.white)
+        c.rect(-width / 2 - 1, -_RUN_LABEL_SIZE / 2 - 1, width + 2, _RUN_LABEL_SIZE + 2, stroke=0, fill=1)
+        c.setFillColor(_RUN_STYLE.get(run["kind"], _RUN_STYLE["supply"])[0])
+        c.setFont(FONT, _RUN_LABEL_SIZE)
+        c.drawCentredString(0, -_RUN_LABEL_SIZE / 3, run["label"])
+        c.restoreState()
 
 
 def _fill(kind: str, flags: set[str], zone_type: str | None) -> Any:
@@ -190,7 +302,7 @@ def _stroke(kind: str, flags: set[str]) -> Any:
         return WARN
     if kind == "module":
         return BLUE_DEEP
-    if kind == "terminal_strip":
+    if kind in ("terminal_strip", "control_block"):
         return _TERMINAL_STRIP_STROKE
     return INK if kind in ("device", "meter") else GRID
 
@@ -211,7 +323,7 @@ def _draw_box(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, f
 
 def _draw_label(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, float, float, float]) -> None:
     kind = item["kind"]
-    if kind in ("device", "meter", "meter_place", "terminal_strip"):
+    if kind in ("device", "meter", "meter_place", "terminal_strip", "control_block"):
         _centre_label(c, item["label"], *rect)
     elif kind in ("module", "field"):
         _corner_label(c, item["label"], *rect, below=kind == "field")

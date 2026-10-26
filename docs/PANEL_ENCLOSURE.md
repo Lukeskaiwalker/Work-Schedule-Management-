@@ -360,7 +360,7 @@ module has T95L (both `verified: false`).
 | ZU37RK | distribution | 1050 | VT 0–6 (r1…r7) | — | — | — |
 | ZU37VT5APZ2 | distribution_apz | 1050 | VT 0–4 (r1…r5) · APZ 5–6 (apz, ple 6, sealable) | — | — | rj45 "RJ45-Buchse ZZ45WAN2PP" |
 | ZU37VT4APZ2 | distribution_apz | 1050 | VT 0–3 (r1…r4) · RFZ 4 (rfz) · APZ 5–6 (apz, ple 6) — order ungeprüft | — | — | rj45 |
-| ZH3ES5 | busbar | 1050 | SAS 0–1 (sas, busbar) · VT 2–6 (r1…r5) | — | — | busbar, pe_n |
+| ZH3ES5 | busbar | 1050 | VT 0–4 (r1…r5) · SAS 5–6 (sas, busbar) — round 4: SAS at the bottom (Hager photo) | — | — | busbar, pe_n |
 | ZH33SAR2 | communication | 1050 | APZ 0–1 (apz, ple 6) · RFZ 2–4 (rfz1…rfz3) · SAS 5–6 (sas, busbar) | — | — | busbar |
 | ZH5EL27 | meter_ehz | 1350 | VF 0–1 (vf1, vf2) · AAR 2–3 · RFZ 4 · ZF 5–6 · NAR 7–8 | 1 ehz | — | busbar, bke |
 | ZH5EL22 | meter_ehz | 1350 | as ZH5EL27 | 2 ehz | — | busbar, bke |
@@ -369,7 +369,7 @@ module has T95L (both `verified: false`).
 | ZU59KS | distribution | 1350 | VT 0–8 (r1…r9) | — | — | pe_n |
 | ZU59RK | distribution | 1350 | VT 0–8 | — | — | — |
 | ZU59VT7APZ2 | distribution_apz | 1350 | VT 0–6 · APZ 7–8 (ple 6) | — | — | rj45 |
-| ZH53XS | busbar | 1350 | SAS 0–1 (sas, busbar) · VT 2–8 (r1…r7) | — | — | busbar, pe_n |
+| ZH53XS | busbar | 1350 | VT 0–6 (r1…r7) · SAS 7–8 (sas, busbar) — round 4: SAS at the bottom (Hager photo) | — | — | busbar, pe_n |
 | ZH55SAR2 | communication | 1350 | APZ 0–1 · RFZ 2–6 (rfz1…rfz5) · SAS 7–8 (sas, busbar) | — | — | busbar |
 | ZY150RFZ | communication | any | RFZ 0 (rfz) | — | — | — |
 | ZU62A / ZU79A / ZU93A | cover | any | COVER 0 (1 / 2 / 3 units) | — | — | — (unverified "als Füllung ohne Einbausatz angenommen") |
@@ -378,6 +378,15 @@ module has T95L (both `verified: false`).
 ("Hutschienen-Isolierung U84T (ab Werk)") and stay verified, and four RK
 built-ins are appended: ZU37V5RKAPZ2, ZU59V7RKAPZ2, ZH3ES5RK and ZH53XSRK
 (R2 R15, §10).
+
+**Round 4 (2026-10-26, `PANEL_ENCLOSURE_R4.md` R4-9, R4-12):** the busbar
+Verteilerfelder ZH3ES5, ZH3ES5RK, ZH53XS and ZH53XSRK have their
+Sammelschienenzone at the **bottom** (VT from unit 0, SAS in the last two
+units, level with a meter field's NAR), as the Hager product photos show;
+their first `unverified` note reads "Sammelschienenzone unten laut
+Hager-Produktfoto". Keys and size are unchanged. The reserve kits ZH33XL,
+ZH53XL and ZH52XL carry `reserve_field: true` (never the §14a carrier while
+a meter field in use exists).
 
 **Round 3 (2026-10-26): the current 3-Punkt range.** The owner asked for
 ZH53X9ST, ZH50D53ST, ZH53W9SNT, ZH33W7NT and "the 3-Punkt fields with or
@@ -429,11 +438,14 @@ fields (row counts unknown), the 3-Punkt SG-only fields (ZH32U5N, ZH33Q5N,
 ZH51X2N, ZH52U2N, ZH53Q2N: a Steuergerät place, no meter place). ZH53X9ST
 shipped in round 3: the photo shows VF 2 rows plus AAR 2 rails, which
 Hager's "VT-3rh" counts as three free rows. Mandatory accessories the research names but cannot pin down
-(ZH5EL27: "ZZ35S/S35V", "ZM15H/ZM25F", ZZ60A; VZ00APZ for …APZ2 fields;
-ZZ55SAVE Feld-Feld) are **not** auto-added: the research gives alternatives
-and no quantities, and a wrong line on every board is worse than a missing
-one. Q2 asks the owner; the answer is catalogue data an admin enters, not
-code. No prices, no EANs. `source_url` from the research file. Split the data
+(ZH5EL27: "ZZ35S/S35V", "ZM15H/ZM25F", ZZ60A; VZ00APZ for …APZ2 fields)
+are **not** auto-added: the research gives alternatives and no quantities,
+and a wrong line on every board is worse than a missing one. Q2 asks the
+owner; the answer is catalogue data an admin enters, not code. **Round 4:**
+the Feld-Feld-Verbinder ZZ55SAVE, the infeed (K96ESA5 or
+Sammelschienenklemmen), the supply kit ZY… and the network lead ZZ45WAN…
+**are** now derived per board (`cabinet_prep`, `PANEL_ENCLOSURE_R4.md`
+§3.3), each with a per-board override. No prices, no EANs. `source_url` from the research file. Split the data
 file at 800 lines (`…_data_cabinets.py`, `…_data_modules.py`).
 
 ### 3.3 Storage — table `panel_catalog_entries` (model `PanelCatalogEntry` in `app/models/schaltplan.py`, exported from `entities.py`)
@@ -592,9 +604,10 @@ editor; `validate_document` itself is unchanged. Messages are prefixed
 
 Shown in the Schrank tab under the drawing with the disclaimer "Prüfhilfe nach
 VDE-AR-N 4100:2026-04 — ersetzt nicht die TAB des Netzbetreibers." and the
-line "Nicht automatisch geprüft: Spannungsabgriff für SMGW/APZ vor dem SLS ·
-RJ45 im RfZ · Einführung des Hauptkabels nicht von oben · Montagehöhe und
-Arbeitsraum · TAB des Netzbetreibers." The existing "Prüfen:" banner shows one
+line "Nicht automatisch geprüft: Zulassung der SABO durch den Netzbetreiber ·
+RJ45-Dose im RfZ · Einführung des Hauptkabels nicht von oben · Montagehöhe und
+Arbeitsraum · TAB des Netzbetreibers." (round 4: the supply tap and the
+network lead are now derived, `PANEL_ENCLOSURE_R4.md` §4). The existing "Prüfen:" banner shows one
 chip "Schrank: {n} Hinweise" (warn count) instead of the single lines, so the
 slot and circuit warnings stay visible.
 
@@ -1432,7 +1445,11 @@ recommended answer until told otherwise.
    Pflichtzubehör (ZZ35S or S35V, ZM15H or ZM25F, ZZ60A). *Recommended:* name
    the variant you buy and the quantity per field. An admin enters them as
    accessories (data, no code). v1 auto-adds only the blind plates for
-   reserve meter places.
+   reserve meter places. **Round 4 (owner, 2026-10-26):** ZZ55SAVE between
+   fields with Sammelschienen, the K96ESA5 infeed (or clamps above 25 mm²),
+   the ZY… supply kit and the ZZ45WAN… lead are derived
+   (`PANEL_ENCLOSURE_R4.md` O6–O8, §3.3); VZ00APZ and the ZH5EL27
+   Pflichtzubehör stay admin data.
 3. **Where do the WAGO Reihenklemmen strips sit in a univers Z?**
    *Recommended:* v1 states their length per field (`encl.terminals`). v2 puts
    them on their own rail at the bottom of the FI's distribution field (a
