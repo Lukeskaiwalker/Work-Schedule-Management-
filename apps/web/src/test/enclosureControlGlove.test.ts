@@ -47,6 +47,25 @@ describe("§14a sheet and prep list — glove targets", () => {
     expect(px(rule, "font-size")).toBe(16);
   });
 
+  // WebKit's menulist theme overrides min-height on a native select (macOS 18 px,
+  // iOS 29 px — measured 24 and 42 px): only a select without the native look
+  // and a fixed height reaches the 56 px glove target.
+  it.each([
+    ".sp-encl-control-select",
+    ".sp-encl-control-sheet .sp-field select",
+    ".sp-encl-prep-item select",
+  ])("%s drops the native look and is a fixed 56 px", (selector) => {
+    const rule = declarationsFor(selector);
+    expect(rule).toMatch(/(?:^|;|\s)appearance:\s*none/);
+    expect(rule).toMatch(/-webkit-appearance:\s*none/);
+    expect(px(rule, "height")).toBe(56);
+    expect(rule).toMatch(/background-image:\s*url\(/);
+  });
+
+  it("keeps the chevron on a disabled select", () => {
+    expect(declarationsFor(".sp-encl-prep-item select:disabled")).not.toMatch(/(?:^|;|\s)background\s*:/);
+  });
+
   it.each([
     ".sp-encl-control-actions > .sp-btn",
     ".sp-encl-control-footer > .sp-btn",

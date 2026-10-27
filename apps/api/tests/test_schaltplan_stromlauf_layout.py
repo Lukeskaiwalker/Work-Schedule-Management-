@@ -244,11 +244,33 @@ def test_the_first_band_opens_with_the_supply_and_the_feeder_chain() -> None:
     assert kinds.count("sls") == 2 and kinds.count("switch") == 2 and kinds.count("fuse") == 1
 
 
+def _length(points: list) -> float:
+    total = 0.0
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        total += abs(x1 - x0) + abs(y1 - y0)
+    return total
+
+
 def test_unknown_phases_are_drawn_in_warn_and_counted_once_per_sheet() -> None:
     sheets = _sheets(_board(2, 6, unknown=True))
-    assert sum(1 for sheet in sheets for w in sheet["wires"] if w["conductor"] == "L?") >= 12
+    unknown = [w for sheet in sheets for w in sheet["wires"] if w["conductor"] == "L?"]
+    assert len(unknown) >= 12
     assert sheets[0]["note"] == "L? = Phase nicht angegeben (12 Stromkreise)"
     assert _sheets(_board(2, 6))[0]["note"] == ""
+    # Review 2: an L? core was a 4 pt stub and the FI's phase outputs dead-ended 3 pt under
+    # the box — no LS met its FI. The core now comes down from above the sub-bus (crossing it,
+    # hops, no dot: no phase is claimed) and the sub-bus runs on to it.
+    assert all(_length(w["points"]) > 20 for w in unknown)
+    for sheet in sheets:
+        for box in (b for b in sheet["boxes"] if b["kind"] == "rcd"):
+            for pole in (p for p in box["poles"] if p["conductor"] in ("L1", "L2", "L3")):
+                leaving = [w for w in sheet["wires"] if w["conductor"] == pole["conductor"]
+                           and any(abs(pt[0] - pole["x"]) < 0.05 for pt in w["points"])
+                           and min(pt[1] for pt in w["points"]) < box["y"]]
+                assert any(_length(w["points"]) > 10 for w in leaving), (box, pole)
+        dots = {tuple(d) for d in sheet["dots"]}
+        for wire in (w for w in sheet["wires"] if w["conductor"] == "L?"):
+            assert tuple(wire["points"][0]) not in dots
 
 
 def test_column_width_follows_the_core_count() -> None:
@@ -292,3 +314,44 @@ def test_a_label_word_too_wide_at_7_pt_steps_down_to_6_5_pt_before_it_is_cut() -
     assert by_text["Wärmepumpe"]["size"] == 6.5 and by_text["Steuerung"]["size"] == 6.5
     assert by_text["Licht Flur"]["size"] == 7.0
     assert any(t["text"].startswith("Hauswirt") and t["text"].endswith("…") for t in texts)
+
+
+def _long_chain(depth: int, incoming: str = "NYY-J 5x16 mm²", system: str = "TN-S") -> dict:
+    devices = [_device("q0", "sls", te=3, poles=3, designation="Q0", rating="E35")]
+    for i in range(1, depth + 1):
+        devices.append(_device(f"q{i}", "hauptschalter", te=3, poles=3, designation=f"Q{i}", rating="63 A",
+                               parent_id=f"q{i - 1}"))
+    devices += [_device("f1", "rcd", te=4, poles=4, rating="40 A", residual_current="30 mA", rcd_type="A",
+                        parent_id=f"q{depth}"),
+                _ls("f1.1", 1), _ls("f1.2", 2, phase="L2"), _ls("f1.3", 3, phase="L3")]
+    document = _document(devices)
+    document["supply"] = {**document["supply"], "incoming": incoming, "system": system}
+    document["rows"][0]["slots"] = 96
+    return document
+
+
+@pytest.mark.parametrize(("incoming", "system"), [("NYY-J 5x16 mm²", "TN-S"), ("NYY-J 4x16", "TN-C-S")])
+def test_a_feeder_chain_too_long_for_a_band_ends_with_a_note_instead_of_spinning(incoming: str, system: str) -> None:
+    """Review 2: 16+ feeders in series left less than two columns of room; the
+    packer retried the same placement on a fresh band forever (the plan PDF hung
+    its worker until the OOM kill)."""
+    import signal
+
+    def _timeout(*_args: object) -> None:
+        raise TimeoutError("layout_stromlauf did not finish")
+
+    previous = signal.signal(signal.SIGALRM, _timeout)
+    signal.alarm(10)
+    try:
+        sheets = _sheets(_long_chain(19, incoming, system))
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+    assert len(sheets) == 1
+    texts = [t["text"] for t in sheets[0]["texts"]]
+    assert any(text.startswith("Stromlaufplan allpolig nicht gezeichnet: Einspeisekette zu lang") for text in texts)
+    for text in sheets[0]["texts"]:
+        assert _inside(_text_box(text)), text["text"]
+    # A chain that fits is still drawn as before.
+    assert len(_sheets(_long_chain(5, incoming, system))) >= 1
+    assert not any("nicht gezeichnet" in t["text"] for s in _sheets(_long_chain(5, incoming, system)) for t in s["texts"])

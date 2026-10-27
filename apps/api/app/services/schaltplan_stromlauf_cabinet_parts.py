@@ -161,7 +161,7 @@ class NetworkLead:
 class ControlBand:
     """The §14a block as the band draws it (R4 §2.1, §3.2)."""
 
-    terminals: tuple[tuple[int, str, str], ...]  # (position, label, colour), left → right
+    terminals: tuple[tuple[str, str, str], ...]  # (stored id, label, colour), left → right
     rail_title: str          # "F1 · AAR 1"
     wires: str               # "6 × H07V-K 2,5 mm²"; "" without a target
     target: str              # "RfZ Feld 1" | "APZ Feld 3"; "" without one
@@ -261,7 +261,7 @@ def control_band(document: Any, catalog: EnclosureCatalog, state: PrepState) -> 
     layout = state.layout
     if layout is None:
         return None
-    terminals = tuple((position, str(t["label"]), str(t["color"])) for position, t in enumerate(layout.terminals, 1))
+    terminals = tuple((str(t["id"]), str(t["label"]), str(t["color"])) for t in layout.terminals)
     run = next((r for r in state.runs if r["kind"] == "control"), None)
     target = control_target(document, catalog, state.carrier)
     luester = prep_item(state, "control", "prep:luesterklemme")

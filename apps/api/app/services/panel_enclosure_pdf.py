@@ -109,6 +109,9 @@ _RUN_STYLE: Mapping[str, tuple[Any, float, tuple[float, float]]] = {
     "control": (colors.HexColor("#7547c9"), 0.6, (6, 4)),
 }
 _RUN_LABEL_SIZE = 4.5
+#: Each lead kind runs this far off the shared line (pt, both axes): the SABO
+#: supply, the network lead and the §14a wires often take the same path.
+_RUN_OFFSET: Mapping[str, float] = {"supply": 0.0, "network": 1.2, "control": -1.2}
 _ZONE_FILL: Mapping[str, Any] = {
     "NAR": colors.HexColor("#fef3c7"), "SAS": colors.HexColor("#fef3c7"), "ZF": colors.HexColor("#e0f2fe"),
     "AAR": colors.HexColor("#fff7ed"), "RFZ": colors.HexColor("#ede9fe"), "APZ": colors.HexColor("#ede9fe"),
@@ -202,8 +205,10 @@ def _draw_front(c: pdfcanvas.Canvas, document: Any, catalog: EnclosureCatalog, p
 
 
 def _on_paper(run: Mapping[str, Any], origin_x: float, origin_top: float, factor: float) -> dict[str, Any]:
-    """The run with its points in page points (y up)."""
-    points = [(origin_x + float(x) * factor, origin_top - float(y) * factor) for x, y in run["points"]]
+    """The run with its points in page points (y up), moved off the shared line by its kind
+    (``_RUN_OFFSET``; drawing only — the lengths and the TS twin keep the scene points)."""
+    shift = _RUN_OFFSET.get(str(run["kind"]), 0.0)
+    points = [(origin_x + float(x) * factor + shift, origin_top - float(y) * factor + shift) for x, y in run["points"]]
     return {"kind": run["kind"], "label": str(run.get("label") or ""), "points": points}
 
 
@@ -324,19 +329,32 @@ def _draw_box(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, f
 def _draw_label(c: pdfcanvas.Canvas, item: Mapping[str, Any], rect: tuple[float, float, float, float]) -> None:
     kind = item["kind"]
     if kind in ("device", "meter", "meter_place", "terminal_strip", "control_block"):
-        _centre_label(c, item["label"], *rect)
+        ground = _fill(kind, set(item["flags"]), item["zoneType"]) or colors.white
+        _centre_label(c, item["label"], *rect, ground=ground)
     elif kind in ("module", "field"):
         _corner_label(c, item["label"], *rect, below=kind == "field")
 
 
-def _centre_label(c: pdfcanvas.Canvas, label: str, x: float, y: float, w: float, h: float) -> None:
-    """Horizontal when it fits, else turned 90° inside the box; hidden below 2 mm (§4)."""
+def _knock_out(c: pdfcanvas.Canvas, centre_x: float, baseline: float, text_w: float, ground: Any) -> None:
+    """The text's own ground in the box's fill, so a lead drawn before stops at the label."""
+    c.setFillColor(ground)
+    c.rect(centre_x - text_w / 2 - 0.5, baseline - _LABEL_SIZE * 0.22 - 0.5, text_w + 1,
+           _LABEL_SIZE * 0.97 + 1, stroke=0, fill=1)
+    c.setFillColor(INK)
+
+
+def _centre_label(c: pdfcanvas.Canvas, label: str, x: float, y: float, w: float, h: float, *, ground: Any) -> None:
+    """Horizontal when it fits, else turned 90° inside the box; hidden below 2 mm (§4).
+    On a knock-out in ``ground``: the leads are drawn first and must not strike it through."""
     if not label or w < _MIN_LABEL_W:
         return
     c.setFillColor(INK)
     c.setFont(FONT, _LABEL_SIZE)
-    if stringWidth(label, FONT, _LABEL_SIZE) <= w - 1:
-        c.drawCentredString(x + w / 2, y + h / 2 - _LABEL_SIZE / 3, label)
+    width = stringWidth(label, FONT, _LABEL_SIZE)
+    if width <= w - 1:
+        baseline = y + h / 2 - _LABEL_SIZE / 3
+        _knock_out(c, x + w / 2, baseline, width, ground)
+        c.drawCentredString(x + w / 2, baseline, label)
         return
     fitted = wrap(label, FONT, _LABEL_SIZE, h - 2, 1)
     if not fitted:
@@ -344,6 +362,7 @@ def _centre_label(c: pdfcanvas.Canvas, label: str, x: float, y: float, w: float,
     c.saveState()
     c.translate(x + w / 2 + _LABEL_SIZE / 3, y + h / 2)
     c.rotate(90)
+    _knock_out(c, 0, 0, stringWidth(fitted[0], FONT, _LABEL_SIZE), ground)
     c.drawCentredString(0, 0, fitted[0])
     c.restoreState()
 

@@ -13,6 +13,7 @@
 
 import { parseFuseAmps } from "./cableSectionParse";
 import type { CatalogIndex } from "./enclosureCatalog";
+import { edgeTrimmed } from "./edgeTrim";
 import {
   DERIVE,
   candidateRails,
@@ -32,6 +33,7 @@ import {
   busbarZones,
   controlTarget,
   joined,
+  otherMeters,
   spansOverlap,
   type BusbarZone,
   type PrepState,
@@ -43,8 +45,8 @@ import type { PanelFinding } from "../types/schaltplan";
 export const PREP_RULE_ORDER = [
   "encl.control_block_missing", "encl.control_block_reserve", "encl.control_block_rail",
   "encl.control_block_overflow", "encl.control_block_target", "encl.control_block_bdew", "encl.control_tube",
-  "encl.busbar_unjoined", "encl.busbar_role", "encl.supply_height", "encl.supply_existing",
-  "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.pen_split",
+  "encl.busbar_unjoined", "encl.busbar_meters", "encl.busbar_role", "encl.supply_height", "encl.supply_existing",
+  "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.infeed_small", "encl.pen_split",
 ] as const;
 /** The number of terminals the BDEW Anwendungshilfe (Tab. 1) and VDE-AR-N 4100 name. */
 export const BDEW_TERMINALS = 6;
@@ -64,6 +66,12 @@ const COPY = {
   tube: (mm2: number) => `Schrumpfschlauch 211-501 passt nur auf 0,75–1 mm² — Leitung ist ${formatMmText(mm2)} mm².`,
   gap: (a: number, b: number) =>
     `Sammelschienen in Feld ${a} und Feld ${b} sind nicht verbunden: dazwischen liegt kein Feld mit Sammelschiene.`,
+  gapCustomerBetween: (a: number, b: number) =>
+    `Sammelschienen in Feld ${a} und Feld ${b} sind nicht verbunden: dazwischen liegt Kundenverteilung (gezählt), keine Hauptleitung.`,
+  gapMainBetween: (a: number, b: number) =>
+    `Kundensammelschienen in Feld ${a} und Feld ${b} sind nicht verbunden: dazwischen liegt die Hauptleitung (ungezählt).`,
+  meters: (a: number, b: number) =>
+    `Sammelschienen in Feld ${a} und Feld ${b} gehören zu verschiedenen Zählern und werden nicht verbunden.`,
   height: (a: number, b: number) => `Sammelschienen in Feld ${a} und Feld ${b} liegen nicht auf gleicher Höhe.`,
   role: (customer: number, main: number) =>
     `Sammelschiene in Feld ${customer} ist Kundenverteilung (gezählt) und wird nicht mit dem NAR von Feld ${main} verbunden.`,
@@ -76,6 +84,9 @@ const COPY = {
   infeedFuse: (fuse: string) => `Einspeiseadapter K96ESA5 nur hinter höchstens NH00 gG 100 A: Vorsicherung „${fuse}“ prüfen.`,
   infeedSize: (mm2: number) =>
     `Zuleitung ${formatMmText(mm2)} mm²: keine Sammelschienenklemme für 12×5 mm bis 185 mm² — Einspeisung gesondert planen.`,
+  infeedSmall: (mm2: number, aluminium: boolean) =>
+    `Zuleitung ${formatMmText(mm2)} mm²${aluminium ? " Al" : ""}: keine Sammelschienenklemme für 12×5 mm in diesem Querschnitt — ${
+      aluminium ? "Einspeisung gesondert planen" : "Einspeiseadapter K96ESA5 verwenden"}.`,
   penSplit: (field: number) => `Zuleitung 4-adrig im TN-C-S-System: PEN im NAR von Feld ${field} in PE und N aufteilen.`,
 } as const;
 
@@ -122,25 +133,37 @@ function placedRules(doc: unknown, index: CatalogIndex, block: ControlBlock, lay
 
 // ── Busbars ──────────────────────────────────────────────────────────────────
 
-function roleGaps(members: readonly BusbarZone[]): PanelFinding[] {
+/** The unjoined gap: no busbar between (any role), or only the other role's busbars (R4-11). */
+function gapText(a: number, b: number, role: string, filled: boolean): string {
+  if (!filled) return COPY.gap(a + 1, b + 1);
+  return role === ROLE_MAIN ? COPY.gapCustomerBetween(a + 1, b + 1) : COPY.gapMainBetween(a + 1, b + 1);
+}
+
+function roleGaps(members: readonly BusbarZone[], busbarFields: ReadonlySet<number>, role: string): PanelFinding[] {
   const fields = [...new Set(members.map((zone) => zone.field))].sort((a, b) => a - b);
   const out: PanelFinding[] = [];
   fields.slice(1).forEach((b, i) => {
     const a = fields[i];
+    const pairs = members.filter((x) => x.field === a).flatMap((x) => members.filter((y) => y.field === b).map((y) => [x, y] as const));
     if (b > a + 1) {
-      out.push(finding("encl.busbar_unjoined", "warn", "", COPY.gap(a + 1, b + 1)));
+      // Two meters' busbars stay apart anyway: no gap to close.
+      if (pairs.some(([x, y]) => otherMeters(x, y))) return;
+      let filled = false;
+      for (let field = a + 1; field < b; field += 1) if (busbarFields.has(field)) filled = true;
+      out.push(finding("encl.busbar_unjoined", "warn", "", gapText(a, b, role, filled)));
       return;
     }
-    const pairs = members.filter((x) => x.field === a).flatMap((x) => members.filter((y) => y.field === b).map((y) => [x, y] as const));
     if (pairs.some(([x, y]) => joined(x, y))) return;
-    if (pairs.some(([x, y]) => x.moduleId !== y.moduleId)) out.push(finding("encl.busbar_unjoined", "warn", "", COPY.height(a + 1, b + 1)));
+    if (pairs.some(([x, y]) => otherMeters(x, y))) out.push(finding("encl.busbar_meters", "info", "", COPY.meters(a + 1, b + 1)));
+    else if (pairs.some(([x, y]) => x.moduleId !== y.moduleId)) out.push(finding("encl.busbar_unjoined", "warn", "", COPY.height(a + 1, b + 1)));
   });
   return out;
 }
 
 function busbarRules(doc: unknown, index: CatalogIndex): PanelFinding[] {
   const zones = busbarZones(doc, index);
-  const out = [ROLE_MAIN, ROLE_CUSTOMER].flatMap((role) => roleGaps(zones.filter((zone) => zone.role === role)));
+  const busbarFields = new Set(zones.map((zone) => zone.field));
+  const out = [ROLE_MAIN, ROLE_CUSTOMER].flatMap((role) => roleGaps(zones.filter((zone) => zone.role === role), busbarFields, role));
   const seen = new Set<string>();
   for (const main of zones.filter((zone) => zone.role === ROLE_MAIN)) {
     for (const customer of zones.filter((zone) => zone.role === ROLE_CUSTOMER)) {
@@ -168,10 +191,11 @@ function supplyRules(doc: unknown, state: PrepState): PanelFinding[] {
   const supply = isRecord(doc) && isRecord(doc.supply) ? doc.supply : {};
   const amps = parseFuseAmps(supply.fuse);
   if (activeItem(state, "accessory:K96ESA5") && amps !== null && amps > K96ESA5_MAX_FUSE_A) {
-    const fuse = typeof supply.fuse === "string" ? supply.fuse.trim() : "";
+    const fuse = edgeTrimmed(supply.fuse);
     out.push(finding("encl.infeed_fuse", "warn", "", COPY.infeedFuse(fuse)));
   }
   if (facts.infeedSize !== undefined && facts.infeedSize !== null) out.push(finding("encl.infeed_size", "warn", "", COPY.infeedSize(facts.infeedSize)));
+  if (facts.infeedSmall) out.push(finding("encl.infeed_small", "warn", "", COPY.infeedSmall(facts.infeedSmall.mm2, facts.infeedSmall.aluminium)));
   if (facts.penField !== undefined) out.push(finding("encl.pen_split", "info", "", COPY.penSplit(facts.penField + 1)));
   return out;
 }

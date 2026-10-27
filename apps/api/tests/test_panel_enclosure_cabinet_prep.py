@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 import pytest
 
 from app.schemas.panel_enclosure import EnclosureSpec, parse_prep
 from app.services.panel_enclosure_catalog import CatalogEntry, EnclosureCatalog, builtin_catalog
 from app.services.panel_enclosure_control_block import default_control_block
+from app.services.panel_enclosure_geometry import mm_text
 from app.services.panel_enclosure_prep import (
     HAGER_NETWORK_TABLE,
     busbar_runs,
@@ -22,12 +24,15 @@ from app.services.panel_enclosure_prep import (
     joint_pairs,
     make_run,
     parse_infeed,
+    rating,
     wire_dm,
 )
+from app.services.schaltplan_terminal_rules import rating_amps
 from scripts.write_enclosure_fixtures import (
     BOARDS,
     FIXTURE_PATH,
     PREP_PARSE_CASES,
+    RATING_PARSE_CASES,
     busbar_gap_zb34s,
     control_3p_zb53s,
     control_ehz_zb33s,
@@ -37,6 +42,7 @@ from scripts.write_enclosure_fixtures import (
     module,
     reserve_zb33s,
     row,
+    two_meters_busbar_zb34s,
 )
 
 CATALOG = builtin_catalog()
@@ -73,6 +79,26 @@ def test_the_fixture_pins_every_board_s_prep_and_the_override_table() -> None:
     for name, make in BOARDS.items():
         assert fixture["boards"][name]["prep"] == cabinet_prep(make(), catalog), name
     assert [entry["output"] for entry in fixture["prep_parse"]] == [parse_prep(case) for case in PREP_PARSE_CASES]
+
+
+def test_ratings_read_ascii_digits_only_as_the_ts_twin_does() -> None:
+    """Python ``\\d`` and ``float`` accept every Unicode digit, JS ``\\d`` only
+    0–9: "B１０" was a 10 A tap on the server and none in the editor."""
+    for value in ("B\uff11\uff10", "B\u0666"):
+        assert rating({"rating": value}) is None
+        assert rating_amps(value) is None
+    assert rating({"rating": "B10"}) == 10.0 and rating({"rating": "0,5 A"}) == 0.5
+    fixture = _fixture()
+    assert [entry["input"] for entry in fixture["rating_parse"]] == list(RATING_PARSE_CASES)
+    assert [entry["output"] for entry in fixture["rating_parse"]] == [rating({"rating": v}) for v in RATING_PARSE_CASES]
+
+
+def test_a_non_ascii_digit_rating_is_no_existing_tap() -> None:
+    doc = control_ehz_zb33s()
+    nar = next(r for r in doc["rows"] if r["id"] == "row-a-nar")
+    nar["devices"].append(dev("dev-f0", "mcb", designation="F0", rating="B\uff11\uff10"))
+    kit = _item(_prep(doc), "accessory:ZY3N2SA")
+    assert kit["qty"] == 1 and kit["suppressed"] is False
 
 
 def test_parse_prep_is_lenient() -> None:
@@ -284,7 +310,11 @@ def test_a_cabinet_height_without_a_hager_kit_gets_no_item() -> None:
     ("NAYY-J", None, "K96N", 5, "Zuleitung Al, Querschnitt unbekannt: eine Klemme je Leiter"),
     ("NYY-J 5x50", "K96ESA5", "K96ESA5", 1, "Einspeiseadapter manuell gewählt · Zuleitung 50 mm²"),
     ("", "K96ESA5", "K96ESA5", 1, "Einspeiseadapter manuell gewählt"),
-    ("NYY-J 5x16", "clamps", "K96F", 5, "Zuleitung 16 mm²: eine Klemme je Leiter"),
+    # Forced clamps on a small Cu infeed: K96C (2,5–35 mm²), never K96F (from 25 mm²).
+    ("NYY-J 5x16", "clamps", "K96C", 5, "Zuleitung 16 mm²: eine Klemme je Leiter"),
+    ("NYY-J 5x10", "clamps", "K96C", 5, "Zuleitung 10 mm²: eine Klemme je Leiter"),
+    ("NYY-J 4x16", "clamps", "K96C", 4, "Zuleitung 16 mm²: eine Klemme je Leiter"),
+    ("NYY-J 5x25", "clamps", "K96F", 5, "Zuleitung 25 mm²: eine Klemme je Leiter"),
     ("", "clamps", "K96F", 5, "Querschnitt unbekannt: eine Klemme je Leiter"),
 ])
 def test_the_infeed_matrix(incoming: str, choice: str | None, article: str, qty: int, reason: str) -> None:
@@ -294,6 +324,29 @@ def test_the_infeed_matrix(incoming: str, choice: str | None, article: str, qty:
     assert (infeed["articleNo"], infeed["qty"], infeed["reason"]) == (article, qty, reason)
     assert infeed["verified"] is (article == "K96ESA5")
     assert infeed["override"] == (choice or "auto")
+
+
+_CLAMP_RANGE = re.compile(r"Sammelschienenklemme ([0-9,]+)–([0-9,]+) mm²")
+
+
+@pytest.mark.parametrize("aluminium", [False, True])
+def test_every_chosen_clamp_holds_the_conductor_its_label_names(aluminium: bool) -> None:
+    for mm2 in (1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185):
+        incoming = f"{'NAYY-J' if aluminium else 'NYY-J'} 5x{mm_text(mm2)}"
+        doc = _doc("ZB33S", [module("m-e", "ZH3EL27", 0, {})], supply={"incoming": incoming}, prep={"infeed": "clamps"})
+        clamp = next((i for i in _prep(doc)["items"] if i["group"] == "busbar" and i["key"] != "prep:pen_split"), None)
+        if clamp is None:
+            assert mm2 < (10 if aluminium else 2.5), incoming
+            continue
+        low, high = (float(v.replace(",", ".")) for v in _CLAMP_RANGE.search(clamp["label"]).groups())
+        assert low <= mm2 <= high, (incoming, clamp["articleNo"])
+
+
+def test_a_conductor_too_small_for_any_clamp_gets_no_item() -> None:
+    doc = _doc("ZB33S", [module("m-e", "ZH3EL27", 0, {})], supply={"incoming": "NYM-J 5x1,5"}, prep={"infeed": "clamps"})
+    prep = _prep(doc)
+    assert [item for item in prep["items"] if item["group"] == "busbar"] == []
+    assert prep["infeed"]["article"] is None
 
 
 def test_above_185_mm2_no_clamp_fits_and_off_keeps_the_auto_article() -> None:
@@ -351,8 +404,31 @@ def test_joints_connect_same_role_neighbours_at_the_same_height_only() -> None:
     assert joint_pairs(busbar_zones(two_customers, CATALOG)) == [("customer", 0, 1)]
     prep = _prep(two_customers)
     assert _items(prep) == [("accessory:ZZ55SAVE", 1)]  # no main zone: no infeed, no carrier: no kit
+    # Nothing on either rail names a meter: planned, but to be checked (R4-11).
+    joint = _item(prep, "accessory:ZZ55SAVE")
+    assert joint["verified"] is False and joint["reason"] == "1 Feldübergang: Feld 1–2 · Feld 1–2: Zähler prüfen"
     mismatch = _doc("ZB54S", [module("m-e", "ZH3EL27", 0, {}), module("m-f", "ZH5EL27", 1, {})])
     assert joint_pairs(busbar_zones(mismatch, CATALOG)) == []
+
+
+def test_customer_busbars_of_different_meters_are_not_joined() -> None:
+    """R4-11: a ZZ55SAVE between the busbars of two meters would bypass one of them."""
+    apart = two_meters_busbar_zb34s()
+    zones = busbar_zones(apart, CATALOG)
+    assert [(z.field, z.role, sorted(z.meters)) for z in zones] == [
+        (0, "main", []), (1, "main", []), (2, "customer", ["mod-m1"]), (3, "customer", ["mod-m2"])]
+    assert joint_pairs(zones) == [("main", 0, 1)]
+    joint = _item(_prep(apart), "accessory:ZZ55SAVE")
+    assert (joint["qty"], joint["verified"], joint["reason"]) == (1, True, "1 Feldübergang: Feld 1–2")
+    same = two_meters_busbar_zb34s(second_feed="dev-m1-q1")
+    assert joint_pairs(busbar_zones(same, CATALOG)) == [("main", 0, 1), ("customer", 2, 3)]
+    joint = _item(_prep(same), "accessory:ZZ55SAVE")
+    assert (joint["qty"], joint["verified"], joint["reason"]) == (2, True, "2 Feldübergänge: Feld 1–2, Feld 3–4")
+    empty = two_meters_busbar_zb34s(second_feed=None)
+    assert joint_pairs(busbar_zones(empty, CATALOG)) == [("main", 0, 1), ("customer", 2, 3)]
+    joint = _item(_prep(empty), "accessory:ZZ55SAVE")
+    assert (joint["qty"], joint["verified"]) == (2, False)
+    assert joint["reason"] == "2 Feldübergänge: Feld 1–2, Feld 3–4 · Feld 3–4: Zähler prüfen"
 
 
 def test_runs_count_infeeds_and_joints_list_their_fields() -> None:

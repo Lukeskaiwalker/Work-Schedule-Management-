@@ -80,7 +80,9 @@ describe("the picture", () => {
     const strips = placement.fields.flatMap((field) => field.rails.flatMap((rail) => rail.strips));
     const shapes = container.querySelectorAll('.sp-encl-picture [data-kind="terminal_strip"]');
     expect(shapes).toHaveLength(strips.length);
-    expect(container.querySelector('[data-box-id="terminal:dev-f1:leiste"]')).toHaveTextContent("X1");
+    expect(container.querySelector('[data-box-id="terminal:dev-f1:leiste"]')).not.toBeNull();
+    // Labels are a pass of their own, after the boxes (and the leads).
+    expect(container.querySelector('.sp-encl-labels [data-label-for="terminal:dev-f1:leiste"]')).toHaveTextContent("X1");
     for (const railKey of ["r1", "r2"]) {
       expect(container.querySelector(`[data-box-id="rail:mod-a:${railKey}"]`)).toHaveClass("sp-encl-rail--terminals");
     }

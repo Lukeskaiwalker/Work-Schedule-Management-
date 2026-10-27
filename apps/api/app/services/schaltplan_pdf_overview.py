@@ -237,8 +237,12 @@ def _ordered_loads(groups: Sequence[Mapping[str, Any]]) -> list[tuple[Mapping[st
     return sorted(loads, key=lambda pair: order[pair[1]])
 
 
-def _pack(loads: Sequence[tuple[Mapping[str, Any], str]]) -> list[list[list[Chunk]]]:
-    """Chunks per band per sheet (sheet numbers not yet linked)."""
+def _pack(loads: Sequence[tuple[Mapping[str, Any], str]], *, keep_whole: bool = True) -> list[list[list[Chunk]]]:
+    """Chunks per band per sheet (sheet numbers not yet linked).
+
+    ``keep_whole``: a group that does not fit the rest of a band but fits the
+    next, empty band whole moves there instead of being torn at the band end.
+    """
     sheets: list[list[list[Chunk]]] = [[[], []]]
     band = 0
 
@@ -264,6 +268,10 @@ def _pack(loads: Sequence[tuple[Mapping[str, Any], str]]) -> list[list[list[Chun
             if x + whole <= DRAW_X1:
                 sheets[-1][band].append(Chunk(group, start, total, x, whole, source))
                 break
+            following = 1 if band == 0 else 0
+            if keep_whole and start == 0 and sheets[-1][band] and BAND_X0[following] + whole <= DRAW_X1:
+                advance()
+                continue
             fit = int((DRAW_X1 - x) // _COL_W)
             if fit < 2:  # a chunk is at least two columns, or its head has no room
                 advance()
@@ -312,8 +320,15 @@ def _segments(band: Sequence[Chunk], band_index: int, groups: Sequence[Mapping[s
 
 
 def paginate_overview(groups: Sequence[Mapping[str, Any]]) -> list[OverviewSheet]:
-    """Pack the load groups into two bands per sheet; split what does not fit (§4)."""
-    sheets = _link(_pack(_ordered_loads(groups)))
+    """Pack the load groups into two bands per sheet; split what does not fit (§4).
+
+    A group is split only when it does not fit an empty band, or when keeping
+    the groups whole would cost a sheet: both packings are tried, the whole one
+    wins unless it needs more sheets.
+    """
+    loads = _ordered_loads(groups)
+    whole, split = _pack(loads, keep_whole=True), _pack(loads, keep_whole=False)
+    sheets = _link(whole if len(whole) <= len(split) else split)
     return [
         OverviewSheet(
             bands=(tuple(sheet[0]), tuple(sheet[1])),

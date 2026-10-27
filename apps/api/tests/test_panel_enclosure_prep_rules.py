@@ -7,13 +7,18 @@ for the TypeScript twin.
 
 from __future__ import annotations
 
+import json
+
 from app.schemas.panel_enclosure import EnclosureSpec, ModuleSpec
 from app.services.panel_enclosure_catalog import CatalogEntry, EnclosureCatalog, builtin_catalog
 from app.services.panel_enclosure_control_block import default_control_block
 from app.services.panel_enclosure_prep_rules import PREP_RULE_ORDER, prep_findings
 from app.services.panel_enclosure_rules import RULE_ORDER, enclosure_findings
+from app.services.panel_enclosure_layout import text
 from app.services.panel_enclosure_terminal_rules import TERMINAL_RULE_ORDER
 from scripts.write_enclosure_fixtures import (
+    EDGE_TRIM_CASES,
+    FIXTURE_PATH,
     busbar_gap_zb34s,
     control_3p_zb53s,
     dev,
@@ -23,6 +28,7 @@ from scripts.write_enclosure_fixtures import (
     module,
     reserve_zb33s,
     row,
+    two_meters_busbar_zb34s,
 )
 
 CATALOG = builtin_catalog()
@@ -81,8 +87,9 @@ def test_the_round_four_rules_sit_between_the_meter_places_and_the_terminals() -
     assert PREP_RULE_ORDER == (
         "encl.control_block_missing", "encl.control_block_reserve", "encl.control_block_rail",
         "encl.control_block_overflow", "encl.control_block_target", "encl.control_block_bdew", "encl.control_tube",
-        "encl.busbar_unjoined", "encl.busbar_role", "encl.supply_height", "encl.supply_existing",
-        "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.pen_split",
+        "encl.busbar_unjoined", "encl.busbar_meters", "encl.busbar_role", "encl.supply_height",
+        "encl.supply_existing", "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.infeed_small",
+        "encl.pen_split",
     )
     start = RULE_ORDER.index(PREP_RULE_ORDER[0])
     assert RULE_ORDER[start - 1] == "encl.meter_place_invalid"
@@ -176,6 +183,38 @@ def test_a_field_without_busbar_between_two_main_runs() -> None:
                      "Sammelschiene.")]
 
 
+def test_a_gap_filled_by_the_other_role_names_the_role() -> None:
+    """Customer busbars between two NAR runs: the gap is the role split, not a missing busbar."""
+    doc = _doc("ZB33S", [module("m-a", "ZH3EL27", 0, {}), module("m-s", "ZH3ES5", 1, {}),
+                         module("m-b", "ZH3EL27", 2, {})])
+    assert _rule(doc, "encl.busbar_unjoined") == [
+        ("warn", "", "Sammelschienen in Feld 1 und Feld 3 sind nicht verbunden: dazwischen liegt Kundenverteilung "
+                     "(gezählt), keine Hauptleitung.")]
+    customers = _doc("ZB33S", [module("m-a", "ZH3ES5", 0, {}), module("m-e", "ZH3EL27", 1, {}),
+                               module("m-b", "ZH3ES5", 2, {})])
+    assert ("warn", "", "Kundensammelschienen in Feld 1 und Feld 3 sind nicht verbunden: dazwischen liegt die "
+                        "Hauptleitung (ungezählt).") in _rule(customers, "encl.busbar_unjoined")
+
+
+def test_customer_busbars_of_different_meters_are_named_and_never_called_unjoined() -> None:
+    assert _rule(two_meters_busbar_zb34s(), "encl.busbar_meters") == [
+        ("info", "", "Sammelschienen in Feld 3 und Feld 4 gehören zu verschiedenen Zählern und werden nicht "
+                     "verbunden.")]
+    assert _rule(two_meters_busbar_zb34s(), "encl.busbar_unjoined") == []
+    assert _rule(two_meters_busbar_zb34s(second_feed="dev-m1-q1"), "encl.busbar_meters") == []
+    # Two flats, each with its meter field and its own distribution: no gap to close between them.
+    rows = [*_feed_rows("a", "F1 · AAR 1", "F2 · Verteiler 3"), *_feed_rows("b", "F3 · AAR 1", "F4 · Verteiler 3")]
+    flats = _doc("ZB34S", [module("m-a", "ZH3EL27", 0, {"aar1": "r-a-hs"}), module("m-s", "ZH3ES5", 1, {"r3": "r-a-v"}),
+                           module("m-b", "ZH3EL27", 2, {"aar1": "r-b-hs"}), module("m-t", "ZH3ES5", 3, {"r3": "r-b-v"})],
+                 rows)
+    assert [m for _l, _s, m in _rule(flats, "encl.busbar_unjoined") if m.startswith("Kundensammelschienen")] == []
+
+
+def _feed_rows(prefix: str, switch_rail: str, rail: str) -> list[dict]:
+    return [row(f"r-{prefix}-hs", switch_rail, [dev(f"d-{prefix}-q", "hauptschalter", designation=f"Q{prefix}")]),
+            row(f"r-{prefix}-v", rail, [dev(f"d-{prefix}-f", "rcd", designation=f"F{prefix}", parent_id=f"d-{prefix}-q")])]
+
+
 def test_neighbours_at_different_heights() -> None:
     doc = _doc("ZB54S", [module("m-e", "ZH3EL27", 0, {}), module("m-f", "ZH5EL27", 1, {})])
     assert _rule(doc, "encl.busbar_unjoined") == [
@@ -223,6 +262,31 @@ def test_infeed_assumed_fuse_size_and_pen_split() -> None:
                      "planen.")]
     assert _rule(reserve_zb33s(), "encl.pen_split") == [
         ("info", "", "Zuleitung 4-adrig im TN-C-S-System: PEN im NAR von Feld 1 in PE und N aufteilen.")]
+
+
+def test_a_conductor_too_small_for_any_clamp_is_named() -> None:
+    doc = _doc("ZB33S", [module("m-e", "ZH3EL27", 0, {})], supply={"incoming": "NYM-J 5x1,5"}, prep={"infeed": "clamps"})
+    assert _rule(doc, "encl.infeed_small") == [
+        ("warn", "", "Zuleitung 1,5 mm²: keine Sammelschienenklemme für 12×5 mm in diesem Querschnitt — "
+                     "Einspeiseadapter K96ESA5 verwenden.")]
+    al = _doc("ZB33S", [module("m-e", "ZH3EL27", 0, {})], supply={"incoming": "NAYY-J 4x6"})
+    assert _rule(al, "encl.infeed_small") == [
+        ("warn", "", "Zuleitung 6 mm² Al: keine Sammelschienenklemme für 12×5 mm in diesem Querschnitt — "
+                     "Einspeisung gesondert planen.")]
+    assert _rule(_doc("ZB33S", [module("m-e", "ZH3EL27", 0, {})], supply={"incoming": "NYM-J 5x1,5"}),
+                 "encl.infeed_small") == []  # the automatic adapter takes it
+
+
+def test_the_edge_trim_is_one_set_on_both_twins() -> None:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    assert [entry["output"] for entry in fixture["edge_trim"]] == [text(v) for v in EDGE_TRIM_CASES]
+    assert [text(v) for v in ("\ufeff", "\ufeffQ1", "Q1\u001c", "\u0085", " F1 ")] == ["", "Q1", "Q1", "", "F1"]
+    rows = [row("r-nar", "F1 · NAR", [dev("d-tap", "mcb", designation="\ufeff", rating="B6")])]
+    doc = _doc("ZB33S", [module("m-e", "ZH3EL27", 0, {"nar": "r-nar"})], rows,
+               supply={"incoming": "", "fuse": "\ufeffNH00 160 A\u001c"})
+    assert _rule(doc, "encl.infeed_fuse") == [
+        ("warn", "", "Einspeiseadapter K96ESA5 nur hinter höchstens NH00 gG 100 A: Vorsicherung „NH00 160 A“ prüfen.")]
+    assert _rule(doc, "encl.supply_existing")[0][2].startswith("Spannungsabgriff bereits geplant (LS, F1 · NAR)")
 
 
 def test_the_fuse_note_needs_an_active_adapter() -> None:

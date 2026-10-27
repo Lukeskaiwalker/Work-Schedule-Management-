@@ -340,6 +340,12 @@ def _cover(code: str, units: int) -> dict[str, Any]:
                    [_zone("cover", "COVER", 0, units)], unverified=(_COVER_ONLY,))
 
 
+#: Built-ins hager.com marks "Auslaufprodukt" (checked 2026-10-26): they ship
+#: archived — still resolving for the boards that use them, never offered in
+#: the picker (owner's standing rule: no discontinued Hager article). An admin
+#: may restore one in the catalogue admin. Codes stay (append-only, §3.5).
+DISCONTINUED_BUILTINS: frozenset[str] = frozenset({"ZU37V5RKAPZ2", "ZU59V7RKAPZ2", "ZH3ES5RK", "ZH53XSRK"})
+
 BUILTIN_MODULES: list[dict[str, Any]] = [
     _ehz("ZH3EL27", "Komplettfeld eHZ, 1 Zählerplatz, 10 mm², 1050 mm", 1050, 1, wiring=10),
     _ehz("ZH3EL22", "Komplettfeld eHZ, 2 Zählerplätze, 1050 mm", 1050, 2),
@@ -393,7 +399,7 @@ BUILTIN_MODULES: list[dict[str, Any]] = [
     # Round 2 (docs/PANEL_ENCLOSURE_R2.md §10, R15): the RK siblings of the
     # APZ and busbar fields. Rows, height, "APZ unten", "mit SaS 12x5mm" and
     # "ohne QC-Klemmen" are on the hager.com catalogue pages (2026-10-22),
-    # which mark all four "Auslaufprodukt". No RJ45 socket is named there, so
+    # which mark all four "Auslaufprodukt" (they ship archived, DISCONTINUED_BUILTINS). No RJ45 socket is named there, so
     # none is listed (fitting keys are append-only; leaving it out is the
     # reversible choice). Appended: codes and keys never move (§3.5).
     _with_apz("ZU37V5RKAPZ2", "Verteilerfeld, 5 Reihen, für Reihenklemmen, APZ unten, 1050 mm", 1050, 5,

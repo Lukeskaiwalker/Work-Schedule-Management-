@@ -232,7 +232,7 @@ VARIANT_NO_RCD = "no_rcd"
 # for a 3-pole MCB with more than 16 A".
 BLOCK_MIN_AMPS_EXCLUSIVE = 16
 
-_AMPS_RE = re.compile(r"(\d+(?:[.,]\d+)?)")
+_AMPS_RE = re.compile(r"([0-9]+(?:[.,][0-9]+)?)", re.ASCII)  # ASCII, as the TS twin's \d
 
 
 def is_terminal_eligible(device: dict[str, Any]) -> bool:

@@ -268,7 +268,8 @@ const isBlankAccessory = (item: AccessoryDraft) => !item.article_no.trim() && !i
 function accessorySpecs(items: readonly AccessoryDraft[]): AccessorySpec[] {
   return items
     .filter((item) => !isBlankAccessory(item))
-    .map((item) => ({ article_no: item.article_no.trim(), label: item.label.trim(), qty: item.qty, verified: item.verified }));
+    // Upper-cased like the API's AccessorySpec: the Materialliste merges by article number.
+    .map((item) => ({ article_no: item.article_no.trim().toUpperCase(), label: item.label.trim(), qty: item.qty, verified: item.verified }));
 }
 
 function metadata(draft: CatalogDraft): Record<string, unknown> {

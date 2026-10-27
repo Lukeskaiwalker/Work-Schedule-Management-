@@ -20,6 +20,7 @@ import pytest
 from app.services.panel_enclosure_catalog import builtin_catalog
 from app.services.panel_enclosure_control_block import default_control_block
 from app.services.schaltplan_stromlauf_cabinet import meter_side_ids
+from app.services.schaltplan_stromlauf_layout_control import stub_groups
 from app.services.schaltplan_stromlauf_layout import Frame, layout_stromlauf
 from app.services.schaltplan_stromlauf_layout_routes import on_segment, segments
 from app.services.schaltplan_stromlauf_model import build_stromlauf_model
@@ -259,8 +260,21 @@ def _check_control_net(sheet: dict) -> None:
 
 
 def _check_lane_xrefs(sheets: list[dict]) -> None:
-    """"→ Sammelschiene Blatt k" on a cabinet sheet c ⇒ sheet k says "von Blatt c"."""
+    """"→ Sammelschiene Blatt k" on a cabinet sheet c ⇒ sheet k says "von Blatt c"; and back: a
+    distribution sheet k that says "von Blatt c" / "von Einspeisung · Blatt c" ⇒ cabinet sheet c
+    has a "→ … Blatt k" (review 2: the NAR's own distribution had no counterpart)."""
     by_number = {sheet["number"]: sheet for sheet in sheets}
+    for sheet in sheets:
+        if sheet["kind"] != "distribution":
+            continue
+        for text in sheet["texts"]:
+            for prefix in ("von Einspeisung · Blatt ", "von Blatt "):
+                if text["text"].startswith(prefix) and text["text"].removeprefix(prefix).isdigit():
+                    cabinet = by_number[int(text["text"].removeprefix(prefix))]
+                    if cabinet["kind"] != "cabinet":
+                        continue
+                    assert any(t["text"].startswith("→ ") and t["text"].endswith(f" Blatt {sheet['number']}")
+                               for t in cabinet["texts"]), (text["text"], sheet["number"])
     for sheet in _cabinet(sheets):
         for text in sheet["texts"]:
             if text["text"].startswith("→ Sammelschiene Blatt "):
@@ -374,3 +388,156 @@ def test_a_missing_device_s_placeholder_text_is_never_shortened(name: str) -> No
     texts = _texts(_cabinet(_sheets(fx.BOARDS[name]())))
     assert not any("…" in t and t.startswith(("kein", "Trenn")) for t in texts), texts
     assert "keine" in texts and "Trennvorrichtung" in texts
+
+
+# ── §14a stub roles follow the clamp, not its position (review 2) ────────────
+
+
+def test_stub_roles_follow_the_clamp_not_its_position() -> None:
+    """control_3p_zb53s has "0%" removed and "60%" renamed "P60": by position
+    UStve read "→ Erzeugungsanlage" and Stve "← gemessener Bereich"."""
+    texts = _texts(_cabinet(_sheets(fx.control_3p_zb53s())))
+    assert "UNSM ← gemessener Bereich (Erzeugungsanlage/Kundenanlage)" in texts
+    assert "P60 / 30% → Erzeugungsanlage" in texts
+    assert "UStve ← gemessener Bereich" in texts and "Stve → steuVE" in texts
+    assert not [t for t in texts if t in ("UStve → Erzeugungsanlage", "Stve ← gemessener Bereich")
+                or t.startswith("P60 / 30% / UStve")]
+
+
+def _terminals(*pairs: tuple[str, str]) -> list[tuple[str, str, str]]:
+    return [(terminal_id, label, "braun") for terminal_id, label in pairs]
+
+
+def test_stub_groups_by_bdew_name_then_seeded_slot_and_contiguous_only() -> None:
+    no_unsm = _terminals(("t2", "60%"), ("t3", "30%"), ("t4", "0%"), ("t5", "UStve"), ("t6", "Stve"))
+    assert [text for _, text in stub_groups(no_unsm)] == [
+        "60% / 30% / 0% → Erzeugungsanlage", "UStve ← gemessener Bereich", "Stve → steuVE"]
+    # "0%" removed, then "+ Klemme" before the fix reused t4 at the right end: no role there.
+    readded = _terminals(("t1", "UNSM"), ("t2", "60%"), ("t3", "30%"), ("t5", "UStve"), ("t6", "Stve"), ("t4", ""))
+    groups = stub_groups(readded)
+    assert [members for members, _ in groups] == [[0], [1, 2], [3], [4], [5]]
+    assert groups[-1][1] == ""
+    # Heat pump only: the three reduction outputs removed.
+    heat_pump = _terminals(("t1", "UNSM"), ("t5", "UStve"), ("t6", "Stve"))
+    assert [text for _, text in stub_groups(heat_pump)] == [
+        "UNSM ← gemessener Bereich (Erzeugungsanlage/Kundenanlage)", "UStve ← gemessener Bereich", "Stve → steuVE"]
+    # Case and spaces do not matter; an added clamp t7 with a name has its name only.
+    loose = _terminals(("t1", "unsm"), ("t2", "60 %"), ("t7", "WP"))
+    assert [text for _, text in stub_groups(loose)] == [
+        "unsm ← gemessener Bereich (Erzeugungsanlage/Kundenanlage)", "60 % → Erzeugungsanlage", "WP"]
+
+
+# ── RCBO behind the main switch (review 2) ───────────────────────────────────
+
+
+def _with_q1_children(*devices: dict) -> dict:
+    document = copy.deepcopy(fx.meter_dist_zb33s())
+    row = next(r for r in document["rows"] if r["id"] == "row-v2")
+    row["devices"] = [*row["devices"], *devices]
+    return document
+
+
+def _rcbo(device_id: str, bmk: str, rcd_type: str = "B") -> dict:
+    return fx.dev(device_id, "rcbo", designation=bmk, rating="C32", residual_current="30 mA", rcd_type=rcd_type,
+                  circuit="9", label="Wallbox", cable="NYM-J 5x6 mm²", parent_id="dev-q1", phase="L1-L3",
+                  te=4, poles=4)
+
+
+def _distribution_texts(document: dict) -> list[str]:
+    return _texts([s for s in _sheets(document) if s["kind"] == "distribution"])
+
+
+def test_a_headless_group_of_rcbos_is_not_called_unprotected() -> None:
+    """A wallbox RCBO Typ B straight behind Q1 HS read "OHNE FI-SCHUTZ"."""
+    texts = _distribution_texts(_with_q1_children(_rcbo("dev-wb", "F9")))
+    assert "OHNE FI-SCHUTZ" not in texts and "OHNE" not in texts
+    assert "FI/LS je Stromkreis" in texts
+    assert "30 mA" in texts and "Typ B" in texts
+    group = next(g for g in _model(_with_q1_children(_rcbo("dev-wb", "F9"))).groups if g.head.unit is None)
+    assert group.box == "device"
+
+
+def test_a_mixed_headless_group_warns_and_names_the_unprotected_circuits() -> None:
+    plain = fx.ls("dev-x", "F8", "8", "Außenlicht", parent_id="dev-q1")
+    document = _with_q1_children(_rcbo("dev-wb", "F9"), plain)
+    texts = _distribution_texts(document)
+    assert "OHNE FI-SCHUTZ" in texts and "ohne FI: F8" in texts
+    assert next(g for g in _model(document).groups if g.head.unit is None).box == "warn"
+
+
+def test_an_rcbo_without_values_shows_dashes() -> None:
+    bare = fx.dev("dev-wb", "rcbo", designation="F9", rating="C32", circuit="9", label="Wallbox",
+                  cable="NYM-J 5x6 mm²", parent_id="dev-q1", phase="L1-L3", te=4, poles=4)
+    texts = _distribution_texts(_with_q1_children(bare))
+    assert "Typ —" in texts and "IΔn —" not in texts
+
+
+def test_an_unknown_infeed_never_states_the_pen_split_as_fact() -> None:
+    texts = _texts(_sheets(fx.busbar_gap_zb34s()))  # TN-C-S, Zuleitung empty
+    assert "PEN-Aufteilung im HAK" not in texts
+    assert "PEN-Aufteilungspunkt unbekannt" in texts
+
+
+def test_an_unlinked_fi_on_a_cabinet_board_is_flagged() -> None:
+    """"+ Gerät" leaves an FI without "Eingespeist von": its circuits hang off the NAR. The lane
+    must not say "keine Stromkreise geplant", and the NAR points to that distribution."""
+    document = copy.deepcopy(fx.meter_dist_zb33s())
+    for row in document["rows"]:
+        for device in row["devices"]:
+            if device["id"] in ("dev-f1", "dev-f2", "dev-f3"):
+                device["parent_id"] = None
+    sheets = _sheets(document)
+    texts = _texts(_cabinet(sheets))
+    assert "keine Stromkreise geplant" not in texts
+    assert "Verteilung nicht verknüpft" in texts and "„Eingespeist von“ am FI setzen" in texts
+    marker = next(t for t in texts if t.startswith("→ Verteilung ohne Zähler Blatt "))
+    target = int(marker.rsplit(" ", 1)[1])
+    first = _cabinet(sheets)[0]["number"]
+    assert f"von Einspeisung · Blatt {first}" in _texts([s for s in sheets if s["number"] == target])
+    _check_lane_xrefs(sheets)
+    # The shipped reference board (every FI linked) keeps its plain lane text.
+    assert not any(t.startswith("→ Verteilung ohne Zähler") for t in _texts(_cabinet(_sheets(fx.meter_dist_zb33s()))))
+
+
+# ── Überspannungsschutz (review 2) ───────────────────────────────────────────
+
+
+def _spd(device_id: str, bmk: str, rating: str, **extra: Any) -> dict:
+    return fx.dev(device_id, "spd", designation=bmk, rating=rating, **extra)
+
+
+def _with_spds() -> dict:
+    document = copy.deepcopy(fx.meter_dist_zb33s())
+    rows = {r["id"]: r for r in document["rows"]}
+    rows["row-nar"]["devices"].append(_spd("dev-fs0", "FS0", "Typ 1+2"))
+    rows["row-v1"]["devices"].insert(0, _spd("dev-fs9", "FS9", "Typ 2", parent_id="dev-q1"))
+    return document
+
+
+def test_spds_are_drawn_on_the_cabinet_and_the_distribution_sheets() -> None:
+    sheets = _sheets(_with_spds())
+    assert "Überspannungsschutz FS0 · Typ 1+2 (NAR)" in _texts(_cabinet(sheets))
+    distribution = [s for s in sheets if s["kind"] == "distribution"]
+    boxes = [(s, b) for s in distribution for b in s["boxes"] if b["kind"] == "spd"]
+    assert len(boxes) == 1
+    sheet, box = boxes[0]
+    assert {"FS9", "Typ 2"} <= set(_texts([sheet]))
+    assert [p["conductor"] for p in box["poles"]] == ["L1", "L2", "L3", "N"]
+    pe = [w for w in sheet["wires"] if w["conductor"] == "PE" and any(abs(p[0] - (box["x"] + box["w"])) < 12 for p in w["points"])]
+    assert pe, "the SPD's PE drop to the PE rail"
+    for s in sheets:
+        _check_sheet(s)
+    _check_markers(sheets)
+
+
+def test_an_spd_before_the_first_fi_is_drawn_off_the_bus() -> None:
+    document = copy.deepcopy(fx.meter_dist_zb33s())
+    document["enclosure"] = None
+    rows = {r["id"]: r for r in document["rows"]}
+    rows["row-v1"]["devices"].insert(0, _spd("dev-fs1", "FS1", "Typ 2"))
+    rows["row-v1"]["devices"][1]["parent_id"] = None
+    sheets = _sheets(document)
+    assert any(b["kind"] == "spd" for s in sheets for b in s["boxes"])
+    assert "FS1" in _texts(sheets)
+    for s in sheets:
+        _check_sheet(s)

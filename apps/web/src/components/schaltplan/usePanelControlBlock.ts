@@ -6,6 +6,9 @@
  * - `printKlemmen`: the Klemmen print opens with every strip ticked, the
  *   §14a strip last (`klemmenStripIds`; a strip with a label too long to
  *   print is left out);
+ * - `hasControlStrip`: a block that is not removed — also when a label is too
+ *   long, so the dialog opens and names that label instead of a greyed-out
+ *   button without a reason;
  * - `printWires`: the label dialog in mode `adern`, only while the board has
  *   a block that is not removed (the Klemmen tab's button, the §14a sheet);
  * - `infeedHint`: the Daten tab's "Querschnitt erkannt: …", derived only
@@ -44,5 +47,5 @@ export function usePanelControlBlock({ document, index, groups, wantHint, openLa
     () => (block && !block.off ? () => openLabels([WIRE_STRIP_ID], "adern") : undefined),
     [block, openLabels],
   );
-  return { infeedHint: hint, printKlemmen, printWires, hasControlStrip: control !== null && control.tooLong === null };
+  return { infeedHint: hint, printKlemmen, printWires, hasControlStrip: control !== null };
 }

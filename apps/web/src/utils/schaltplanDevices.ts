@@ -8,7 +8,7 @@
  * touching both files (and `types/schaltplan.ts`).
  */
 
-import type { DeviceKind, DeviceSymbol, PanelDevice, PanelDocument } from "../types/schaltplan";
+import type { DeviceKind, DeviceSymbol, PanelDevice, PanelDocument, PanelRow, PhaseLabel } from "../types/schaltplan";
 
 export interface DeviceCatalogEntry {
   kind: DeviceKind;
@@ -201,6 +201,26 @@ export function rowUsedSlots(row: { devices: PanelDevice[] }): number {
  * Numeric circuit labels only; a board using "K1"/"K2" keeps its scheme and
  * simply gets no suggestion rather than a nonsensical "1" alongside "K7".
  */
+/** Load balancing by habit: consecutive breakers rotate through the phases. */
+export const PHASE_ROTATION: readonly PhaseLabel[] = ["L1", "L2", "L3"];
+
+const isSinglePhaseBreaker = (device: PanelDevice): boolean => (device.kind === "mcb" || device.kind === "rcbo") && device.poles <= 2;
+
+/**
+ * A new breaker for `row`: the next free Stromkreis-Nr., and — 1- or
+ * 2-polig — the next phase of the rotation over the row's single-phase
+ * breakers, as the row templates do. Phase "-" would leave its L core
+ * unconnected on the allpolig sheets.
+ */
+export function newBreaker(document: PanelDocument, row: PanelRow | undefined, kind: DeviceKind): PanelDevice {
+  const fresh = makeDevice(kind);
+  if (fresh.kind !== "mcb" && fresh.kind !== "rcbo") return fresh;
+  const circuit = nextCircuitNumber(document);
+  if (!isSinglePhaseBreaker(fresh)) return { ...fresh, circuit };
+  const count = (row?.devices ?? []).filter(isSinglePhaseBreaker).length;
+  return { ...fresh, circuit, phase: PHASE_ROTATION[count % PHASE_ROTATION.length] };
+}
+
 export function nextCircuitNumber(document: PanelDocument): string {
   let highest = 0;
   for (const row of document.rows) {

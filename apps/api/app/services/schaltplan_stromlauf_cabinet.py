@@ -92,6 +92,7 @@ class Lane:
     carrier: bool           # the first lane of the §14a block's carrier: the kit and the band hang here
     tap: tuple[str, str]    # (module id, zone type) of the busbar zone it taps
     segment: int = 0        # index into ``CabinetSection.segments``
+    spds: tuple[str, ...] = ()  # "Überspannungsschutz FS0 · Typ 1+2 (NAR)" on the module's NAR/AAR rails
 
     @property
     def title(self) -> str:
@@ -119,6 +120,7 @@ class CabinetSection:
     meter_side_ids: frozenset[str]
     locations: Mapping[str, str]     # device id → "AAR Feld 1"
     fields: Mapping[str, int]        # device id → its 0-based cabinet field (devices on cabinet rails)
+    spd_ids: frozenset[str] = frozenset()  # SPDs on a meter module's NAR/AAR: drawn in their lane, not below
 
     def lane_of(self, device_id: str) -> Lane | None:
         return next((lane for lane in self.lanes if device_id in {u.id for u in lane.units}), None)
@@ -257,7 +259,8 @@ def cabinet_section(document: Any, catalog: EnclosureCatalog | None, topology: M
     if not lanes:
         return None
     segments = nar_segments(document, catalog, state)
-    lanes = [replace(lane, segment=_tap_segment(lane, segments)) for lane in lanes]
+    spds = [p for p in placed if p.kind == "spd" and p.zone_type in ("NAR", "AAR")]
+    lanes = [replace(lane, segment=_tap_segment(lane, segments), spds=_lane_spds(lane, lanes, spds)) for lane in lanes]
     side = [p for p in placed if is_meter_side(p)]
     kit = supply_kit(document, catalog, state, side)
     drawn = frozenset(unit.id for lane in lanes for unit in lane.units)
@@ -270,4 +273,18 @@ def cabinet_section(document: Any, catalog: EnclosureCatalog | None, topology: M
         meter_side_ids=frozenset(p.id for p in side),
         locations={p.id: f"AAR Feld {p.field + 1}" for p in placed if p.zone_type == "AAR" and p.id not in drawn},
         fields={p.id: p.field for p in placed},
+        spd_ids=frozenset(p.id for p in spds),
     )
+
+
+def _lane_spds(lane: Lane, lanes: Sequence[Lane], spds: Sequence[Placed]) -> tuple[str, ...]:
+    """The SPDs of the lane's module, on its first lane: "Überspannungsschutz FS0 · Typ 1+2 (NAR)"."""
+    first = next(other for other in lanes if other.module_id == lane.module_id)
+    if first.key != lane.key:
+        return ()
+    out = []
+    for placed in spds:
+        if placed.module_id == lane.module_id:
+            unit = make_unit(placed.device)
+            out.append(" · ".join(p for p in (f"Überspannungsschutz {unit.bmk}", unit.rating) if p) + f" ({placed.zone_type})")
+    return tuple(out)

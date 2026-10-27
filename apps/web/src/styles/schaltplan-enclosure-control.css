@@ -98,11 +98,27 @@
   font-size: 16px;
 }
 
+/* WebKit's menulist theme overrides min-height on a native select (macOS
+   18 px, iOS 29 px — measured 24 and 42 px tall): the selects drop the native
+   look, take a fixed 56 px and draw their own chevron (.werkstatt-field-select). */
+.sp-encl-control-select,
+.sp-encl-control-sheet .sp-field select,
+.sp-encl-prep-item select {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 56px;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%235C7895' stroke-width='1.5' fill='none' stroke-linecap='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+}
+
+/* background-color only: the shorthand would drop the select's chevron. */
 .sp-encl-control-input:disabled,
 .sp-encl-control-select:disabled,
 .sp-encl-prep-item select:disabled,
 .sp-encl-prep-item .sp-field input[type="text"]:disabled {
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   color: var(--muted);
 }
 
@@ -244,12 +260,25 @@
   stroke-linejoin: round;
 }
 
-.sp-encl-run--network .sp-encl-run-label {
+.sp-encl-run-label--network {
   fill: var(--sp-encl-run-network);
 }
 
-.sp-encl-run--control .sp-encl-run-label {
+.sp-encl-run-label--control {
   fill: var(--sp-encl-control-violet);
+}
+
+/* While leads are drawn every box label sits on a halo of the surface colour,
+   drawn after the leads: a lead ending on a rail or meter runs under its name. */
+.sp-encl-text--halo {
+  stroke: var(--surface, #fff);
+  paint-order: stroke;
+  stroke-linejoin: round;
+}
+
+.sp-encl-text--control.sp-encl-text--halo,
+.sp-encl-text--strip.sp-encl-text--halo {
+  stroke: var(--sp-term-grey, #c9ced4);
 }
 
 /* ── Field bar ───────────────────────────────────────────────────────────── */

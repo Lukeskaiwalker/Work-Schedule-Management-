@@ -77,8 +77,10 @@ def test_outgoing_conductors_read_the_cross_section() -> None:
         ("TN-S", "NYY-J 5x16 mm²", ("L1", "L2", "L3", "N", "PE"), "", "", ""),
         ("TN-C-S", "NYY-J 5x16 mm²", ("L1", "L2", "L3", "N", "PE"), "PEN-Aufteilung im HAK", "", ""),
         ("TN-C-S", "NYY-J 4x35", ("L1", "L2", "L3", "PEN"), "PEN-Aufteilung im NAR", "", ""),
-        ("TN-C-S", "Hausanschluss", ("L1", "L2", "L3", "N", "PE"), "PEN-Aufteilung im HAK",
-         "Aufteilungspunkt unbekannt", ""),
+        # Cores unknown: the split point is not stated as fact next to "unknown" (review 2).
+        ("TN-C-S", "Hausanschluss", ("L1", "L2", "L3", "N", "PE"), "", "PEN-Aufteilungspunkt unbekannt", ""),
+        ("TN-C-S", "", ("L1", "L2", "L3", "N", "PE"), "", "PEN-Aufteilungspunkt unbekannt", ""),
+        ("TN-C-S", None, ("L1", "L2", "L3", "N", "PE"), "", "PEN-Aufteilungspunkt unbekannt", ""),
         ("TT", "NYY-J 5x16", ("L1", "L2", "L3", "N"), "", "", "PE (Anlagenerder)"),
         ("IT", "NYY-J 4x16", ("L1", "L2", "L3"), "", "", "Anlagenerder"),
         ("IT", "NYY-J 5x16", ("L1", "L2", "L3", "N"), "", "", "Anlagenerder"),
@@ -89,6 +91,7 @@ def test_supply_conductors(system: str, incoming: str, conductors: tuple[str, ..
                            pe_from: str) -> None:
     supply = supply_conductors(system, incoming)
     assert (supply.conductors, supply.label, supply.warn, supply.pe_from) == (conductors, label, warn, pe_from)
+    assert not (supply.label and supply.warn)  # never a fact and "unknown" side by side
 
 
 def test_one_sheet_note_counts_the_unknown_phases() -> None:

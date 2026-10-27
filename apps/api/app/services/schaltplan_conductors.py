@@ -109,7 +109,7 @@ class SupplyConductors:
 
     conductors: tuple[str, ...]
     label: str = ""      # "PEN-Aufteilung im HAK" / "… im NAR"
-    warn: str = ""       # "Aufteilungspunkt unbekannt"
+    warn: str = ""       # "PEN-Aufteilungspunkt unbekannt" (never together with a label)
     pe_from: str = ""    # "PE (Anlagenerder)" (TT) / "Anlagenerder" (IT)
     cores: int | None = None
     mm2: float | None = None
@@ -124,8 +124,10 @@ def supply_conductors(system: Any, incoming: Any) -> SupplyConductors:
     if name == "TN-C-S":
         if cores == 4:
             return SupplyConductors((*PHASES, "PEN"), "PEN-Aufteilung im NAR", cores=cores, mm2=mm2)
-        warn = "" if cores == 5 else "Aufteilungspunkt unbekannt"
-        return SupplyConductors(five, "PEN-Aufteilung im HAK", warn, cores=cores, mm2=mm2)
+        if cores == 5:
+            return SupplyConductors(five, "PEN-Aufteilung im HAK", cores=cores, mm2=mm2)
+        # Cores unknown: drawn as five conductors, but the split point is not stated as a fact.
+        return SupplyConductors(five, "", "PEN-Aufteilungspunkt unbekannt", cores=cores, mm2=mm2)
     if name == "TT":
         return SupplyConductors((*PHASES, "N"), pe_from="PE (Anlagenerder)", cores=cores, mm2=mm2)
     if name == "IT":

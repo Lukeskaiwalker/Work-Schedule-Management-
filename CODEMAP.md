@@ -503,6 +503,9 @@ Contracts: `docs/PANEL_ENCLOSURE_R4.md`, `docs/SCHALTPLAN_STROMLAUF.md`. Python 
 | `components/schaltplan/enclosure/modulePickerSearch.ts` | The module picker's search |
 | `utils/enclosureOpsControlBlock.ts`, `enclosure/ControlBlockSheet.tsx`, `ControlBlockSvg.tsx`, `controlBlockLayout.ts`, `EnclosurePrepList.tsx`, `prepListModel.ts`, `components/schaltplan/usePanelControlBlock.ts` | The §14a sheet and its ops, "Automatisch ergänzt", the page wiring (Klemmen print ids, wire print, Daten hint) |
 | `utils/schaltplanControlStrip.ts`, `components/schaltplan/LabelPrintDialogWires.tsx` | Web side of the §14a strip and the Aderbeschriftung print mode |
+| `services/panel_enclosure_busbar_meters.py` ⇄ `utils/enclosureBusbarMeters.ts` | Review 2: the meter(s) feeding a customer busbar — busbars of different meters are never joined |
+| `utils/edgeTrim.ts` (⇄ `panel_enclosure_layout.text`) | Review 2: one explicit edge-trim set for user text in both twins |
+| `components/schaltplan/enclosure/EnclosureRuns.tsx`, `enclosureRunLabels.ts` | Review 2: the leads in the 2D drawing (lines under the box labels, labels placed off them and inside the drawing) |
 
 ## Label printer calibration and IR sensor guide (2026-10-13)
 

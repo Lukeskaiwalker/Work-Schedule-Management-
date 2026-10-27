@@ -32,6 +32,8 @@ PREFUSE = (46.0, 55.0)
 HEAD = (58.0, 74.0)
 SUB = {"L1": 81.0, "L2": 87.0, "L3": 93.0, "N": 99.0}
 DEV = (105.0, 119.0)
+UNKNOWN_TOP = 77.0  # an "L?" core starts above the sub-bus (L1 at 81)
+UNKNOWN_PAST = 3.0  # and the head's phase lines run this far past it
 CORE_END = 175.0
 PE_RAIL = 183.0
 LABELS = (193.0, 201.5, 209.5)
@@ -182,7 +184,7 @@ class Band:
 
 BOX_KINDS = {"rcd": "rcd", "mcb": "mcb", "rcbo": "rcbo", "fuse": "fuse", "sls": "sls", "hauptschalter": "switch",
              "contactor": "contact", "impulse": "contact", "timer": "contact", "knx_actuator": "contact",
-             "wallbox": "mcb", "pv": "mcb", "sub_feed": "mcb", "distribution_block": "distribution"}
+             "wallbox": "mcb", "pv": "mcb", "sub_feed": "mcb", "distribution_block": "distribution", "spd": "spd"}
 
 
 def box_kind(unit: Unit) -> str:
@@ -311,6 +313,12 @@ def draw_chunk(b: Builder, band: Band, chunk: Chunk, bus: Sequence[str], pe_taps
     for circuit, cx, _width in columns:
         for conductor, px in _taps(circuit, cx, phases, rows).items():
             right[conductor] = max(right.get(conductor, px), px)
+        # An "L?" core takes one of the head's phases, nobody said which: every phase line runs on
+        # just past it, so the core crosses them (hops) instead of ending a T on one of them.
+        unknown = _positions(circuit, cx, phases).get(UNKNOWN_PHASE)
+        if unknown is not None:
+            for conductor in (c for c in rows if c in PHASES):
+                right[conductor] = max(right.get(conductor, unknown + UNKNOWN_PAST), unknown + UNKNOWN_PAST)
     if chunk.next_sheet is not None:  # every line a later chunk still taps runs to the edge
         later = {c for circuit in group.circuits[chunk.stop:] for c in _taps(circuit, 0.0, phases, rows)}
         right = {**right, **{c: chunk.x + chunk.width for c in later}}
@@ -366,9 +374,10 @@ def _draw_head(b: Builder, band: Band, chunk: Chunk, bus: Sequence[str], rows: S
     b.box(box_kind(unit), x0, band.y(HEAD[0]), x1, band.y(HEAD[1]), poles)
 
 
-def _draw_column(b: Builder, band: Band, circuit: Circuit, x: float, width: float, phases: Sequence[str],
-                 rows: Sequence[str], source: str, pe_taps: list[float]) -> None:
-    device, outgoing, _ = column_conductors(circuit, phases)
+def _draw_spd_column(b: Builder, band: Band, circuit: Circuit, x: float, width: float, phases: Sequence[str],
+                     rows: Sequence[str], source: str, pe_taps: list[float]) -> None:
+    """An SPD: taps the group's lines, its box spans them and PE; PE drops to the PE rail, no cable."""
+    device, _outgoing, _ = column_conductors(circuit, phases)
     at = _positions(circuit, x, phases)
     for conductor in device:
         px = at[conductor]
@@ -378,6 +387,30 @@ def _draw_column(b: Builder, band: Band, circuit: Circuit, x: float, width: floa
         else:
             b.unknown.add(circuit.unit.id)
             b.wire(conductor, source, (px, band.y(DEV[0] - 4)), (px, band.y(DEV[0])))
+    pe = at["PE"]
+    b.dot(pe, band.y(PE_RAIL))
+    pe_taps.append(pe)
+    b.wire("PE", source, (pe, band.y(DEV[1])), (pe, band.y(PE_RAIL)))
+    poles = [{"x": round1(at[c]), "conductor": c} for c in device]
+    b.box("spd", min(at[c] for c in device) - 3, band.y(DEV[0]), pe + 3, band.y(DEV[1]), poles, device="spd")
+    _column_texts(b, band, circuit, x, width, max(at.values()))
+
+
+def _draw_column(b: Builder, band: Band, circuit: Circuit, x: float, width: float, phases: Sequence[str],
+                 rows: Sequence[str], source: str, pe_taps: list[float]) -> None:
+    if circuit.unit.kind == "spd":
+        _draw_spd_column(b, band, circuit, x, width, phases, rows, source, pe_taps)
+        return
+    device, outgoing, _ = column_conductors(circuit, phases)
+    at = _positions(circuit, x, phases)
+    for conductor in device:
+        px = at[conductor]
+        if conductor in rows:
+            b.dot(px, band.y(_row(conductor)))
+            b.wire(conductor, source, (px, band.y(_row(conductor))), (px, band.y(DEV[0])))
+        else:  # "L?": down from above the sub-bus, crossing it (hops, no dot): the path shows, no phase is claimed
+            b.unknown.add(circuit.unit.id)
+            b.wire(conductor, source, (px, band.y(UNKNOWN_TOP)), (px, band.y(DEV[0])))
         if conductor in outgoing:
             b.wire(conductor, source, (px, band.y(DEV[1])), (px, band.y(CORE_END)))
     for conductor in (c for c in outgoing if c not in device):
@@ -420,7 +453,13 @@ def _column_texts(b: Builder, band: Band, circuit: Circuit, x: float, width: flo
     b.text(xr, band.y(111.0), unit.designation or "—", w=wr, bold=True, size=7.5)
     b.text(xr, band.y(118.5), unit.rating or unit.short, w=wr, colour=MUTED)
     b.text(xr + 2.5, band.y(129.0), circuit.circuit, w=wr - 5, bold=True, size=7.0, colour="#ffffff", chip=True)
-    b.text(xr, band.y(141.0), circuit.outgoing.note, w=wr, colour=MUTED)
+    note_y = 141.0
+    if circuit.rcd:  # an RCBO's own IΔn and type, two short lines: one fitted line would be cut
+        residual, _, kind = circuit.rcd.partition(" · ")
+        b.text(xr, band.y(141.0), residual.removeprefix("IΔn "), w=wr, colour=MUTED)
+        b.text(xr, band.y(148.0), kind, w=wr, colour=MUTED)
+        note_y = 155.0
+    b.text(xr, band.y(note_y), circuit.outgoing.note, w=wr, colour=MUTED)
     b.text(xr, band.y(172.5), circuit.terminal, w=wr, bold=True)
     b.text(x + 5.5, band.y(173.5), circuit.outgoing.text, w=CORE_END - DEV[1] - 1.5,
            colour=MUTED if circuit.outgoing.text != "Leitung —" else WARN, angle=90)
@@ -437,14 +476,15 @@ def _head_lines(chunk: Chunk, w: float) -> list[tuple[str, bool, str]]:
     """(text, bold, colour) of the head's text column, top → bottom; a bold first
     line is the BMK at 7.5 pt, every other line 6.5 pt."""
     head, unit = chunk.group.head, chunk.group.head.unit
+    unprotected = [c.unit.bmk for c in chunk.group.circuits if not c.protected and c.unit.kind != "spd"]
     if chunk.start > 0:
-        name = f"{unit.designation or unit.short} (Forts.)" if unit is not None else "OHNE FI-SCHUTZ (Forts.)"
-        return [(name, True, INK if unit is not None else WARN),
-                (f"Forts. von Blatt {chunk.prev_sheet}", True, BLUE)]
+        if unit is not None:
+            return [(f"{unit.designation or unit.short} (Forts.)", True, INK),
+                    (f"Forts. von Blatt {chunk.prev_sheet}", True, BLUE)]
+        name = "OHNE FI-SCHUTZ (Forts.)" if unprotected else "FI/LS je Stromkreis (Forts.)"
+        return [(name, True, WARN if unprotected else INK), (f"Forts. von Blatt {chunk.prev_sheet}", True, BLUE)]
     if unit is None:
-        if text_width("OHNE FI-SCHUTZ", FONT_BOLD, 7.5) <= w:
-            return [("OHNE FI-SCHUTZ", True, WARN), ("direkt von der Sammelschiene", False, WARN)]
-        return [("", True, WARN), ("OHNE", True, WARN), ("FI-SCHUTZ", True, WARN)]
+        return _headless_lines(chunk, unprotected, w)
     lines: list[tuple[str, bool, str]] = [(unit.name, True, INK)]
     lines.append((" · ".join(p for p in (unit.rating, f"{unit.poles}P") if p), False, MUTED))
     if head.rcd_text:
@@ -457,6 +497,20 @@ def _head_lines(chunk: Chunk, w: float) -> list[tuple[str, bool, str]]:
     if head.feeds:
         lines.append((head.feeds, False, BLUE))
     return lines
+
+
+def _headless_lines(chunk: Chunk, unprotected: Sequence[str], w: float) -> list[tuple[str, bool, str]]:
+    """No head: RCBOs only → "FI/LS je Stromkreis"; any other circuit → the warning, naming
+    those circuits when some RCBOs have their own RCD."""
+    loads = [c for c in chunk.group.circuits if c.unit.kind != "spd"]
+    if not loads:
+        return [("Überspannungsschutz", True, INK), ("direkt von der Sammelschiene", False, MUTED)]
+    if not unprotected:
+        return [("FI/LS je Stromkreis", True, INK), ("direkt von der Sammelschiene", False, MUTED)]
+    named = [("ohne FI: " + ", ".join(unprotected), False, WARN)] if len(unprotected) < len(loads) else []
+    if text_width("OHNE FI-SCHUTZ", FONT_BOLD, 7.5) <= w:
+        return [("OHNE FI-SCHUTZ", True, WARN), ("direkt von der Sammelschiene", False, WARN), *named]
+    return [("", True, WARN), ("OHNE", True, WARN), ("FI-SCHUTZ", True, WARN), *named]
 
 
 def _head_texts(b: Builder, band: Band, chunk: Chunk) -> None:

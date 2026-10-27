@@ -28,6 +28,7 @@
  */
 
 import type { CatalogIndex } from "./enclosureCatalog";
+import { edgeTrimmed } from "./edgeTrim";
 import { formatMmText } from "./enclosureGeometry";
 import { zoneLabel } from "./enclosureLayout";
 import {
@@ -86,7 +87,7 @@ type Check = (board: Board, pass: SuggestionPass) => PanelFinding[];
 
 const finding = (rule: Rule, level: "warn" | "info", scope: string, message: string): PanelFinding => ({ level, scope, message, rule });
 
-const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const trimmed = edgeTrimmed;
 
 function xList(labels: readonly string[]): string {
   const shown = labels.slice(0, XLIST_MAX).join(", ");

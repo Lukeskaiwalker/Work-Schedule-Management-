@@ -16,7 +16,7 @@ import { defaultControlBlock } from "../utils/enclosureControlBlock";
 import { catalogIndex } from "../utils/enclosureCatalog";
 import type { ControlBlock, EnclosureModule, ModuleSpec, PrepOverrides } from "../types/panelEnclosure";
 import type { PanelDocument, PanelSupply } from "../types/schaltplan";
-import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX } from "./enclosureFixtureBoards";
+import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX, boardDocument } from "./enclosureFixtureBoards";
 import { board, CABINETS, dev, INDEX, MODULES, R4_INDEX, row, testCatalog } from "./enclosureTestCatalog";
 
 // A hand-made module: no fitting snapshot, so the derivations read the catalogue.
@@ -47,8 +47,9 @@ describe("helpers", () => {
     expect(ratingValue("C 32A")).toBe(32);
     expect(ratingValue("0,5 A")).toBe(0.5);
     expect(ratingValue("")).toBeNull();
-    // Round 2: ten terminal rules where "encl.terminals" was; round 4: fifteen prep rules before them.
-    expect(RULE_ORDER).toHaveLength(49);
+    // Round 2: ten terminal rules where "encl.terminals" was; round 4: seventeen prep rules before them
+    // (the review added busbar_meters and infeed_small).
+    expect(RULE_ORDER).toHaveLength(51);
   });
 });
 
@@ -266,6 +267,32 @@ describe("round-4 rules", () => {
     const old = indexWith({ ZH3ES5: { ...MODULES.ZH3ES5, zones: top } });
     const high = r4Board([mod("m", "ZH3EL27", 0, 0), mod("s", "ZH3ES5", 1, 0, { sas: "sas" })], [row("sas", [dev("sls")])]);
     expect(messageOf(high, "encl.busbar_unjoined", old)?.message).toBe("Sammelschienen in Feld 1 und Feld 2 liegen nicht auf gleicher Höhe.");
+  });
+
+  it("name the role between a busbar gap and the customer busbars of two meters", () => {
+    const between = r4Board([mod("a", "ZH3EL27", 0, 0), mod("s", "ZH3ES5", 1, 0), mod("b", "ZH3EL27", 2, 0)]);
+    expect(messageOf(between, "encl.busbar_unjoined")?.message).toBe(
+      "Sammelschienen in Feld 1 und Feld 3 sind nicht verbunden: dazwischen liegt Kundenverteilung (gezählt), keine Hauptleitung.",
+    );
+    const two = boardDocument("two_meters_busbar_zb34s");
+    expect(messageOf(two, "encl.busbar_meters", FIXTURE_INDEX)).toMatchObject({
+      level: "info", scope: "", message: "Sammelschienen in Feld 3 und Feld 4 gehören zu verschiedenen Zählern und werden nicht verbunden.",
+    });
+    expect(enclosureFindings(two, FIXTURE_INDEX).map((finding) => finding.rule)).not.toContain("encl.busbar_unjoined");
+  });
+
+  it("name a conductor too small for any clamp and trim a pasted fuse and BMK like the server", () => {
+    const meter = [mod("m", "ZH3EH16", 0, 0, { nar: "n" })];
+    const small = r4Board(meter, undefined, { supply: { incoming: "NYM-J 5x1,5" }, prep: { infeed: "clamps" } });
+    expect(messageOf(small, "encl.infeed_small")?.message).toBe(
+      "Zuleitung 1,5 mm²: keine Sammelschienenklemme für 12×5 mm in diesem Querschnitt — Einspeiseadapter K96ESA5 verwenden.",
+    );
+    const pasted = r4Board(meter, [row("n", [dev("sls"), dev("mcb", { rating: "B6", designation: "\ufeff" })])],
+      { supply: { incoming: "", fuse: "\ufeffNH00 160 A\u001c" } });
+    expect(messageOf(pasted, "encl.infeed_fuse")?.message).toBe(
+      "Einspeiseadapter K96ESA5 nur hinter höchstens NH00 gG 100 A: Vorsicherung „NH00 160 A“ prüfen.",
+    );
+    expect(messageOf(pasted, "encl.supply_existing")?.message).toMatch(/^Spannungsabgriff bereits geplant \(LS, F1 · NAR\)/);
   });
 
   it("name an existing tap, an assumed infeed, its fuse, an oversized infeed and the PEN split", () => {

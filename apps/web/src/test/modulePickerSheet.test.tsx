@@ -6,6 +6,8 @@
  * of a free run; the claim preview and its switch; the managers' extras;
  * the search box (docs/PANEL_ENCLOSURE_R4.md §8.1).
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
@@ -369,6 +371,19 @@ describe("ModulePickerSheet — search box", () => {
     const toolbar = input.closest(".sp-encl-sheet-toolbar");
     expect(toolbar?.previousElementSibling).toHaveClass("sp-sheet-head");
     expect(toolbar?.nextElementSibling).toHaveClass("sp-sheet-body");
+  });
+
+  it("has a fixed height, so the search field stays put while the hits change", () => {
+    open(cabinet());
+    expect(searchbox().closest(".sp-sheet")).toHaveClass("sp-encl-picker-sheet");
+    // vitest runs with css: false and jsdom has no layout: assert the stylesheet source.
+    const dir = (import.meta as unknown as { dirname: string }).dirname;
+    const css = readFileSync(`${dir}/../styles/schaltplan-enclosure-sheets.css`, "utf8");
+    expect(css).toMatch(/\.sp-sheet\.sp-encl-picker-sheet\s*\{[^}]*\bheight:\s*88vh/);
+    expect(css).toMatch(/@media \(min-width: 768px\)\s*\{\s*\.sp-sheet\.sp-encl-picker-sheet\s*\{[^}]*\bheight:\s*84vh/);
+    // The drop note still caps it (max-height wins over height).
+    const drag = readFileSync(`${dir}/../styles/schaltplan-enclosure-drag.css`, "utf8");
+    expect(drag).toMatch(/html\[data-sp-dropnote\] \.sp-sheet \{[^}]*max-height: calc\(88vh/);
   });
 
   it("keeps its status mounted: empty without a query, then the number of hits", () => {

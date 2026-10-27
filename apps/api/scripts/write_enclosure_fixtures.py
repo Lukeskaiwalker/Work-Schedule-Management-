@@ -54,8 +54,8 @@ from app.services.panel_enclosure_control_block import (  # noqa: E402
     place_control_block,
 )
 from app.services.panel_enclosure_geometry import build_enclosure_scene  # noqa: E402
-from app.services.panel_enclosure_layout import physical_row_order  # noqa: E402
-from app.services.panel_enclosure_prep import cabinet_prep  # noqa: E402
+from app.services.panel_enclosure_layout import physical_row_order, text  # noqa: E402
+from app.services.panel_enclosure_prep import cabinet_prep, rating  # noqa: E402
 from app.services.panel_enclosure_rules import enclosure_findings  # noqa: E402
 from app.services.panel_enclosure_terminal_closeup import terminal_closeup  # noqa: E402
 from app.services.panel_enclosure_terminal_suggest import terminal_suggestions  # noqa: E402
@@ -90,6 +90,7 @@ from scripts.enclosure_fixture_boards import (  # noqa: E402,F401  (re-exported 
     terminals_overflow_zb32s,
     terminals_rk_zb53s,
     terminals_zb34s,
+    two_meters_busbar_zb34s,
     violations_zb34s,
 )
 
@@ -175,6 +176,8 @@ CONTROL_BLOCK_PARSE_CASES: tuple[Any, ...] = (
     {"wire_length_m": 0.44}, {"wire_length_m": 0.45}, {"wire_length_m": 20.04}, {"wire_length_m": 20.05},
     {"wire_length_m": 1.25}, {"wire_length_m": 3}, {"wire_length_m": True}, {"wire_length_m": "5"},
     {"wire_length_m": -1}, {"wire_length_m": 1e12},
+    # Integers beyond float range: Python must not raise (OverflowError), TS reads Infinity.
+    {"wire_length_m": 10**400}, {"wire_length_m": -(10**400)},
     {"label_material": "wago-211-502"}, {"label_material": "wago-2009-110"}, {"label_material": ["wago-211-501"]},
     {"off": "true"}, {"off": 1}, {"off": False},
     {"terminals": [_T], "extra": "dropped", "rail": None},
@@ -186,6 +189,7 @@ PREP_PARSE_CASES: tuple[Any, ...] = (
     {"supply": "off", "infeed": "off"},
     {"supply": "sa", "infeed": "K96F", "joints": "on", "network": True, "network_m": 0.3},
     {"supply": "SA", "network_m": 20.05}, {"network_m": True}, {"network_m": "2"}, {"network_m": 7},
+    {"network_m": 10**400},
     {"supply": 5, "infeed": None, "extra": 1},
 )
 INFEED_PARSE_CASES: tuple[str, ...] = (
@@ -193,6 +197,11 @@ INFEED_PARSE_CASES: tuple[str, ...] = (
     "35 mm2", "35 qmm", "NYY-J 5x16, 3x63A", "NYY-J 5x16\u00a0mm²", "1x500+5x35", "", "Hausanschluss",
     "NYM-J 5x2,5", "NYY-J 4 x 240 mm²", "5x16.5", "12x16", "Alu 4x50", "NYY 5*25 qmm", "3 x 63 A",
 )
+#: ``rating`` ⇄ ``ratingValue``: ASCII digits only on both sides (fullwidth and Arabic-Indic read as none).
+RATING_PARSE_CASES: tuple[Any, ...] = ("B10", "B\uff11\uff10", "B\u0666", "C 32A", "0,5 A", "", "E35", None, "B16 / C10")
+#: ``text`` ⇄ ``edgeTrimmed``: one explicit edge set (BOM, C0/C1, Unicode spaces) on both sides.
+EDGE_TRIM_CASES: tuple[Any, ...] = ("\ufeff", "\ufeffQ1", "Q1\u001c", "\u0085", " F1 ", "\u00a0X\u3000",
+                                    "\ufeffNH00 160 A\u001c", "a\u0085b", "", None, 5)
 FUSE_PARSE_CASES: tuple[str, ...] = ("NH 63 A", "3x63A", "125 Ampere", "", "NH00 100A", "NH00 gG 63 A / SLS 50 A",
                                      "63 Amp", "2.5a")
 
@@ -204,6 +213,8 @@ def parser_tables() -> dict[str, Any]:
         "prep_parse": [{"input": case, "output": parse_prep(case)} for case in PREP_PARSE_CASES],
         "infeed_parse": [{"input": text, "output": parse_cable_section(text)} for text in INFEED_PARSE_CASES],
         "fuse_parse": [{"input": text, "output": parse_fuse_amps(text)} for text in FUSE_PARSE_CASES],
+        "edge_trim": [{"input": value, "output": text(value)} for value in EDGE_TRIM_CASES],
+        "rating_parse": [{"input": value, "output": rating({"rating": value})} for value in RATING_PARSE_CASES],
     }
 
 

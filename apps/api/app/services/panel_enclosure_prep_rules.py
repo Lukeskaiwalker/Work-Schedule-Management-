@@ -38,13 +38,14 @@ from app.services.panel_enclosure_prep import (
     busbar_zones,
     control_target,
     joined,
+    other_meters,
 )
 
 PREP_RULE_ORDER: tuple[str, ...] = (
     "encl.control_block_missing", "encl.control_block_reserve", "encl.control_block_rail",
     "encl.control_block_overflow", "encl.control_block_target", "encl.control_block_bdew", "encl.control_tube",
-    "encl.busbar_unjoined", "encl.busbar_role", "encl.supply_height", "encl.supply_existing",
-    "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.pen_split",
+    "encl.busbar_unjoined", "encl.busbar_meters", "encl.busbar_role", "encl.supply_height", "encl.supply_existing",
+    "encl.infeed_assumed", "encl.infeed_fuse", "encl.infeed_size", "encl.infeed_small", "encl.pen_split",
 )
 #: The number of terminals the BDEW Anwendungshilfe (Tab. 1) and VDE-AR-N 4100 name.
 BDEW_TERMINALS = 6
@@ -110,26 +111,43 @@ def _placed_rules(document: Any, catalog: EnclosureCatalog, block: Mapping[str, 
 # ── Busbars ──────────────────────────────────────────────────────────────────
 
 
-def _role_gaps(members: list[BusbarZone]) -> Iterator[Finding]:
+def _gap_text(a: int, b: int, role: str, filled: bool) -> str:
+    """The unjoined gap: no busbar between (any role), or only the other role's busbars (R4-11)."""
+    if not filled:
+        return (f"Sammelschienen in Feld {a + 1} und Feld {b + 1} sind nicht verbunden: dazwischen liegt kein Feld "
+                "mit Sammelschiene.")
+    if role == ROLE_MAIN:
+        return (f"Sammelschienen in Feld {a + 1} und Feld {b + 1} sind nicht verbunden: dazwischen liegt "
+                "Kundenverteilung (gezählt), keine Hauptleitung.")
+    return (f"Kundensammelschienen in Feld {a + 1} und Feld {b + 1} sind nicht verbunden: dazwischen liegt die "
+            "Hauptleitung (ungezählt).")
+
+
+def _role_gaps(members: list[BusbarZone], busbar_fields: set[int], role: str) -> Iterator[Finding]:
     fields = sorted({zone.field for zone in members})
     for a, b in zip(fields, fields[1:]):
-        if b > a + 1:
-            yield _finding("encl.busbar_unjoined", "warn", "",
-                           f"Sammelschienen in Feld {a + 1} und Feld {b + 1} sind nicht verbunden: dazwischen liegt "
-                           "kein Feld mit Sammelschiene.")
-            continue
         pairs = [(x, y) for x in members if x.field == a for y in members if y.field == b]
+        if b > a + 1:
+            if not any(other_meters(x, y) for x, y in pairs):  # two meters' busbars stay apart anyway
+                filled = any(field in busbar_fields for field in range(a + 1, b))
+                yield _finding("encl.busbar_unjoined", "warn", "", _gap_text(a, b, role, filled))
+            continue
         if any(joined(x, y) for x, y in pairs):
             continue
-        if any(x.placed.module_id != y.placed.module_id for x, y in pairs):
+        if any(other_meters(x, y) for x, y in pairs):
+            yield _finding("encl.busbar_meters", "info", "",
+                           f"Sammelschienen in Feld {a + 1} und Feld {b + 1} gehören zu verschiedenen Zählern und "
+                           "werden nicht verbunden.")
+        elif any(x.placed.module_id != y.placed.module_id for x, y in pairs):
             yield _finding("encl.busbar_unjoined", "warn", "",
                            f"Sammelschienen in Feld {a + 1} und Feld {b + 1} liegen nicht auf gleicher Höhe.")
 
 
 def _busbar_rules(document: Any, catalog: EnclosureCatalog) -> Iterator[Finding]:
     zones = busbar_zones(document, catalog)
+    busbar_fields = {zone.field for zone in zones}
     for role in (ROLE_MAIN, ROLE_CUSTOMER):
-        yield from _role_gaps([zone for zone in zones if zone.role == role])
+        yield from _role_gaps([zone for zone in zones if zone.role == role], busbar_fields, role)
     seen: set[tuple[str, str]] = set()
     for main in (zone for zone in zones if zone.role == ROLE_MAIN):
         for customer in (zone for zone in zones if zone.role == ROLE_CUSTOMER):
@@ -178,6 +196,12 @@ def _supply_rules(document: Any, state: PrepState) -> Iterator[Finding]:
         yield _finding("encl.infeed_size", "warn", "",
                        f"Zuleitung {mm_text(size)} mm²: keine Sammelschienenklemme für 12×5 mm bis 185 mm² — "
                        "Einspeisung gesondert planen.")
+    small = state.facts.get("infeed_small")
+    if small is not None:
+        advice = "Einspeisung gesondert planen" if small["aluminium"] else "Einspeiseadapter K96ESA5 verwenden"
+        yield _finding("encl.infeed_small", "warn", "",
+                       f"Zuleitung {mm_text(small['mm2'])} mm²{' Al' if small['aluminium'] else ''}: keine "
+                       f"Sammelschienenklemme für 12×5 mm in diesem Querschnitt — {advice}.")
     pen = state.facts.get("pen_field")
     if pen is not None:
         yield _finding("encl.pen_split", "info", "",

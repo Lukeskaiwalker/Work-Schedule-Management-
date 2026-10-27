@@ -490,3 +490,53 @@ def test_a_run_label_never_covers_another_text_of_the_front_view(name: str) -> N
         for other in strings:
             if other is not label:
                 assert not _overlaps(label.bbox, other.bbox), (label.text, other.text)
+
+
+def _front(name: str) -> tuple[list, set[str]]:
+    document = fixture_boards.BOARDS[name]()
+    prep = cabinet_prep(document, CATALOG)
+    recorder = Recorder()
+    _draw_front(recorder, document, CATALOG, place_terminals(document, CATALOG))
+    return recorder.primitives, {run["label"] for run in (prep["runs"] if prep is not None else [])}
+
+
+def _covers(outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
+    return (outer[0] <= inner[0] + 0.3 and outer[1] <= inner[1] + 0.3
+            and outer[2] >= inner[2] - 0.3 and outer[3] >= inner[3] - 0.3)
+
+
+@pytest.mark.parametrize("name", sorted(fixture_boards.BOARDS))
+def test_a_run_line_never_strikes_through_a_box_label(name: str) -> None:
+    """Review 2: the 3-Punkt meter number and the SLS's BMK were struck through by
+    the supply and network leads. Every box label a lead crosses sits on its own
+    knock-out, drawn after the leads and before the text."""
+    primitives, run_labels = _front(name)
+    lines = [i for i, p in enumerate(primitives) if p.kind == "line"]
+    if not lines:
+        return
+    last_line = max(lines)
+    for j, text in enumerate(primitives):
+        if text.kind != "string" or text.text in run_labels or j < last_line:
+            continue
+        if not any(_overlaps(primitives[i].bbox, text.bbox) for i in lines):
+            continue
+        grounds = [p for p in primitives[last_line:j] if p.kind == "rect" and _covers(p.bbox, text.bbox)]
+        assert grounds, (name, text.text)
+
+
+@pytest.mark.parametrize("name", sorted(fixture_boards.BOARDS))
+def test_leads_of_different_kinds_never_share_a_line(name: str) -> None:
+    """The §14a control run and the SABO → APZ supply shared 147 pt of the NAR;
+    network and control 29 pt on the RfZ rail. Each kind runs on its own offset."""
+    primitives, _ = _front(name)
+    lines = [p for p in primitives if p.kind == "line"]
+    for a in lines:
+        for b in lines:
+            if (a.stroke, a.dash) == (b.stroke, b.dash):
+                continue
+            horizontal = a.bbox[3] - a.bbox[1] < 0.1 and b.bbox[3] - b.bbox[1] < 0.1
+            vertical = a.bbox[2] - a.bbox[0] < 0.1 and b.bbox[2] - b.bbox[0] < 0.1
+            if horizontal and abs(a.bbox[1] - b.bbox[1]) < 0.5:
+                assert min(a.bbox[2], b.bbox[2]) - max(a.bbox[0], b.bbox[0]) <= 1.0, name
+            if vertical and abs(a.bbox[0] - b.bbox[0]) < 0.5:
+                assert min(a.bbox[3], b.bbox[3]) - max(a.bbox[1], b.bbox[1]) <= 1.0, name

@@ -23,7 +23,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { normalizeEnclosure } from "../utils/enclosureOps";
 import { followPosition } from "../utils/enclosureOpsDrag";
-import { makeDevice, newId, nextCircuitNumber } from "../utils/schaltplanDevices";
+import { newBreaker, newId } from "../utils/schaltplanDevices";
 import {
   duplicateDevice as duplicateDeviceInDocument,
   removeDevices,
@@ -123,11 +123,6 @@ function mapRows(document: PanelDocument, change: (row: PanelRow) => PanelRow): 
   return { ...document, rows: document.rows.map(change) };
 }
 
-/** Breakers get the next free Stromkreis-Nr. straight away — the field that is always filled in and nobody wants to look up. */
-function numberedDevice(document: PanelDocument, kind: DeviceKind): PanelDevice {
-  const fresh = makeDevice(kind);
-  return fresh.kind === "mcb" || fresh.kind === "rcbo" ? { ...fresh, circuit: nextCircuitNumber(document) } : fresh;
-}
 
 function appendDevice(document: PanelDocument, rowId: string, device: PanelDevice): PanelDocument {
   return mapRows(document, (row) => (row.id === rowId ? { ...row, devices: [...row.devices, device] } : row));
@@ -360,7 +355,8 @@ function useDocumentOps(mutate: PanelDocumentEditor["mutate"]) {
     (rowId: string, kind: DeviceKind): string | null => {
       let created: string | null = null;
       mutate((current) => {
-        const device = numberedDevice(current, kind);
+        // Breakers get the next free Stromkreis-Nr. (always filled in, nobody wants to look it up) and their phase.
+        const device = newBreaker(current, current.rows.find((row) => row.id === rowId), kind);
         created = device.id;
         return appendDevice(current, rowId, device);
       });

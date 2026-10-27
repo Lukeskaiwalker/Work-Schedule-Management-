@@ -28,6 +28,7 @@
  */
 
 import { catalogEntry } from "./schaltplanDevices";
+import { edgeTrimmed } from "./edgeTrim";
 import { buildTopology, findRowOf, isCircuitDevice } from "./schaltplanTopologyCore";
 import { enclosureModules, METER_FAMILIES, meterPlaceCount, meterZones, type CatalogIndex } from "./enclosureCatalog";
 import {
@@ -134,7 +135,7 @@ function finding(rule: string, level: "warn" | "info", scope: string, message: s
   return { level, scope, message: rule.startsWith("vde.") ? VDE + message : message, rule };
 }
 
-const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const trimmed = edgeTrimmed;
 const shortName = (device: PanelDevice): string => catalogEntry(device.kind).short;
 const bmk = (device: PanelDevice): string => trimmed(device.designation) || shortName(device);
 const rowName = (row: PanelRow): string => trimmed(row.label) || row.id;

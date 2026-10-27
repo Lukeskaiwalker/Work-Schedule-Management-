@@ -139,3 +139,17 @@ def test_a_cabinet_board_with_its_catalogue_renders() -> None:
     assert b"Stromlaufplan allpolig" in text and b"hinter Q1" in text
     legend = schaltplan_pdf.build_panel_plan_pdf(plan=plan, legend_only=True, catalog=builtin_catalog())
     assert b"Stromlaufplan" not in _pdf_text(legend) and b"bersichtsschaltplan" not in _pdf_text(legend)
+
+
+def test_the_key_shows_the_unknown_phase_swatch_with_the_note() -> None:
+    from app.services.schaltplan_pdf_style import CONDUCTOR_COLOURS, draw_conductor_key
+    from tests.pdf_recorder import Recorder
+
+    colour = CONDUCTOR_COLOURS["L?"].colour.lower()
+    assert colour not in {CONDUCTOR_COLOURS[c].colour.lower() for c in ("L1", "L2", "L3", "N")}
+    assert CONDUCTOR_COLOURS["L?"].dash is not None  # dashed: never read as a phase on grey-scale
+    with_note, without = Recorder(), Recorder()
+    draw_conductor_key(with_note, note="L? = Phase nicht angegeben (2 Stromkreise)")
+    draw_conductor_key(without)
+    assert any(p.kind == "line" and p.stroke == colour for p in with_note.primitives)
+    assert not any(p.kind == "line" and p.stroke == colour for p in without.primitives)

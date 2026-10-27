@@ -204,7 +204,7 @@ def _wire_print_plan(document: dict[str, Any]) -> tuple[_PrintPlan, str]:
     block = stored_block(document)  # not None: there are segments
     plan = _PrintPlan(empty_detail=control_print.NO_WIRE_LABELS_DETAIL)
     plan.strips.append(segments)
-    plan.skipped = sum(1 for terminal in block["terminals"] if not terminal["label"])
+    plan.skipped = sum(1 for terminal in block["terminals"] if not control_print.printed_label(terminal["label"]))
     total_mm = 0.0
     for _, width_mm in segments:
         total_mm += width_mm
@@ -294,6 +294,9 @@ def print_panel_labels(
             db, strips=print_plan.strips, material_id=material_id, size=print_plan.font_size,
             blocks=print_plan.blocks, control=print_plan.control,
         )
+    except werkstatt_labels.NothingToPrint:
+        # Every text cleaned to nothing on the printer path ("~", "^" only).
+        raise HTTPException(status_code=400, detail=print_plan.empty_detail)
     except werkstatt_labels.LabelFormatUnsupported as exc:
         # The coordinate guard (a strip offset off the material) or a block
         # label on die-cut stock: the German reason, not a 500.

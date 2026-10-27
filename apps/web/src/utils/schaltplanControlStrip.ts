@@ -12,14 +12,14 @@
  *
  * **The wire labels** (`control:wires`) are the ordinary rail strip on the
  * board's own heat-shrink tube: every named terminal twice, one sleeve at
- * each end of the wire.
+ * each end of the wire. Both read the labels as printed (`printedLabel`).
  *
  * Both read the block only through `parseControlBlock` and need no
  * catalogue: the strip prints whether or not the block has found its rail.
  * Kept apart from `schaltplanStrip.ts` / `schaltplanTerminals.ts` because
  * the parser's module imports theirs; importing it back would close a cycle.
  */
-import { WIRE_LABEL_MAX_DOTS, WIRE_LABEL_PIECE_MM, storedBlock } from "./enclosureControlBlock";
+import { CONTROL_LABEL_MAX, WIRE_LABEL_MAX_DOTS, WIRE_LABEL_PIECE_MM, storedBlock } from "./enclosureControlBlock";
 import {
   CONTROL_SEGMENT_MM,
   SEG_PAD_DOTS,
@@ -61,6 +61,21 @@ export interface ControlStripItem {
   tooLong: string | null;
 }
 
+/** Python's whitespace for `str.split()` above U+001F (the controls are blanked before). */
+const PRINTER_SPACE = /[ \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+
+/**
+ * A label as the printer prints it — twin of `printed_label` (the printer
+ * path's `_clean`): controls, DEL and the EZPL prefixes `~` and `^` become
+ * spaces, runs of spaces collapse, the ends are cut. Counts, sizes and the
+ * preview read this, so "A^B" shows as "A B" and a label of only "~" is blank.
+ */
+export function printedLabel(label: string): string {
+  const blanked = Array.from(label, (ch) => (ch < " " || ch === "\u007f" || ch === "~" || ch === "^" ? " " : ch)).join("");
+  const collapsed = blanked.split(PRINTER_SPACE).filter((part) => part !== "").join(" ");
+  return Array.from(collapsed).slice(0, CONTROL_LABEL_MAX).join("").replace(/^ +| +$/g, "");
+}
+
 function round1(value: number): number {
   return Math.floor(value * 10 + 0.5) / 10;
 }
@@ -69,7 +84,7 @@ function round1(value: number): number {
 export function controlStrip(document: unknown): ControlStripItem | null {
   const block = storedBlock(document);
   if (!block || block.off || block.terminals.length === 0) return null;
-  const labels = block.terminals.map((terminal) => terminal.label);
+  const labels = block.terminals.map((terminal) => printedLabel(terminal.label));
   let lengthMm = 0;
   for (let i = 0; i < labels.length; i += 1) lengthMm += CONTROL_SEGMENT_MM;
   return {
@@ -107,14 +122,10 @@ export function klemmenStripIds(
 export function wireLabelSegments(document: unknown): FitSegment[] | null {
   const block = storedBlock(document);
   if (!block || block.off) return null;
-  const segments = block.terminals.flatMap((terminal) =>
-    terminal.label
-      ? [
-          { text: terminal.label, widthMm: WIRE_LABEL_PIECE_MM },
-          { text: terminal.label, widthMm: WIRE_LABEL_PIECE_MM },
-        ]
-      : [],
-  );
+  const segments = block.terminals.flatMap((terminal) => {
+    const text = printedLabel(terminal.label);
+    return text ? [{ text, widthMm: WIRE_LABEL_PIECE_MM }, { text, widthMm: WIRE_LABEL_PIECE_MM }] : [];
+  });
   return segments.length > 0 ? segments : null;
 }
 

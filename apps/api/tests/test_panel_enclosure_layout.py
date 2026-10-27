@@ -67,6 +67,8 @@ def test_order_matches_the_fixture_on_every_board() -> None:
         "terminals_zb34s", "terminals_rk_zb53s", "terminals_overflow_zb32s", "three_point_zb53s",
         # Round 4 (docs/PANEL_ENCLOSURE_R4.md §10).
         "control_ehz_zb33s", "control_3p_zb53s", "busbar_gap_zb34s", "reserve_zb33s",
+        # Round 4 review: customer busbars of two meters.
+        "two_meters_busbar_zb34s",
     }
     for name, board in fixtures["boards"].items():
         assert physical_row_order(board["document"], catalog) == board["order"], name

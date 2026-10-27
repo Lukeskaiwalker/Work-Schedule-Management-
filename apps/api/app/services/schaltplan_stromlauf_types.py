@@ -67,6 +67,12 @@ class Circuit:
     outgoing: Outgoing
     terminal: str = ""   # "X1.3" when the board's terminals are given
     location: str = ""   # "AAR Feld 1" for a circuit above the meter of a cabinet board
+    rcd: str = ""        # "IΔn 30 mA · Typ B" for an RCBO (its own residual-current protection)
+
+    @property
+    def protected(self) -> bool:
+        """Carries its own residual-current protection (an RCBO)."""
+        return self.unit.kind == "rcbo"
 
 
 @dataclass(frozen=True)
@@ -83,7 +89,7 @@ class LoadGroup:
     source: str
     head: Head
     circuits: tuple[Circuit, ...]
-    box: str = "device"         # "device" | "warn" (no protective device)
+    box: str = "device"         # "device" | "warn" (a circuit without residual-current protection)
 
 
 @dataclass(frozen=True)

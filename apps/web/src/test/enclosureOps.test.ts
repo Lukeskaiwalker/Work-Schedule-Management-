@@ -275,6 +275,15 @@ describe("rail ops", () => {
     expect(devicesOfKind(result.document, "mcb")[0].circuit).toBe("1");
   });
 
+  it("rotates the phases of single-phase breakers added to a rail, as the row templates do", () => {
+    // Review 2: every "+ Gerät" LS had phase "-", so the allpolig sheets drew no LS on its FI.
+    const placed = place(cabinetBoard(), "ZU37KS", 0);
+    let doc = ok(addDeviceToRail(placed.doc, INDEX, placed.moduleId, "r1", "rcd")).document;
+    for (let i = 0; i < 4; i += 1) doc = ok(addDeviceToRail(deepFreeze(doc), INDEX, placed.moduleId, "r1", "mcb")).document;
+    expect(devicesOfKind(doc, "mcb").map((d) => d.phase)).toEqual(["L1", "L2", "L3", "L1"]);
+    expect(devicesOfKind(doc, "rcd")[0].phase).toBe("-");
+  });
+
   it("fillRailFromTemplate numbers like hand-built rails and keeps the row id and label", () => {
     const placed = place(cabinetBoard(), "ZU37KS", 1);
     const ensured = ensureRailRow(placed.doc, INDEX, placed.moduleId, "r2");

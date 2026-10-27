@@ -204,11 +204,37 @@ def test_adern_without_named_terminals_is_400(client: TestClient, admin_token: s
         _with_block(_two_rcd_board(), None),
         _with_block(_two_rcd_board(), _block(["", ""])),
         _with_block(_two_rcd_board(), _block(["UNSM"], off=True)),
+        # "~" and "^" are EZPL prefixes the printer path blanks: nothing would print.
+        _with_block(_two_rcd_board(), _block(["~", "^^"])),
     ):
         resp = _print(client, admin_token, _panel(client, admin_token, document), target="adern")
         assert resp.status_code == 400, resp.text
         assert resp.json()["detail"] == "Keine Aderbeschriftung — erst Klemmen benennen."
     assert sent == []
+
+
+def test_adern_counts_and_previews_what_is_printed(client: TestClient, admin_token: str, monkeypatch):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _panel(client, admin_token, _with_block(_two_rcd_board(), _block(["A^B", "~", "Stve"])))
+    resp = _print(client, admin_token, panel, target="adern")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["printed"], body["skipped_without_bmk"]) == (4, 1)
+    assert (body["strips"][0]["part_count"], body["strips"][0]["length_mm"]) == (4, 60.0)
+    (job,) = _jobs(sent[0])
+    assert _at_texts(job) == [b"A B", b"A B", b"Stve", b"Stve"]
+
+
+def test_a_block_label_that_prints_as_nothing_counts_as_blank(client: TestClient, admin_token: str, monkeypatch):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _panel(client, admin_token, _with_block(_no_terminals(), _block(["~", "UNSM", ""])))
+    resp = _print(client, admin_token, panel, target="reihenklemmen")
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["printed"], resp.json()["skipped_without_bmk"]) == (1, 2)
+    (job,) = _jobs(sent[0])
+    assert _at_texts(job) == [b"UNSM"]
 
 
 def test_an_unknown_target_is_refused_by_the_schema(client: TestClient, admin_token: str):

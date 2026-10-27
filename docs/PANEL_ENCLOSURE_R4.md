@@ -49,7 +49,7 @@ reports any hit instead of shipping it.)
 | R4-8 | Printed labels are **not** Materialliste lines (block strip: Klemmen print dialog; wire labels: print target "Aderbeschriftung"). | You print them, you don't pick them. |
 | R4-9 | Catalogue correction: the Sammelschienenzone of ZH3ES5, ZH3ES5RK, ZH53XS, ZH53XSRK moves to the **bottom** (Hager photos). Keys unchanged. | Physical truth; joints need aligned bars. |
 | R4-10 | The infeed cross-section is **parsed** from `supply.incoming` (no schema change); the Daten tab shows what was recognised. | O8 "no info → K96ESA5". |
-| R4-11 | Busbar zones have a **role**: `main` (Hauptleitung, ungezählt: every NAR zone, the SAS of `communication` modules, a SAS whose rail holds an `sls`) or `customer` (every other SAS: Kundenverteilung, gezählt). Joints and the infeed only connect `main` to `main` and `customer` to `customer`; the infeed serves `main` runs only. | A ZZ55SAVE between an unmetered NAR and a metered customer busbar would bridge around the meter (R2 §1: "the SAS of a busbar Verteilerfeld is the customer's distribution after the meter"). |
+| R4-11 | Busbar zones have a **role**: `main` (Hauptleitung, ungezählt: every NAR zone, the SAS of `communication` modules, a SAS whose rail holds an `sls`) or `customer` (every other SAS: Kundenverteilung, gezählt). Joints and the infeed only connect `main` to `main` and `customer` to `customer`; the infeed serves `main` runs only. Review 2 (2026-10-27): a `customer` zone also knows its **meters** — the meter modules its module's devices are fed through (§3.3) — and two `customer` zones of different meters are never joined (info `encl.busbar_meters`); where a side's meter is unknown the joint is planned **unverified** with "Feld a–b: Zähler prüfen" (owner question: or drop it?). | A ZZ55SAVE between an unmetered NAR and a metered customer busbar would bridge around the meter (R2 §1: "the SAS of a busbar Verteilerfeld is the customer's distribution after the meter"); between the busbars of two meters it would put two metered distributions in parallel. |
 | R4-12 | Reserve meter fields (ZH33XL, ZH53XL, ZH52XL) are flagged `reserve_field: true` in the catalogue and are never the carrier while an in-use meter module exists. | "first meter field" means the first metering place in use. |
 
 ## 2. Stored data
@@ -92,6 +92,9 @@ Exact algorithm (both twins; the fixture table `control_block_parse` pins every 
 6. `rail`: a str that fully matches `KEY_PATTERN` else `None`.
 7. `wire_mm2`: a non-bool number equal to 1.5 or 2.5 else 2.5.
 8. `wire_length_m`: a non-bool finite int/float `v`; `r = round1(v)` (half-up); `r` if `0.5 ≤ r ≤ 20` else `None`.
+   Python checks `abs(v) > 1e9` **before** `math.isfinite`: an int beyond float range (a 400-digit JSON
+   literal) made `isfinite` raise OverflowError, which pydantic passed through as a 500 (review 2);
+   TS reads it as Infinity → `null`. Fixture rows pin both.
 9. `label_material`: `"wago-211-501"` or `"wago-211-502"` else `"wago-211-502"`.
 10. `off`: `value["off"] is True`.
 
@@ -161,6 +164,11 @@ untouched — admins may set it in JSON); built-ins ZH33XL, ZH53XL, ZH52XL get
   left → right loops in both twins (never Python `sum()`); ints stay ints.
 * `DERIVE` is a module sentinel in both twins: `fn(..., block=DERIVE)` derives;
   `None` means "there is no block".
+* Review 2: user text (BMK, row label, meter number, Vorsicherung) is edge-trimmed by
+  one explicit set in both twins — `text()` ⇄ `edgeTrimmed()` (C0/C1 controls, DEL,
+  NBSP and the Unicode spaces; Python `strip()` and JS `trim()` disagree on U+FEFF,
+  U+001C–U+001F and U+0085), fixture table `edge_trim`. Numbers in ratings are ASCII
+  digits only (`_NUMBER` with `re.ASCII`, as JS `\d`), fixture table `rating_parse`.
 
 ### 3.1 Carrier (`control_carrier` ⇄ `controlCarrier`)
 
@@ -230,8 +238,16 @@ a rail of `mount: "busbar"`. Its field = `module.field + zone.field`, its span
 = `[module.unit + zone.unit, + zone.units)`. Role `main` when: type `NAR`; or
 type `SAS` in a module of family `communication`; or type `SAS` whose busbar rail's
 linked row holds a device of kind `sls`. Every other SAS is `customer`.
+A `customer` zone's **meters** (`panel_enclosure_busbar_meters` ⇄
+`enclosureBusbarMeters`): for every device on its module's live rails, follow
+the feed upward through `build_topology` (a circuit to its group's head, a head
+to its `fed_by`) to the first `hauptschalter` or `sls`; the module whose live
+rail holds that switch, when it is a meter module, is a meter. The zone keeps the
+set (none = unknown, one, or several).
 Two busbar zones are **joined** when their fields differ by exactly 1, they
-belong to different modules, they have the same role and their spans overlap.
+belong to different modules, they have the same role and their spans overlap —
+and, for `customer` zones, they are not of different meters (both known and not
+the one same meter).
 A **run** = a connected component of same-role busbar fields under "joined".
 
 **(a) Spannungsversorgung RfZ/APZ** (group `supply`), O6. Condition: a carrier
@@ -263,14 +279,18 @@ busbar zone. `infeed = parse_infeed(supply.incoming)` (§3.5). Article:
   qty = number of `main` runs, verified true; reason "Zuleitung {n} mm² ≤ 25 mm²" /
   "Querschnitt unbekannt — angenommen".
 * otherwise clamps (also when `P.infeed == "clamps"`), qty = (cores if 4 or 5
-  else 5) × `main` runs, verified false:
-  Cu 25 < mm² ≤ 70 → `K96F` "Sammelschienenklemme 25–70 mm² für 12×5 mm";
-  ≤ 95 → `K96H` "Sammelschienenklemme 16–95 mm² für 12×5 mm";
-  ≤ 150 → `K96K` "Sammelschienenklemme 50–150 mm² für 12×5 mm";
-  ≤ 185 → `KS18D` "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm";
-  Al ≤ 50 → `K96N` "Sammelschienenklemme 10–50 mm², Al/Cu"; Al ≤ 185 → `KS18D`;
-  mm² unknown with clamps forced → `K96F`; > 185 → no item and the warn finding
-  `encl.infeed_size`. Reason "Zuleitung {n} mm²{ Al} > 25 mm²: eine Klemme je Leiter" /
+  else 5) × `main` runs, verified false. The **first clamp whose range holds the
+  conductor** (min ≤ mm² ≤ max; review 2: the forced K96F was ordered for 16 mm²):
+  Cu `K96F` 25–70 "Sammelschienenklemme 25–70 mm² für 12×5 mm";
+  `K96H` 25–95 "Sammelschienenklemme 25–95 mm² für 12×5 mm" (hager.com: 25–95 on 12×5;
+  the old label said 16–95);
+  `K96K` 50–150 "Sammelschienenklemme 50–150 mm² für 12×5 mm";
+  `KS18D` 50–185 "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm";
+  `K96C` 2,5–35 "Sammelschienenklemme 2,5–35 mm² für 12×5 mm" (reached only below 25 mm²);
+  Al `K96N` 10–50 "Sammelschienenklemme 10–50 mm², Al/Cu"; Al `KS18D` 50–185.
+  mm² unknown with clamps forced → the table's first (`K96F` / `K96N`); > 185 → no
+  item and the warn finding `encl.infeed_size`; a known section no clamp holds
+  (Cu < 2,5, Al < 10) → no item and the warn finding `encl.infeed_small`. Reason "Zuleitung {n} mm²{ Al} > 25 mm²: eine Klemme je Leiter" /
   "Zuleitung Al, Querschnitt unbekannt: eine Klemme je Leiter".
 * Each extra `main` run adds " · Feld {b}: eigene Einspeisung" to the reason.
 * `infeed` = `{"mm2", "cores", "aluminium", "article", "assumed"}` (for the Daten hint).
@@ -283,7 +303,8 @@ qty 1, verified false, mapping only; plus the info finding `encl.pen_split`.
 field pairs (`main` and `customer` alike, each pair once); `P.joints == "off"`
 → suppressed. `ZZ55SAVE` "Sammelschienenverbinder Feld/Feld, 5-polig, 12×5 mm, 250 A",
 reason "1 Feldübergang: Feld 1–2" / "{k} Feldübergänge: Feld 1–2, Feld 2–3",
-verified true.
+verified true — except false, with " · Feld a–b: Zähler prüfen" per joined
+`customer` pair where a side's meter is unknown (R4-11).
 
 **(d) Netzwerkleitung** (group `network`), O5. Condition: a carrier, an APZ
 zone (the first by field, unit) and a target: carrier `meter_ehz` → its first
@@ -386,8 +407,9 @@ The shared fixture table `infeed_parse` pins at least: "NYY-J 5x16 mm²",
 rules: `encl.control_block_missing`, `encl.control_block_reserve`,
 `encl.control_block_rail`, `encl.control_block_overflow`, `encl.control_block_target`,
 `encl.control_block_bdew`, `encl.control_tube`, `encl.busbar_unjoined`,
-`encl.busbar_role`, `encl.supply_height`, `encl.supply_existing`,
-`encl.infeed_assumed`, `encl.infeed_fuse`, `encl.infeed_size`, `encl.pen_split`.
+`encl.busbar_meters`, `encl.busbar_role`, `encl.supply_height`, `encl.supply_existing`,
+`encl.infeed_assumed`, `encl.infeed_fuse`, `encl.infeed_size`, `encl.infeed_small`,
+`encl.pen_split` (`busbar_meters` and `infeed_small` added by review 2).
 Let `B = parse_control_block(...)`, `C = control_carrier(...)`, `L = placement`.
 Scope `""` = board level (as every board-level rule today).
 
@@ -400,13 +422,15 @@ Scope `""` = board level (as every board-level rule today).
 | control_block_target | warn | C.id | L and no control target | 3-Punkt: **§14a-Steuerleitungen ohne Ziel: im Schrank fehlt ein APZ.** eHZ: **§14a-Steuerleitungen ohne Ziel: Feld {n} hat keinen RfZ.** |
 | control_block_bdew | info | C.id | L and terminal count ≠ 6 | **§14a-Klemmleiste mit {n} statt 6 Klemmen — BDEW/VDE-AR-N 4100 sieht 6 vor.** |
 | control_tube | warn | C.id | L, label_material 211-501, wire_mm2 > 1 | **Schrumpfschlauch 211-501 passt nur auf 0,75–1 mm² — Leitung ist {mm_text(mm2)} mm².** |
-| busbar_unjoined | warn | "" | per role, consecutive busbar fields a < b of that role with b > a+1: **Sammelschienen in Feld {a} und Feld {b} sind nicht verbunden: dazwischen liegt kein Feld mit Sammelschiene.** Adjacent same-role, different modules, spans do not overlap: **Sammelschienen in Feld {a} und Feld {b} liegen nicht auf gleicher Höhe.** A field pair whose zones belong to one module is neither. |
+| busbar_unjoined | warn | "" | per role, consecutive busbar fields a < b of that role with b > a+1: **Sammelschienen in Feld {a} und Feld {b} sind nicht verbunden: dazwischen liegt kein Feld mit Sammelschiene.** — when a field between holds a busbar of the other role (review 2): main **Sammelschienen in Feld {a} und Feld {b} sind nicht verbunden: dazwischen liegt Kundenverteilung (gezählt), keine Hauptleitung.**, customer **Kundensammelschienen in Feld {a} und Feld {b} sind nicht verbunden: dazwischen liegt die Hauptleitung (ungezählt).**; none for two customer zones of different meters. Adjacent same-role, different modules, spans do not overlap: **Sammelschienen in Feld {a} und Feld {b} liegen nicht auf gleicher Höhe.** A field pair whose zones belong to one module is neither. |
+| busbar_meters | info | "" | adjacent customer zones of different meters (instead of `busbar_unjoined`): **Sammelschienen in Feld {a} und Feld {b} gehören zu verschiedenen Zählern und werden nicht verbunden.** |
 | busbar_role | info | customer module id | adjacent main/customer busbar zones (different modules, overlapping spans) | **Sammelschiene in Feld {b} ist Kundenverteilung (gezählt) und wird nicht mit dem NAR von Feld {a} verbunden.** |
 | supply_height | warn | "" | carrier, cabinet height not 1100/1400 | **Spannungsversorgung RfZ/APZ: Schrankhöhe {h} mm nicht im Hager-Programm — Bestückungspaket selbst wählen.** |
 | supply_existing | info | "" | (a) suppressed by an existing tap | **Spannungsabgriff bereits geplant ({bmk}, {railTitle}) — Bestückungspaket nicht ergänzt; Leitungen zu RfZ/APZ prüfen.** |
 | infeed_assumed | info | "" | item (b) exists, K96ESA5 via `auto`, mm² unknown | **Querschnitt der Zuleitung unbekannt: Einspeiseadapter K96ESA5 (bis 25 mm²) angenommen. Im Tab Daten bei „Zuleitung“ eintragen.** |
 | infeed_fuse | warn | "" | item (b) is K96ESA5 and `parse_fuse_amps(supply.fuse) > 100` | **Einspeiseadapter K96ESA5 nur hinter höchstens NH00 gG 100 A: Vorsicherung „{fuse}“ prüfen.** |
 | infeed_size | warn | "" | parsed mm² > 185 | **Zuleitung {n} mm²: keine Sammelschienenklemme für 12×5 mm bis 185 mm² — Einspeisung gesondert planen.** |
+| infeed_small | warn | "" | clamps, a known mm² ≤ 185 no clamp holds | **Zuleitung {n} mm²{ Al}: keine Sammelschienenklemme für 12×5 mm in diesem Querschnitt — Einspeiseadapter K96ESA5 verwenden.** (Al: **— Einspeisung gesondert planen.**) |
 | pen_split | info | "" | TN-C-S and cores == 4 | **Zuleitung 4-adrig im TN-C-S-System: PEN im NAR von Feld {n} in PE und N aufteilen.** |
 
 `enclosure_findings` / `enclosureFindings` gain `block=DERIVE`.
@@ -430,7 +454,14 @@ Netzbetreibers.** (update PANEL_ENCLOSURE.md §5 and its test).
   label 90° on a vertical segment and moves it along the run (stops 0,5 · 0,3 · 0,7 ·
   0,15 · 0,85, longest segment first) until it covers no box label and no other run
   label — at the midpoint it hid the meter number and the SLS's BMK. The 2D SVG keeps
-  the midpoint (it zooms).
+  the midpoint (it zooms). Review 2 (2026-10-27): the zoom never separated them, so the
+  SVG places its run labels the PDF's way too (`runLabelSpot`: same stops, the other side
+  of the segment as well, kept inside the viewBox — a label near the left edge lost the kit's
+  article number — and the least-covering stop when none is clear), drawn last; the SVG
+  draws every box label in a pass of its own after the leads, on a halo while leads are
+  drawn. The Aufbau PDF puts each centred box label on a knock-out in the box's fill, and
+  offsets each lead kind off a shared line (network +1,2 pt, control −1,2 pt, drawing only;
+  points and lengths unchanged).
 * `panel_enclosure_control_block.py` takes `round1` from
   `panel_enclosure_terminals` and never imports `panel_enclosure_geometry`
   (geometry imports it).
@@ -443,6 +474,8 @@ Netzbetreibers.** (update PANEL_ENCLOSURE.md §5 and its test).
 * Keys: `accessory:<art>` (Hager), `part:<art>` (WAGO block parts),
   `wire:h07vk:<2.5|1.5>:<colour>`, `prep:luesterklemme`, `prep:pen_split`.
   `detail = reason + (" · Meter" if unit m) + (" · ungeprüft" if not verified)`.
+* `AccessorySpec.article_no` is stripped and upper-cased like a code (review 2: an
+  iPad's "Zz55save" doubled the connector); the admin form previews it the same way.
 * A derived Hager item whose article an admin accessory also lists is emitted
   **once, at the admin line's slot** (planned = max; derived label and detail
   when derived > 0) and omitted from the prep block (the `u84t_line` pattern).
@@ -462,6 +495,9 @@ Netzbetreibers.** (update PANEL_ENCLOSURE.md §5 and its test).
 * `_with_busbars`: zones `[VT at unit 0 (rows), SAS at unit rows (2 units)]`; the
   unverified note becomes "Sammelschienenzone unten laut Hager-Produktfoto".
 * `reserve_field: true` on ZH33XL, ZH53XL, ZH52XL.
+* Review 2: ZU37V5RKAPZ2, ZU59V7RKAPZ2, ZH3ES5RK and ZH53XSRK are "Auslaufprodukt" on
+  hager.com: they ship **archived** (`DISCONTINUED_BUILTINS`) — still resolving for the
+  boards that use them, not offered in the picker; an admin may restore one.
 * Docs: `PANEL_ENCLOSURE.md` §3.2 rows + the paragraph and Q2 that say ZZ55SAVE
   is not auto-added; a pointer in `PANEL_ENCLOSURE_R2.md` R7 to R4-3.
 
@@ -494,6 +530,9 @@ Netzbetreibers.** (update PANEL_ENCLOSURE.md §5 and its test).
 * The query lives in the stack entry (`query?: string` on `module-picker`,
   controlled with a local fallback like the switches).
 * Keep the heading assertion `["Im Lager","Zuletzt verwendet","Hager univers Z"]`.
+* Review 2: the picker's sheet has a fixed height (`sp-encl-picker-sheet`: 88vh, 84vh
+  from 768 px; the drop note's max-height still caps it) — an auto-height sheet shrank
+  and re-centred on each keystroke that narrowed the hits, moving the field 100–300 px.
 
 ### 8.2 §14a sheet — `ControlBlockSheet.tsx` (+ `controlBlockLayout.ts`, `ControlBlockSvg.tsx`)
 
@@ -513,6 +552,11 @@ States, in order:
 * Read-only: every editing control disabled.
 * Entry points: in `EnclosureFieldBar`, the carrier's group gets a 56 px button **§14a-Klemmen** in states 2–4 (read-only too), second line / aria suffix **{n} Klemmen** / **fehlt** / **entfernt** / **passt nicht**; a tap on the `control_block` box (hit layer paints it last, kind `"control"`, `role="button"`, aria **§14a-Klemmleiste, Feld {n}, {k} Klemmen**; no hit in the closed view); the finding action.
 
+Review 2: the sheet's and the prep list's selects drop the native look (`appearance:
+none`, a drawn chevron) and take a fixed 56 px — WebKit's menulist theme overrides
+`min-height` (macOS 24 px, iPadOS 42 px measured). With a label too long to print, the
+Klemmen tab's strip print stays enabled so the dialog can name it (§9.1).
+
 ### 8.3 Ops — `utils/enclosureOpsControlBlock.ts` (pure, deep-freeze tested)
 
 `addControlBlock`, `removeControlBlock` (→ off), `restoreControlBlock`,
@@ -523,7 +567,9 @@ States, in order:
 `setControlLabelMaterial(id)`, `setPrepOverride(key, value)`. `placeModule`
 seeds `defaultControlBlock()` when it places a meter-family module and
 `control_block` is absent (never when present or off). New terminals get the
-smallest free `t<n>` id and the default colour of their position. Refusal copy
+smallest free `t<n>` id **from t7** (review 2: t1…t6 are the BDEW slots the
+Stromlaufplan reads a renamed clamp's role from) and the default colour of
+their position. The parser's id repair (§2.1 rule 3) is unchanged. Refusal copy
 exported as constants.
 
 ### 8.4 "Automatisch ergänzt" — new `EnclosurePrepList.tsx`
@@ -606,8 +652,12 @@ existing keys stay byte-identical.
 ### 9.2 Aderbeschriftung — target `adern`
 
 * `wire_label_segments(document)` ⇄ `wireLabelSegments(document)`: per terminal
-  left → right with a non-blank label, `(label, WIRE_LABEL_PIECE_MM)` **twice**.
-  None → 400 **Keine Aderbeschriftung — erst Klemmen benennen.**
+  left → right with a non-blank **printed** label (`printed_label` ⇄ `printedLabel`:
+  the printer path's `_clean` — controls, `~` and `^` blanked; review 2),
+  `(label, WIRE_LABEL_PIECE_MM)` **twice**. None → 400 **Keine Aderbeschriftung — erst
+  Klemmen benennen.** The block strip's labels, blank count and preview read the same
+  printed form; a print whose texts all clean to nothing answers that 400 too
+  (`NothingToPrint`), never a 500.
 * Job: `_render_rail_strip(material, segments, size=size)` unchanged (lead,
   dividers, end lines as today), material = the block's `label_material`,
   `size = min(font_size_for_fits(segments, material.width_mm, pad_dots=STRIP_SEG_PAD_DOTS)[0], WIRE_LABEL_MAX_DOTS)`.
@@ -653,7 +703,9 @@ round-2 page-count tests.
 * `board_answers` gains `control_block` (placement or null) and `prep`
   (`cabinet_prep`); `findings` include the new rules; `scene_open` the new box.
 * Top-level tables: `control_block_parse`, `prep_parse`, `infeed_parse`,
-  `fuse_parse`, `control_strip_size`.
+  `fuse_parse`, `control_strip_size`; review 2: `rating_parse`, `edge_trim`, and
+  `two_meters_busbar_zb34s` (two meters, each with its own ZH3ES5 distribution side by
+  side → one ZZ55SAVE, `busbar_meters`).
 * `document()` gains a `supply=` parameter. `CATALOG_CODES` gains every code the
   new boards use (incl. ZH3ES5, ZU59VT7APZ2, ZH33XL).
 * New boards: `control_ehz_zb33s` (ZH3EH16 + ZH3EL27 side by side + ZU37VT5APZ2;
@@ -728,7 +780,9 @@ test print, are owner tasks on the office LAN.
 Preferred AAR rail when both have room (automatic = top); VNB acceptance of
 the SABO (override exists); 211-502 flat width and the rotation digit (prints);
 ZH33SAR2/ZH55SAR2 "bis 35 mm²" clamps as infeed; RfZ-side RJ45 socket;
-ZU37V5RKAPZ2 / ZU59V7RKAPZ2 are "Auslaufprodukt" (archive?); a stored "SAS
+the four RK built-ins ZU37V5RKAPZ2, ZU59V7RKAPZ2, ZH3ES5RK, ZH53XSRK are "Auslaufprodukt" — shipped
+archived since review 2 (owner: confirm, or restore one in the admin); ZH53XSRK's hager.com title
+says "5-reihig", the catalogue models 7 rows (check); a stored "SAS
 ungezählt" toggle for a ZH3ES5 used to relieve a full NAR (Tipp 44); Mehrkunden-
 anlagen (Allgemeinstrom meter as carrier); ferrules (2 × n, WAGO 216-246);
 NAR space for SLS + K96ESA5 (22 mm) + SABO.
@@ -758,3 +812,14 @@ colours, copy prefixes; prep list; Daten hint; hit layer; Aufbau page.
 Minor findings not taken: a stored "SAS ungezählt" toggle and an NAR-space
 finding (open items, §14); unifying the catalogue admin's search (separate
 round).
+
+Review 2 (2026-10-27, 29 confirmed findings; scratchpad `r4/review2/`): customer
+busbars of different meters (R4-11 meters); clamp ranges (K96C, K96H 25–95,
+`infeed_small`); role-aware gap text; ASCII digits and one edge-trim set in both
+twins; the overflow-safe length parser; upper-cased accessory numbers; the
+discontinued RK fields archived; printed-form §14a labels (`~`, `^`); "+ Klemme"
+ids from t7 and stub roles by BDEW name/slot; SVG labels pass and run-label
+placement; PDF knock-outs and lead offsets; the picker's fixed height; WebKit
+select height; the Klemmen print open with a too-long label. Stromlauf changes in
+`SCHALTPLAN_STROMLAUF.md` (L?, SPDs, RCBOs, unlinked FIs, Übersicht packing, PEN
+text, long feeder chains).

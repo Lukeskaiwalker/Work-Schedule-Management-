@@ -47,7 +47,7 @@ WARN_STROKE = colors.HexColor("#b45309")
 PART_FILL = colors.HexColor("#8b929b")
 _POLE_SYMBOL = {"rcd": "contact", "mcb": "mcb", "rcbo": "mcb", "fuse": "fuse", "sls": "sls", "switch": "contact",
                 "contact": "contact", "distribution": "through", "device": "through", "sabo": "fuse",
-                "hlak": "through", "infeed": "through", "joint": "through", "placeholder": "through"}
+                "hlak": "through", "infeed": "through", "joint": "through", "placeholder": "through", "spd": "spd"}
 
 
 def _stroke_segment(c: pdfcanvas.Canvas, conductor: str, x0: float, y0: float, x1: float, y1: float) -> None:

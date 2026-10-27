@@ -7,7 +7,7 @@
  * so none of these needs the rail to have a row already.
  */
 
-import { makeDevice, nextCircuitNumber, rowUsedSlots } from "./schaltplanDevices";
+import { newBreaker, rowUsedSlots } from "./schaltplanDevices";
 import { rowFromTemplate } from "./schaltplanDocumentOps";
 import { findDevice } from "./schaltplanTopologyCore";
 import { METER_FAMILIES, moduleArticle, type CatalogIndex } from "./enclosureCatalog";
@@ -68,11 +68,6 @@ export function assignRowToRail(doc: PanelDocument, index: CatalogIndex, moduleI
   return finish(doc, sized, index, { moduleId });
 }
 
-/** Breakers get the next free Stromkreis-Nr. straight away, as in the rail editor. */
-function numbered(doc: PanelDocument, kind: DeviceKind): PanelDevice {
-  const fresh = makeDevice(kind);
-  return kind === "mcb" || kind === "rcbo" ? { ...fresh, circuit: nextCircuitNumber(doc) } : fresh;
-}
 
 /** The module's Hauptschalter without a feed — on its rails or pre-fitted by it — now name `slsId` (SLS → HS). */
 function feedMainSwitches(doc: PanelDocument, index: CatalogIndex, moduleId: string, slsId: string): PanelDocument {
@@ -90,7 +85,8 @@ function feedMainSwitches(doc: PanelDocument, index: CatalogIndex, moduleId: str
 export function addDeviceToRail(doc: PanelDocument, index: CatalogIndex, moduleId: string, railKey: string, kind: DeviceKind): OpResult {
   const rail = ensureRailRow(doc, index, moduleId, railKey);
   if ("error" in rail) return refuse(rail.error);
-  const device = numbered(rail.document, kind);
+  // Breakers get the next free Stromkreis-Nr. and their phase straight away, as in the rail editor.
+  const device = newBreaker(rail.document, rail.document.rows.find((candidate) => candidate.id === rail.rowId), kind);
   const next = insertDevice(rail.document, rail.rowId, device);
   const module = findModule(next, moduleId)!;
   const onMeterNar =

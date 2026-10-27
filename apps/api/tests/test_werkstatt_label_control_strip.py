@@ -251,6 +251,16 @@ def test_no_wire_labels_without_named_terminals() -> None:
     assert cs.wire_label_segments(_doc(_block(["UNSM"], off=True))) is None
 
 
+def test_labels_are_what_the_printer_prints() -> None:
+    """``~`` and ``^`` are EZPL prefixes the printer path blanks: a label made
+    only of them is no label, and "A^B" prints (and is measured) as "A B"."""
+    assert cs.wire_label_segments(_doc(_block(["~", "^^"]))) is None
+    segments = cs.wire_label_segments(_doc(_block(["A^B", "~", "Stve"])))
+    assert [text for text, _ in segments] == ["A B", "A B", "Stve", "Stve"]
+    strip = cs.control_strip(_doc(_block(["~", "A^B", ""])))
+    assert (strip.labels, strip.blank_count) == (("", "A B", ""), 2)
+
+
 def test_wire_label_size_is_the_strip_fit_capped_at_48() -> None:
     segments = cs.wire_label_segments(_doc(default_control_block()))
     fitted, overflowing = font_size_for_fits(segments, P211_502.width_mm, pad_dots=STRIP_SEG_PAD_DOTS)

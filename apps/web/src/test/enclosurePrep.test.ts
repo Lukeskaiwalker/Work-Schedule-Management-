@@ -19,8 +19,10 @@ import {
   parseFuseAmps,
   parseInfeed,
   parsePrep,
+  ratingValue,
   wireDm,
 } from "../utils/enclosurePrep";
+import { edgeTrimmed } from "../utils/edgeTrim";
 import type { CabinetPrep, EnclosureModule, PrepItem } from "../types/panelEnclosure";
 import type { PanelDocument } from "../types/schaltplan";
 import { BOARD_NAMES, FIXTURE_BOARDS, FIXTURE_INDEX, FIXTURE_TABLES, boardDocument } from "./enclosureFixtureBoards";
@@ -54,6 +56,16 @@ describe("parity with the Python twin (enclosureFixtures.json)", () => {
 
   it.each(FIXTURE_TABLES.fuse_parse.map((entry) => [entry.input, entry] as const))("fuse_parse %j", (_input, entry) => {
     expect(parseFuseAmps(entry.input)).toEqual(entry.output);
+  });
+
+  // ASCII digits only on both sides: "B１０" is no 10 A tap in either twin.
+  it.each(FIXTURE_TABLES.rating_parse.map((entry, i) => [i, entry] as const))("rating_parse #%i", (_i, entry) => {
+    expect(ratingValue(entry.input)).toEqual(entry.output);
+  });
+
+  // One explicit edge set: Python strip() and JS trim() disagree on U+FEFF, U+001C–U+001F, U+0085.
+  it.each(FIXTURE_TABLES.edge_trim.map((entry, i) => [i, entry] as const))("edge_trim #%i", (_i, entry) => {
+    expect(edgeTrimmed(entry.input)).toEqual(entry.output);
   });
 
   it.each(BOARD_NAMES)("%s: the cabinet preparation", (name) => {
@@ -147,11 +159,28 @@ describe("(b) Einspeisung", () => {
     ["", null, "K96ESA5", 1, "Querschnitt unbekannt — angenommen"],
     ["NYY-J 5x50 mm²", "K96ESA5", "K96ESA5", 1, "Einspeiseadapter manuell gewählt · Zuleitung 50 mm²"],
     ["", "clamps", "K96F", 5, "Querschnitt unbekannt: eine Klemme je Leiter"],
-    ["NYY-J 5x16", "clamps", "K96F", 5, "Zuleitung 16 mm²: eine Klemme je Leiter"],
+    // Forced clamps on a small Cu infeed: K96C (2,5–35 mm²), never K96F (from 25 mm²).
+    ["NYY-J 5x16", "clamps", "K96C", 5, "Zuleitung 16 mm²: eine Klemme je Leiter"],
+    ["NYY-J 5x10", "clamps", "K96C", 5, "Zuleitung 10 mm²: eine Klemme je Leiter"],
+    ["NYY-J 5x25", "clamps", "K96F", 5, "Zuleitung 25 mm²: eine Klemme je Leiter"],
   ])("%j with %s → %s × %i", (incoming, choice, article, qty, reason) => {
     const prep = prepOf(ehz({ incoming, prep: choice ? { infeed: choice } : undefined }));
     expect(itemOf(prep, `accessory:${article}`)).toMatchObject({ articleNo: article, qty, reason, group: "busbar" });
     expect(prep.infeed?.article).toBe(article);
+  });
+
+  it.each([false, true])("chooses only clamps whose range holds the conductor (aluminium %s)", (aluminium) => {
+    for (const mm2 of [1.5, 2.5, 4, 6, 10, 16, 25, 35, 50, 70, 95, 120, 150, 185]) {
+      const incoming = `${aluminium ? "NAYY-J" : "NYY-J"} 5x${String(mm2).replace(".", ",")}`;
+      const prep = prepOf(ehz({ incoming, prep: { infeed: "clamps" } }));
+      const clamp = prep.items.find((item) => item.group === "busbar" && item.key !== "accessory:ZZ55SAVE" && item.key !== "prep:pen_split");
+      if (!clamp) {
+        expect(mm2).toBeLessThan(aluminium ? 10 : 2.5);
+        continue;
+      }
+      const [, low, high] = /Sammelschienenklemme ([0-9,]+)–([0-9,]+) mm²/.exec(clamp.label)!.map((v) => Number(v.replace(",", ".")));
+      expect(low <= mm2 && mm2 <= high, `${incoming} → ${clamp.articleNo}`).toBe(true);
+    }
   });
 
   it("finds no clamp above 185 mm² and keeps the automatic article when switched off", () => {
@@ -179,6 +208,23 @@ describe("(c) Sammelschienenverbinder, roles and runs", () => {
     expect(jointPairs(busbarZones(withSls, INDEX))).toEqual([{ role: "main", left: 0, right: 1 }]);
     const twoMeters = cabinet([mod("a", "ZH3EL27", 0, 0), mod("b", "ZH3EL22", 1, 0), mod("c", "ZH3EH16", 2, 0)]);
     expect(itemOf(prepOf(twoMeters, INDEX), "accessory:ZZ55SAVE")).toMatchObject({ qty: 2, reason: "2 Feldübergänge: Feld 1–2, Feld 2–3" });
+  });
+
+  it("never joins the customer busbars of two meters and checks a joint whose meter is unknown", () => {
+    const zones = busbarZones(boardDocument("two_meters_busbar_zb34s"), FIXTURE_INDEX);
+    expect(zones.map((zone) => [zone.field, zone.role, zone.meters])).toEqual([
+      [0, "main", []], [1, "main", []], [2, "customer", ["mod-m1"]], [3, "customer", ["mod-m2"]],
+    ]);
+    expect(jointPairs(zones)).toEqual([{ role: "main", left: 0, right: 1 }]);
+    const sameMeter = boardDocument("two_meters_busbar_zb34s");
+    const fi = sameMeter.rows.find((r) => r.id === "row-s2")!.devices.find((d) => d.id === "dev-s2-f2")!;
+    fi.parent_id = "dev-m1-q1";
+    expect(itemOf(prepOf(sameMeter), "accessory:ZZ55SAVE")).toMatchObject({ qty: 2, verified: true, reason: "2 Feldübergänge: Feld 1–2, Feld 3–4" });
+    const empty = boardDocument("two_meters_busbar_zb34s");
+    empty.rows = empty.rows.map((r) => (r.id === "row-s2" ? { ...r, devices: [] } : r));
+    expect(itemOf(prepOf(empty), "accessory:ZZ55SAVE")).toMatchObject({
+      qty: 2, verified: false, reason: "2 Feldübergänge: Feld 1–2, Feld 3–4 · Feld 3–4: Zähler prüfen",
+    });
   });
 
   it("strikes the joints when switched off", () => {

@@ -109,10 +109,13 @@ describe("add, remove, restore, reset", () => {
 });
 
 describe("terminals", () => {
-  it("adds a terminal with the smallest free id and the colour of its position", () => {
-    const start = cabinet({ ...defaultControlBlock(), terminals: [{ id: "t2", label: "A", color: "rot" }, { id: "t3", label: "B", color: "rot" }] });
+  it("adds a terminal with the smallest free id from t7 and the colour of its position", () => {
+    // t1…t6 are the BDEW slots the Stromlaufplan reads a renamed clamp's role from: an added clamp never takes one.
+    const start = cabinet({ ...defaultControlBlock(), terminals: [{ id: "t2", label: "A", color: "rot" }, { id: "t7", label: "B", color: "rot" }] });
     const next = block(applied(addControlTerminal(start)));
-    expect(next.terminals[2]).toEqual({ id: "t1", label: "", color: WIRE_COLOURS[2] });
+    expect(next.terminals[2]).toEqual({ id: "t8", label: "", color: WIRE_COLOURS[2] });
+    const removed = applied(removeControlTerminal(cabinet(), "t4"));
+    expect(block(applied(addControlTerminal(removed))).terminals.map((t) => t.id)).toEqual(["t1", "t2", "t3", "t5", "t6", "t7"]);
   });
 
   it("refuses a 13th terminal", () => {

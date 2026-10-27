@@ -149,6 +149,14 @@ describe("LabelPrintDialog — the §14a strip in the Klemmen list", () => {
     expect(onPrint).toHaveBeenCalledWith(["f1:leiste", "f2:leiste"], "wago-2009-110", { target: "reihenklemmen" });
   });
 
+  it("names the too-long label on a board whose only strip is the block, and prints nothing", () => {
+    const { onPrint } = renderSheet(withBlock([], labelled(["UNSM", "Steuerbox 12"])), { initialRowIds: [] });
+    expect(screen.getByText("„Steuerbox 12“ ist zu lang für die Klemme — in der §14a-Klemmleiste kürzen.")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: CONTROL_ROW })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
+    expect(onPrint).not.toHaveBeenCalled();
+  });
+
   it("prints a board that has only the block, without the empty-board text or a Leiste size", () => {
     const { onPrint } = renderSheet(withBlock([], defaultControlBlock()), { initialRowIds: ["control:block"] });
     expect(screen.queryByText(/Noch keine Reihenklemmen/)).toBeNull();

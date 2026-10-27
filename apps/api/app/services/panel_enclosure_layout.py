@@ -27,6 +27,7 @@ value that is not where it should be is skipped, never raised on.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Iterator, Mapping
 
 from app.services.panel_enclosure_catalog import EnclosureCatalog
@@ -62,8 +63,16 @@ def as_int(value: Any, fallback: int = 0) -> int:
     return fallback
 
 
+#: The edge junk ``text`` removes, twin of ``edgeTrimmed`` (utils/edgeTrim.ts),
+#: pinned by the fixture table ``edge_trim``: ``str.strip`` and JS ``trim``
+#: disagree (U+001C–U+001F and U+0085 vs U+FEFF), so both strip this one set —
+#: every C0/C1 control, DEL, the no-break space and the Unicode spaces either strips.
+_EDGE = "\x00-\x20\x7f-\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_EDGE_JUNK = re.compile(f"^[{_EDGE}]+|[{_EDGE}]+\\Z")
+
+
 def text(value: Any) -> str:
-    return value.strip() if isinstance(value, str) else ""
+    return _EDGE_JUNK.sub("", value) if isinstance(value, str) else ""
 
 
 def ident(value: Any) -> str:

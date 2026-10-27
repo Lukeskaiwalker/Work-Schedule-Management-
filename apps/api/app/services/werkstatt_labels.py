@@ -77,6 +77,7 @@ from app.services.werkstatt_label_errors import (  # noqa: F401 — re-exported
     LabelPrinterNotConfigured,
     LabelPrinterSessionBusy,
     LabelPrinterUnreachable,
+    NothingToPrint,
 )
 # The reading frame and the element helpers moved to werkstatt_label_frame
 # (docs/PANEL_ENCLOSURE_R4.md §9); every renderer still reaches them here.

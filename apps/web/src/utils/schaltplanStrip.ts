@@ -143,9 +143,10 @@ export function deviceWidthMm(device: Pick<PanelDevice, "te" | "width_mm">): num
  * What is trimmed off a BMK before it counts as text. Spelled out because the
  * API trims with the same pattern: JS trim() and Python strip() disagree on
  * U+FEFF and the C0 controls, and a designation made only of those must be
- * "ohne BMK" on both sides.
+ * "ohne BMK" on both sides. C1 (U+0080–U+009F) too: Python's \s strips
+ * U+0085, JS's does not.
  */
-const BMK_EDGE_JUNK = /^[\s\ufeff\u0000-\u001f\u007f]+|[\s\ufeff\u0000-\u001f\u007f]+$/g;
+const BMK_EDGE_JUNK = /^[\s\ufeff\u0000-\u001f\u007f-\u009f]+|[\s\ufeff\u0000-\u001f\u007f-\u009f]+$/g;
 
 /** Trim a marker text the way the printer path does — shared with the Reihenklemmen strip. */
 export function trimMarkerText(text: string): string {

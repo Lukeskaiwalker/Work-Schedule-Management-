@@ -34,7 +34,7 @@ from app.services.panel_enclosure_catalog import (
     frozen_fields,
     rail_keys,
 )
-from app.services.panel_enclosure_catalog_data import BUILTIN_ENCLOSURES, BUILTIN_MODULES
+from app.services.panel_enclosure_catalog_data import BUILTIN_ENCLOSURES, BUILTIN_MODULES, DISCONTINUED_BUILTINS
 from app.services.panel_enclosure_layout import default_rail_label
 from app.services.schaltplan_layout import DEVICE_KINDS
 
@@ -394,6 +394,22 @@ def test_the_owner_s_four_fields_ship_and_no_discontinued_one_does() -> None:
     for code in ("ZH53X9ST", "ZH50D53ST", "ZH53W9SNT", "ZH33W7NT"):
         assert catalog.module(code) is not None, code
     assert not [code for code in DISCONTINUED_3P if catalog.known(code)]
+
+
+#: Round 2's RK siblings that hager.com marks "Auslaufprodukt" (checked 2026-10-26).
+DISCONTINUED_RK = ("ZU37V5RKAPZ2", "ZU59V7RKAPZ2", "ZH3ES5RK", "ZH53XSRK")
+
+
+def test_the_discontinued_rk_fields_still_resolve_but_ship_archived() -> None:
+    """Owner's standing rule: never offer an Auslaufprodukt. Boards that use one
+    keep resolving it (archived entries do); the picker no longer offers it."""
+    catalog = builtin_catalog()
+    for code in DISCONTINUED_RK:
+        entry = catalog.entry(code)
+        assert entry is not None and catalog.module(code) is not None, code
+        assert entry.archived is True, code
+    assert DISCONTINUED_BUILTINS == frozenset(DISCONTINUED_RK)
+    assert not [e.code for e in catalog.entries.values() if e.archived and e.code not in DISCONTINUED_RK]
 
 
 def test_round_three_parts_sit_where_the_photos_show_them() -> None:

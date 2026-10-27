@@ -183,6 +183,12 @@ def draw_pole(c: pdfcanvas.Canvas, symbol: str, x: float, y_bot: float, y_top: f
     """The pole's symbol on its wire from ``y_top`` down to ``y_bot``; the
     caller has set the conductor's stroke colour and width."""
     mid = (y_top + y_bot) / 2
+    if symbol == "spd":  # a varistor on the pole: the lead into a small block
+        half = min(2.6, (y_top - y_bot) / 4)
+        c.line(x, y_top, x, mid + half)
+        c.line(x, y_bot, x, mid - half)
+        c.rect(x - 1.3, mid - half, 2.6, 2 * half, stroke=1, fill=0)
+        return
     if symbol in ("mcb", "sls", "contact"):
         gap = min(3.2, (y_top - y_bot) / 4)
         c.line(x, y_top, x, mid + gap)

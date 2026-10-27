@@ -53,6 +53,10 @@ export interface FixtureParseTables {
   prep_parse: ParseCase<PrepOverrides | null>[];
   infeed_parse: ParseCase<CableSection>[];
   fuse_parse: ParseCase<number | null>[];
+  /** `rating` ⇄ `ratingValue`: ASCII digits only. */
+  rating_parse: ParseCase<number | null>[];
+  /** `text` ⇄ `edgeTrimmed`: one explicit edge set. */
+  edge_trim: ParseCase<string>[];
   /** R4 §9.1, written once the printing slice's `control_strip_size` exists; absent before. */
   control_strip_size?: { labels: string[]; size: number }[];
 }
@@ -79,6 +83,8 @@ export const FIXTURE_TABLES: FixtureParseTables = {
   prep_parse: raw.prep_parse,
   infeed_parse: raw.infeed_parse,
   fuse_parse: raw.fuse_parse,
+  rating_parse: raw.rating_parse,
+  edge_trim: raw.edge_trim,
   control_strip_size: raw.control_strip_size,
 };
 

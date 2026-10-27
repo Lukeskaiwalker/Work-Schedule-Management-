@@ -12,7 +12,7 @@
  * Everything returns new objects; the document passed in is never touched.
  */
 import { parseTerminalOrder } from "./enclosureTerminals";
-import { catalogEntry, makeDevice, newId, nextCircuitNumber, rowUsedSlots } from "./schaltplanDevices";
+import { PHASE_ROTATION, catalogEntry, makeDevice, newId, nextCircuitNumber, rowUsedSlots } from "./schaltplanDevices";
 import { NO_SKIP, isTerminalEligible } from "./schaltplanTerminalRules";
 import { allDevices, isCircuitDevice, terminalOffered } from "./schaltplanTopology";
 import type { EnclosureModule, PanelEnclosure, TerminalOrderEntry } from "../types/panelEnclosure";
@@ -21,8 +21,6 @@ import type { DeviceKind, PanelDevice, PanelDocument, PanelRow, PhaseLabel } fro
 /** Width of a rail that was not sized by hand — the classic 12-TE Reihe. */
 export const DEFAULT_ROW_SLOTS = 12;
 
-/** Load balancing by habit: consecutive breakers rotate through the phases. */
-const PHASE_ROTATION: readonly PhaseLabel[] = ["L1", "L2", "L3"];
 
 /** The last run of digits in a designation, e.g. the "3" of "F1.3" or "-F3". */
 const LAST_NUMBER = /(\d+)(?!.*\d)/;

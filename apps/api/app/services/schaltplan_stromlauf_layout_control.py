@@ -7,8 +7,11 @@
 * the **§14a block** as a terminal row on the metered side (right of the
   carrier's Trennvorrichtung column): end stop, one 2002-1671 per terminal
   with its name vertical (bottom → top), end plate, end stop. Above it the
-  open customer stubs, labelled by position in a staircase (the leftmost
-  group highest, so no text crosses a stub); below it the purple control
+  open customer stubs in a staircase (the leftmost group highest, so no text
+  crosses a stub), each run of neighbouring clamps of one role labelled with
+  its names and the role: the role by the clamp's BDEW name, else by its
+  seeded slot t1…t6 while that slot still sits in order — never by position,
+  which shifted every role once a clamp was removed; below it the purple control
   wires straight down to a Lüsterklemme with as many poles, at the target.
 
 Every wire here is a signal ("CTRL" / "DATA", sources "control" /
@@ -31,28 +34,66 @@ BLOCK_TOP, BLOCK_BOTTOM = 58.0, 86.0       # below the band top
 LUESTER_TOP, LUESTER_BOTTOM = 100.0, 108.0
 STAIR_TOP, STAIR_PITCH = 16.0, 8.0
 CTRL = CONDUCTOR_COLOURS["CTRL"].colour
-#: The role of each position on the BDEW strip (1-based), and what its stub reads.
-ROLES: tuple[tuple[tuple[int, ...], str], ...] = (
-    ((1,), "← gemessener Bereich (Erzeugungsanlage/Kundenanlage)"),
-    ((2, 3, 4), "→ Erzeugungsanlage"),
-    ((5,), "← gemessener Bereich"),
-    ((6,), "→ steuVE"),
-    (tuple(range(7, 13)), ""),
-)
+#: What each BDEW role's stub reads (Anwendungshilfe Tab. 1).
+ROLE_TEXT = {
+    "unsm": "← gemessener Bereich (Erzeugungsanlage/Kundenanlage)",
+    "reduce": "→ Erzeugungsanlage",
+    "ustve": "← gemessener Bereich",
+    "stve": "→ steuVE",
+}
+#: The role of each BDEW name (casefolded, without spaces and "%") and of each seeded slot.
+ROLE_BY_NAME = {"unsm": "unsm", "60": "reduce", "30": "reduce", "0": "reduce", "ustve": "ustve", "stve": "stve"}
+ROLE_BY_SLOT = {"t1": "unsm", "t2": "reduce", "t3": "reduce", "t4": "reduce", "t5": "ustve", "t6": "stve"}
 
 
-def stub_groups(terminals: Sequence[tuple[int, str, str]]) -> list[tuple[list[int], str]]:
-    """Per role present: (terminal indices, stub text). The text joins the
-    non-blank stored labels with " / " and adds the role; "" when every label
-    of the group is blank (no text drawn)."""
+def _name_key(label: str) -> str:
+    return label.casefold().replace(" ", "").removesuffix("%")
+
+
+def _slot(terminal_id: str) -> int | None:
+    return int(terminal_id[1:]) if terminal_id in ROLE_BY_SLOT else None
+
+
+def _in_order(terminals: Sequence[tuple[str, str, str]], index: int) -> bool:
+    """The clamp's seeded slot is larger than every slot before it and smaller than every one after."""
+    slot = _slot(terminals[index][0])
+    before = [s for s in (_slot(t[0]) for t in terminals[:index]) if s is not None]
+    after = [s for s in (_slot(t[0]) for t in terminals[index + 1:]) if s is not None]
+    return slot is not None and all(s < slot for s in before) and all(s > slot for s in after)
+
+
+def stub_role(terminals: Sequence[tuple[str, str, str]], index: int) -> str:
+    """The role of one clamp: by its BDEW name, else by its seeded slot while in order; "" for none.
+
+    An added clamp ("+ Klemme" allocates t7 and up) or a blank one out of order has no role.
+    """
+    terminal_id, label, _colour = terminals[index]
+    named = ROLE_BY_NAME.get(_name_key(label))
+    if named is not None:
+        return named
+    return ROLE_BY_SLOT[terminal_id] if _in_order(terminals, index) else ""
+
+
+def stub_groups(terminals: Sequence[tuple[str, str, str]]) -> list[tuple[list[int], str]]:
+    """Per run of neighbouring clamps of one role: (terminal indices, stub text).
+
+    ``terminals`` = (id, label, colour) left → right. The text joins the
+    non-blank stored labels with " / " and adds the role's text; "" when every
+    label of the run is blank (no text drawn). Runs are contiguous, so the
+    staircase never lets a text cross a stub.
+    """
     out: list[tuple[list[int], str]] = []
-    for positions, role in ROLES:
-        members = [i for i, (position, _label, _colour) in enumerate(terminals) if position in positions]
-        if not members:
-            continue
+    roles = [stub_role(terminals, index) for index in range(len(terminals))]
+    for index, role in enumerate(roles):
+        if out and roles[out[-1][0][-1]] == role:  # clamps without a role group too, as before
+            out[-1][0].append(index)
+        else:
+            out.append(([index], role))
+    groups: list[tuple[list[int], str]] = []
+    for members, role in out:
         names = " / ".join(terminals[i][1] for i in members if terminals[i][1])
-        out.append((members, " ".join(p for p in (names, role) if p) if names else ""))
-    return out
+        groups.append((members, " ".join(p for p in (names, ROLE_TEXT.get(role, "")) if p) if names else ""))
+    return groups
 
 
 def _network(b: Builder, lead: NetworkLead, top: float, x0: float) -> None:
@@ -73,7 +114,7 @@ def _block_parts(b: Builder, band: ControlBand, top: float, x: float) -> list[fl
     b.box("end_stop", x, y0, x + END_STOP_W, y1, [])
     x += END_STOP_W
     centres: list[float] = []
-    for _position, label, colour in band.terminals:
+    for _terminal_id, label, colour in band.terminals:
         b.box("control_terminal", x, y0, x + TERMINAL_W, y1, [], colour=colour)
         centre = x + TERMINAL_W / 2
         b.text(centre + 2.3, y1 + 2.0, label, w=BLOCK_BOTTOM - BLOCK_TOP - 4.0, angle=90)

@@ -45,14 +45,30 @@
  * above the bands and below the devices.
  *
  * Round 4 (docs/PANEL_ENCLOSURE_R4.md §5, §8.2): the open view draws the
- * cabinet preparation's leads (`runs`) over the boxes, and with
+ * cabinet preparation's leads (`runs`) over the boxes and under every box
+ * label (labels are a pass of their own, on a halo while leads are drawn),
+ * their labels last and off the box labels (`runLabelSpots`), and with
  * `onOpenControl` the §14a block is a target of its own, painted last —
  * it lies on an AAR rail band and must win the tap.
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from "react";
 
 import type { EnclosureScene, PrepRun, SceneBox, TerminalPlacement } from "../../../types/panelEnclosure";
-import { BoxShape, FieldHeader, GapShape, HatchPattern, ModuleLabel, RunsLayer, isDrawn, type ShapeState } from "./EnclosureFrontBoxes";
+import {
+  BoxLabel,
+  BoxShape,
+  FieldHeader,
+  GapLabel,
+  GapShape,
+  HatchPattern,
+  INSET_PX,
+  ModuleLabel,
+  ZONE_LABEL_STRIP_MM,
+  isDrawn,
+  type ShapeState,
+} from "./EnclosureFrontBoxes";
+import { RunLabels, RunLines } from "./EnclosureRuns";
+import { labelObstacles, runLabelSpots } from "./enclosureRunLabels";
 import { reservedRailLine } from "./enclosureEditorModel";
 import { EnclosureDragLayer } from "./EnclosureDragLayer";
 import type { DeviceDragSource, DeviceDrop, StripDragSource, StripDrop } from "./enclosureDropTargets";
@@ -61,6 +77,7 @@ import {
   DEFAULT_UNIT_MM,
   DRAWING_PAD_PX,
   FIELD_HEADER_PX,
+  SMALL_FONT_PX,
   drawingSizePx,
   fieldIndexAt,
   freeCells,
@@ -398,14 +415,21 @@ export function EnclosureFrontSvg({
     dragSource: draggable ? dragSource : undefined, onMoveDevice, stripSource: stripsDraggable ? stripSource : undefined, onMoveStrip, onOpenRail, onOpenTerminals,
   });
 
+  const leads = scene.view === "open" ? runs : NO_RUNS;
   const state: ShapeState = useMemo(
-    () => ({ zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails }),
-    [zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails],
+    () => ({ zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails, halo: leads.length > 0 }),
+    [zoom, patternId, highlightDeviceId, selectedModuleId, activeRail, emptyRails, leads.length],
   );
   const drawn = scene.boxes.filter((box) => isDrawn(box, scene.view));
   const back = drawn.filter((box) => box.kind === "shell" || box.kind === "field");
   const front = drawn.filter((box) => box.kind !== "shell" && box.kind !== "field");
   const pad = DRAWING_PAD_PX / zoom;
+  const spots = useMemo(() => {
+    if (leads.length === 0) return [];
+    const shown = scene.boxes.filter((box) => isDrawn(box, scene.view) && box.kind !== "shell" && box.kind !== "field");
+    const obstacles = labelObstacles(shown, emptyRails, SMALL_FONT_PX, zoom, { zoneStripMm: ZONE_LABEL_STRIP_MM, insetMm: INSET_PX / zoom });
+    return runLabelSpots(leads, obstacles, SMALL_FONT_PX, zoom, [-pad, -pad, scene.width + pad, scene.height + pad]);
+  }, [leads, scene, emptyRails, zoom, pad]);
   const head = FIELD_HEADER_PX / zoom;
   const name = `Schrank ${scene.width} × ${scene.height} mm, ${VIEW_WORD[scene.view]}`;
 
@@ -428,8 +452,13 @@ export function EnclosureFrontSvg({
           {back.filter((box) => box.kind === "field").map((box, i) => <FieldHeader key={`head:${box.id}#${i}`} box={box} zoom={zoom} />)}
           {gaps.map((run) => <GapShape key={`gap:${run.field}:${run.unit}`} run={run} state={state} />)}
           {front.map((box, i) => <BoxShape key={`${box.id}#${i}`} box={box} state={state} />)}
-          {front.filter((box) => box.kind === "module").map((box, i) => <ModuleLabel key={`label:${box.id}#${i}`} box={box} zoom={zoom} />)}
-          {scene.view === "open" && runs.length > 0 ? <RunsLayer runs={runs} zoom={zoom} /> : null}
+          {leads.length > 0 ? <RunLines runs={leads} zoom={zoom} /> : null}
+          <g className="sp-encl-labels">
+            {gaps.map((run) => <GapLabel key={`gap-label:${run.field}:${run.unit}`} run={run} state={state} />)}
+            {front.map((box, i) => <BoxLabel key={`label:${box.id}#${i}`} box={box} state={state} />)}
+            {front.filter((box) => box.kind === "module").map((box, i) => <ModuleLabel key={`module-label:${box.id}#${i}`} box={box} zoom={zoom} halo={state.halo} />)}
+          </g>
+          {leads.length > 0 ? <RunLabels runs={leads} spots={spots} zoom={zoom} /> : null}
         </g>
         {!readOnly && (
           <HitLayer

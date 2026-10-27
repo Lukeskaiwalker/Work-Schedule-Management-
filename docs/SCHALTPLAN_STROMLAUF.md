@@ -56,7 +56,9 @@ overview code (pagination, `_draw_diagram_sheet`, `_draw_group`, `_draw_circuit`
 * Drawing area: x 40..802, y 82..520.
 * `CONDUCTOR_COLOURS`: L1 `#8a5527`, L2 `#1c2024`, L3 `#8b929b`, N `#2867d1`,
   PE `#2f8f3a` + `#e2bf12` 3/3 dash overlay, PEN `#2f8f3a` + `#2867d1` 3/3 overlay;
-  §14a control `#7547c9` dashed 4/3; data `#0f8b8d` dashed 2/2; "L?" in WARN.
+  §14a control `#7547c9` dashed 4/3; data `#0f8b8d` dashed 2/2; "L?" `#c026d3`
+  dashed 2/2 (review 2, 2026-10-27: the old WARN orange read as L1 brown in
+  grey-scale); a sheet with an "L?" shows its swatch in front of the sheet note.
 * Fonts ≥ 6.5 pt; BMK 7.5 pt bold; text only via `drawString`/`drawCentredString`.
 
 ## 4. Übersichtsschaltplan — the fix (`schaltplan_pdf_overview.py`)
@@ -69,7 +71,10 @@ Keep today's look; make it fit:
   x 40..190, y 432..488; band 0's groups start at x 200 (7 columns of 78 pt),
   band 1 at x 40 (9 columns).
 * `paginate_overview(groups)` packs groups greedily, several per band; a group
-  wider than the remaining band is split into column chunks; the continuation
+  wider than the remaining band moves whole to the next, empty band when it fits
+  there, and is split into column chunks only when it does not fit an empty band
+  or when keeping the groups whole would cost a sheet (both packings are tried;
+  review 2: 3–5-circuit FIs were torn at band 0's end); the continuation
   repeats the head as "F1 (Forts.)" with paired markers **→ Forts. Blatt {k}** /
   **Forts. von Blatt {i}**. Nothing past x 802; nothing scaled.
 * Groups in one band share a busbar line only when they share their source
@@ -103,10 +108,16 @@ Keep today's look; make it fit:
   N PE in (TN-C-S labelled "PEN-Aufteilung im HAK" left of the tags); TN-C-S with
   4 cores → L1 L2 L3 PEN in, the split drawn at the infeed of the carrier lane
   (PEN → PE bar, junction dot, PE–N bridge) labelled "PEN-Aufteilung im NAR";
-  TN-C-S cores unknown → as with 5 plus a WARN note "Aufteilungspunkt
-  unbekannt"; TT → L1 L2 L3 N in, PE enters separately as "PE (Anlagenerder)";
+  TN-C-S cores unknown → five conductors as with 5, but no "PEN-Aufteilung im
+  HAK" — only the WARN note "PEN-Aufteilungspunkt unbekannt" (review 2: a fact and
+  "unknown" side by side); TT → L1 L2 L3 N in, PE enters separately as "PE (Anlagenerder)";
   IT → L1 L2 L3 in, PE from "Anlagenerder", N only with 5 cores.
 * One sheet note instead of per-circuit notes: **L? = Phase nicht angegeben ({n} Stromkreise)**.
+  An "L?" core is drawn down from above its head's sub-bus (crossing it with
+  hops, no dot: no phase is claimed) and the head's phase lines run on just past
+  it, so the FI → LS path stays visible (review 2). New 1-/2-pole breakers from
+  "+ Gerät" get the rotating phase L1, L2, L3 of their row (`newBreaker`), as the
+  row templates do.
 
 ### 5.2 Model (`schaltplan_stromlauf_model.py`, pure)
 
@@ -136,6 +147,16 @@ Keep today's look; make it fit:
 * the §14a block (from the placement): terminal names, control wires,
   Lüsterklemme, target;
 * nothing guessed silently: unlinked SLS/HS are not drawn upstream of a bus.
+* **Überspannungsschutz** (review 2; the topology skips SPDs): an SPD on a meter
+  module's NAR/AAR is named in its lane ("Überspannungsschutz FS0 · Typ 1+2
+  (NAR)", muted, at 80,5 pt); every other SPD is a column of the group feeding it
+  (`parent_id`, else the head before it in physical order — the topology's walk):
+  box kind `spd` over its lines and PE, a PE drop to the PE rail, no cable. A
+  feeder head without a group of its own gets a headless group behind it on its
+  bus ("Überspannungsschutz · direkt von der Sammelschiene").
+* **RCBOs** (review 2): a circuit with its own RCD (`rcbo`) carries
+  `rcd` = "IΔn … · Typ …"; a group without a head is `warn` only when a circuit
+  other than an RCBO/SPD has no RCD.
 
 ### 5.3 Layout (`schaltplan_stromlauf_layout.py`, pure; split into `_cabinet`/`_bands`/`_routes` as needed)
 
@@ -162,14 +183,26 @@ and the feeder chain open the first distribution band):
 * A **"Steuerung & Kommunikation" band** (120 pt) under the last lane of the
   carrier's sheet: the §14a block as a terminal row (names vertical, bottom → top)
   drawn **on the metered side** (to the right of the carrier's Trennvorrichtung);
-  upper side open customer stubs labelled by position ("UNSM ← gemessener Bereich
-  (Erzeugungsanlage/Kundenanlage)", "60 % / 30 % / 0 % → Erzeugungsanlage",
-  "UStve ← gemessener Bereich", "Stve → steuVE"; names from the stored labels,
-  not drawn when blank); lower side the n purple control wires
+  upper side open customer stubs labelled by the clamp's BDEW role ("UNSM ←
+  gemessener Bereich (Erzeugungsanlage/Kundenanlage)", "60 % / 30 % / 0 % →
+  Erzeugungsanlage", "UStve ← gemessener Bereich", "Stve → steuVE"; names from
+  the stored labels, not drawn when blank). Review 2 (2026-10-27): the role comes
+  from the clamp's name (casefolded, spaces and "%" dropped: UNSM, 60, 30, 0,
+  UStve, Stve), else from its seeded slot t1…t6 while that slot still sits in
+  order (a renamed "P60" in t2 keeps "→ Erzeugungsanlage"), else none — never
+  from the position, which shifted every role once a clamp was removed. Runs of
+  neighbouring clamps of one role share a stub text; "+ Klemme" allocates ids
+  from t7, so an added clamp never takes a BDEW slot; lower side the n purple control wires
   "{n} × H07V-K {mm2} mm²" to a Lüsterklemme symbol at "{RfZ|APZ} Feld {n}";
   the network lead dashed teal "{ZZ45WAN…} · RJ45" from "APZ Feld {a}" to
   "{RfZ|Zählerplatz} Feld {b}". No conductor joins the block to the supply-kit
   leads or the NAR (layout test).
+* A distribution fed straight off the NAR (an FI whose "Eingespeist von" is not
+  set, origin `cabinet:`) is paired on the first cabinet sheet by the WARN
+  marker **→ Verteilung ohne Zähler Blatt {k}** (right of the supply caption)
+  for its "von Einspeisung · Blatt {c}"; a lane with nothing behind it then
+  reads **Verteilung nicht verknüpft** / „Eingespeist von“ am FI setzen instead
+  of "keine Stromkreise geplant" (review 2).
 
 **Distribution sheets:**
 * A **bus segment carries exactly one source**. Each band starts a 5-line bus
@@ -185,13 +218,21 @@ and the feeder chain open the first distribution band):
   sub-bus (or the main N when the head does not switch N), PE from the band's
   PE rail; the outgoing cores in colour, the cable text rotated along them, the
   terminal label (X1.3 … when `terminal_labels` is given), the circuit chip, two
-  label lines, the room.
+  label lines, the room. An RCBO column adds its IΔn and type as two muted lines
+  ("30 mA", "Typ B"; "—" when empty) under the chip, the "{n}-adrig" note below
+  them. A group without a head: "FI/LS je Stromkreis" when every circuit is an
+  RCBO, "OHNE FI-SCHUTZ" otherwise — naming "ohne FI: {bmk, …}" when some are
+  RCBOs (review 2).
 * Column width from the outgoing core count: ≤ 3 cores 48 pt, more 64 pt.
   Built (2026-10-26): a circuit label that 7 pt would cut ("Wärmepumpe" in 48 pt) is set
   at 6.5 pt; a lane placeholder too wide for its column breaks after its first word
   ("keine" / "Trennvorrichtung") instead of ending in "…".
   `paginate_columns` packs greedily per source and splits over-wide groups with
-  paired markers **→ Forts. Blatt {k}** / **Forts. von Blatt {i}**.
+  paired markers **→ Forts. Blatt {k}** / **Forts. von Blatt {i}**. A source
+  whose start (tags and feeders in series) leaves no room for two columns on an
+  empty band raises `StromlaufTooLong` instead of retrying forever (review 2: 16+
+  feeders in series hung the plan PDF); `layout_stromlauf` then returns one
+  sheet "Stromlaufplan allpolig nicht gezeichnet: Einspeisekette zu lang (…)".
 * `crossings()` returns every horizontal/vertical crossing that is not a
   junction; each is drawn as a hop (semicircle r 2.2 pt on the vertical line).
 
@@ -200,7 +241,7 @@ and the feeder chain open the first distribution band):
 `draw_stromlauf_sheets(c, sheets, *, plan, customer_name, project_label,
 fed_from, author, company, first_sheet, total)` maps the layout to the canvas
 only. Symbols per pole: contact, MCB, RCD ring, fuse, meter (eHZ / 3-Punkt),
-SPD, terminal circle, Lüsterklemme, RJ45, SABO. Hops with path arcs.
+SPD (a varistor block on each pole of box kind `spd`), terminal circle, Lüsterklemme, RJ45, SABO. Hops with path arcs.
 
 ### 5.5 Wiring
 

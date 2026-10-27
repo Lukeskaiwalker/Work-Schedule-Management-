@@ -13,7 +13,7 @@ import math
 
 import pytest
 
-from app.schemas.panel_enclosure import ModuleSpec, PanelEnclosure, parse_control_block
+from app.schemas.panel_enclosure import ModuleSpec, PanelEnclosure, parse_control_block, parse_length_m, parse_prep
 from app.schemas.schaltplan import PanelDocument
 from app.services.panel_enclosure_catalog import CatalogEntry, EnclosureCatalog, builtin_catalog
 from app.services.panel_enclosure_control_block import (
@@ -28,6 +28,7 @@ from app.services.panel_enclosure_control_block import (
     place_control_block,
 )
 from app.services.panel_enclosure_geometry import build_enclosure_scene
+from app.services.panel_enclosure_readable import readable_document
 from app.services.schaltplan_terminal_rules import TERMINAL_PARTS
 from scripts.write_enclosure_fixtures import (
     CONTROL_BLOCK_PARSE_CASES,
@@ -155,6 +156,26 @@ def test_wire_mm2(value: object, expected: float) -> None:
 ])
 def test_wire_length_is_rounded_half_up_and_kept_between_half_a_metre_and_twenty(value: object, expected: object) -> None:
     assert parse_control_block({"wire_length_m": value})["wire_length_m"] == expected
+
+
+def test_an_integer_beyond_float_range_is_no_length_and_never_raises() -> None:
+    """``math.isfinite`` on such an int raised OverflowError, which pydantic
+    does not turn into a ValidationError: the save answered 500 (§2.1 rule 8)."""
+    for value in (10**400, -(10**400), 2**1024, 10**309):
+        assert parse_length_m(value) is None
+        assert parse_control_block({"wire_length_m": value})["wire_length_m"] is None
+    assert parse_prep({"network_m": 10**400})["network_m"] is None
+    raw = '{"code":"ZB33S","modules":[],"control_block":{"terminals":[],"wire_length_m":1' + "0" * 400 + "}}"
+    assert PanelEnclosure.model_validate_json(raw).control_block.wire_length_m is None
+    raw = '{"code":"ZB33S","modules":[],"prep":{"network_m":1' + "0" * 400 + "}}"
+    assert PanelEnclosure.model_validate_json(raw).prep.network_m is None
+
+
+def test_a_stored_board_whose_block_cannot_be_read_still_opens() -> None:
+    stored = control_ehz_zb33s()
+    stored["enclosure"]["control_block"] = {**default_control_block(), "wire_length_m": 10**400}
+    _cleaned, typed, _findings = readable_document(stored)
+    assert typed.enclosure is not None and typed.enclosure.control_block.wire_length_m is None
 
 
 def test_tube_and_off() -> None:

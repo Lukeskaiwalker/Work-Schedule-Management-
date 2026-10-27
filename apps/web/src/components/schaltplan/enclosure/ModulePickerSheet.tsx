@@ -357,6 +357,7 @@ export function ModulePickerSheet(props: Props) {
 
   return (
     <SheetFrame
+      className="sp-encl-picker-sheet"
       title={`Modul für Feld ${field + 1}`}
       subtitle={cabinet ? cabinet.code : undefined}
       onBack={onBack}

@@ -31,6 +31,7 @@ import {
   klemmenStripIds,
   labelTooLongDetail,
   tubeMaterial,
+  printedLabel,
   wireLabelSegments,
   wireLabelSize,
 } from "../utils/schaltplanControlStrip";
@@ -179,6 +180,20 @@ describe("klemmenStripIds — the Klemmen dialog's \"Alle\"", () => {
     expect(klemmenStripIds(groups, null)).toEqual(["f1:leiste", "w:block", "f2:leiste"]);
     const tooLong = controlStrip(boardWith(blockWith(["Steuerbox 12"])));
     expect(klemmenStripIds(groups, tooLong)).toEqual(["f1:leiste", "w:block", "f2:leiste"]);
+  });
+});
+
+describe("printedLabel ⇄ printed_label", () => {
+  it("blanks the EZPL prefixes and controls the printer would, so counts and preview match the print", () => {
+    expect(printedLabel("A^B")).toBe("A B");
+    expect(printedLabel("~")).toBe("");
+    expect(printedLabel("  230V~ ")).toBe("230V");
+    expect(printedLabel("a\u0085b")).toBe("a b");
+    expect(printedLabel("\ufeffx")).toBe("\ufeffx");
+    expect(wireLabelSegments(boardWith(blockWith(["~", "^^"])))).toBeNull();
+    expect(wireLabelSegments(boardWith(blockWith(["A^B", "~", "Stve"])))?.map((s) => s.text)).toEqual(["A B", "A B", "Stve", "Stve"]);
+    const strip = controlStrip(boardWith(blockWith(["~", "A^B", ""])))!;
+    expect([strip.labels, strip.blankCount]).toEqual([["", "A B", ""], 2]);
   });
 });
 

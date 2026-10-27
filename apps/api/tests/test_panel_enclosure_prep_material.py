@@ -18,8 +18,10 @@ import copy
 from dataclasses import replace
 from types import MappingProxyType
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.schemas.panel_enclosure import EnclosureSpec
 from app.services.panel_enclosure_catalog import EnclosureCatalog, builtin_catalog
 from app.services.panel_enclosure_material import line_article_numbers
 from app.services.panel_enclosure_prep import cabinet_prep
@@ -173,6 +175,23 @@ def test_an_admin_accessory_for_a_derived_article_is_one_line_at_the_admin_slot(
         assert keys.index(JOINT) < keys.index("accessory:U84T") < keys.index("accessory:ZY3N2SA")
         joint = _by_key(lines)[JOINT]
         assert (joint.label, joint.detail, joint.planned) == (JOINT_LABEL, "1 Feldübergang: Feld 1–2", expected)
+
+
+@pytest.mark.parametrize("typed", ["ZZ55SAVE", "zz55save", " Zz55Save "])
+def test_an_admin_accessory_typed_in_any_case_is_still_one_line(typed: str) -> None:
+    """The catalogue stores article numbers upper-cased, as it does codes: an
+    iPad's "Zz55save" would otherwise double the connector and split its bookings."""
+    raw = {**copy.deepcopy(CATALOG.entries["ZB33S"].spec),
+           "accessories": [{"article_no": typed, "label": "Feldverbinder (Admin)", "qty": 1, "verified": True}]}
+    spec = EnclosureSpec.model_validate(raw).model_dump()
+    entries = dict(CATALOG.entries)
+    entries["ZB33S"] = replace(entries["ZB33S"], spec=spec, source="override")
+    catalog = EnclosureCatalog(MappingProxyType(entries))
+    lines = planned_lines(control_ehz_zb33s(), catalog)
+    assert [line.key for line in lines if line.key.lower() == JOINT.lower()] == [JOINT]
+    assert _by_key(lines)[JOINT].planned == 1
+    accessories = [n for n in line_article_numbers(control_ehz_zb33s(), catalog) if n.startswith("accessory:")]
+    assert accessories and all(n == n.upper().replace("ACCESSORY:", "accessory:") for n in accessories)
 
 
 def test_an_admin_accessory_the_board_has_switched_off_stays_the_admin_s_line() -> None:

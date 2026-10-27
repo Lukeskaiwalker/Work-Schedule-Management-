@@ -30,6 +30,7 @@
  */
 
 import type { CatalogIndex } from "./enclosureCatalog";
+import { edgeTrimmed } from "./edgeTrim";
 import { DEVICE_CATALOG } from "./schaltplanDevices";
 import { enclosureDeviceWidthMm } from "./enclosureLayout";
 import {
@@ -70,7 +71,7 @@ const DIN_RAIL = { mount: "rail" } as const;
 type StripEntry = { group: TerminalGroup; strip: TerminalStrip };
 
 /** Python's `text`: a stored string, trimmed; anything else "". */
-const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const trimmed = edgeTrimmed;
 const isPart = (ids: ReadonlySet<TerminalPartId> | ReadonlySet<string>, partId: string): boolean =>
   (ids as ReadonlySet<string>).has(partId);
 

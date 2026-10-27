@@ -43,6 +43,14 @@ describe("usePanelControlBlock", () => {
     expect(openLabels).toHaveBeenCalledWith(["rcd:f1:0", "rcd:f2:0", CONTROL_STRIP_ID], "reihenklemmen");
   });
 
+  it("keeps the strip print open when a §14a label is too long, so the dialog can say why", () => {
+    const long = { ...defaultControlBlock(), terminals: defaultControlBlock().terminals.map((t, i) => (i === 4 ? { ...t, label: "Steuerung" } : t)) };
+    const { result, openLabels } = setup(meterBoard(long));
+    expect(result.current.hasControlStrip).toBe(true);
+    result.current.printKlemmen();
+    expect(openLabels).toHaveBeenCalledWith(["rcd:f1:0", "rcd:f2:0"], "reihenklemmen");
+  });
+
   it("opens the wire labels in mode adern while a block exists", () => {
     const { result, openLabels } = setup(meterBoard());
     result.current.printWires!();

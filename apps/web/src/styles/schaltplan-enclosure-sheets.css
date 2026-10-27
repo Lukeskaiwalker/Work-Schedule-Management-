@@ -88,6 +88,25 @@
   background: #fff;
 }
 
+/* The module picker keeps one height whatever the hit count: an auto-height
+   sheet shrank (and the centred dialog re-centred) on every keystroke that
+   narrowed the list, so the field being typed into jumped 100–300 px. Only
+   the body shrinks and scrolls. The drop note's max-height still caps it. */
+.sp-sheet.sp-encl-picker-sheet {
+  height: 88vh;
+}
+
+@media (min-width: 768px) {
+  .sp-sheet.sp-encl-picker-sheet {
+    height: 84vh;
+  }
+}
+
+.sp-encl-picker-sheet .sp-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 /* ── Module search (docs/PANEL_ENCLOSURE_R4.md §8.1) ─────────────────────── */
 
 .sp-encl-search {

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.orm import Session
 
 from app.services.schaltplan_layout import text_width_em
-from app.services.werkstatt_label_errors import LabelFormatUnsupported
+from app.services.werkstatt_label_errors import LabelFormatUnsupported, NothingToPrint
 from app.services.werkstatt_label_frame import _ENCODING, _at, _clean, _Frame, _frame, _sheet
 from app.services.werkstatt_label_materials import material_by_id
 from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM, MaterialProfile, dots_to_mm, mm_to_dots
@@ -251,7 +251,7 @@ def print_marking_strips(
         printed += sum(1 for label in control.labels if _clean(label, 40))
         jobs.append(render_control_strip(profile, control.labels, size=control.size))
     if not jobs:
-        raise ValueError("nothing to print")
+        raise NothingToPrint("nothing to print")
     payload = b"".join(("\r\n".join(job) + "\r\n").encode(_ENCODING) for job in jobs)
     printer = wl._ship(db, payload)
     wl.logger.info(

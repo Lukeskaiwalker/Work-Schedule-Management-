@@ -27,6 +27,7 @@
  */
 
 import { catalogEntry } from "./schaltplanDevices";
+import { edgeTrimmed } from "./edgeTrim";
 import { DERIVE, blockPlacement, controlBlockLayout, type BlockArg } from "./enclosureControlBlock";
 import { enclosureModules, meterZones, type CatalogIndex } from "./enclosureCatalog";
 import {
@@ -199,7 +200,7 @@ function moduleBoxes(ctx: Context, module: EnclosureModule): SceneBox[] {
   const spec = ctx.index.module(module.code);
   const rect = moduleRect(module, spec, ctx.cabinet);
   const flags = spec ? (spec.verified ? [] : ["unverified"]) : ["unknown_code"];
-  const label = spec ? spec.article_no : (module.code ?? "").trim();
+  const label = spec ? spec.article_no : edgeTrimmed(module.code);
   const boxes = [box(`module:${module.id}`, "module", rect, Z.module, { label, moduleId: module.id, flags })];
   if (!spec) return boxes;
   for (const zone of spec.zones) {
@@ -245,7 +246,7 @@ function railBoxes(ctx: Context, module: EnclosureModule, zone: ZoneSpec, rail: 
   const boxes = [
     box(`rail:${module.id}:${rail.key}`, busbar ? "busbar" : "rail", railRect, busbar ? Z.busbar : Z.rail, {
       ...refs,
-      label: (row?.label ?? "").trim() || generatedRowLabel(module, zone, rail),
+      label: edgeTrimmed(row?.label) || generatedRowLabel(module, zone, rail),
       flags: [...(rail.retired ? ["retired"] : []), ...(terminalRail ? ["terminals"] : [])],
     }),
   ];
@@ -285,7 +286,7 @@ function deviceFlags(ctx: Context, device: PanelDevice, overflow: boolean): stri
 
 /** BMK, else the catalogue's short name. */
 export function deviceLabelText(device: Pick<PanelDevice, "designation" | "kind">): string {
-  return (device.designation ?? "").trim() || catalogEntry(device.kind).short;
+  return edgeTrimmed(device.designation) || catalogEntry(device.kind).short;
 }
 
 // ── Meter places ─────────────────────────────────────────────────────────────
@@ -304,7 +305,7 @@ function meterBoxes(ctx: Context, module: EnclosureModule, spec: ModuleSpec, mod
     for (let i = 0; i < zone.meter_places; i += 1, place += 1) {
       const entry = occupied.get(place);
       const rect = meterRect(zone_, zone.meter_places, i, size, type === "3punkt");
-      boxes.push(...meterPlaceBoxes(ctx, module.id, place, rect, entry ? (entry.number ?? "").trim() : null));
+      boxes.push(...meterPlaceBoxes(ctx, module.id, place, rect, entry ? edgeTrimmed(entry.number) : null));
     }
   }
   return boxes;

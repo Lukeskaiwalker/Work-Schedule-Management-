@@ -26,7 +26,8 @@ from typing import Any, Mapping, Sequence
 from app.services.panel_enclosure_geometry import round1
 from app.services.schaltplan_pdf_style import FONT, text_width
 from app.services.schaltplan_stromlauf_cabinet import CabinetSection, Lane, NarSegment
-from app.services.schaltplan_stromlauf_layout_bands import BLUE, MUTED, SIZE, Builder, bus_conductors, supply_labels
+from app.services.schaltplan_pdf_style import FONT_BOLD
+from app.services.schaltplan_stromlauf_layout_bands import BLUE, MUTED, SIZE, WARN, Builder, bus_conductors, supply_labels
 from app.services.schaltplan_stromlauf_layout_cabinet_lane import (
     BUS_DX,
     KIT,
@@ -45,7 +46,9 @@ HEAD_H = 42.0                     # caption, labels and tags above the first ite
 BOX_LOW, BOX_HIGH = 12.0, 20.0    # an infeed/joint box, this far above the top of the item it opens
 SPLIT = 6.0                       # the PEN split, above the first item's top
 BLOCK_X = 392.0                   # the §14a block: right of the Trennvorrichtung column
-XREF_PREFIXES = ("→ Forts. Blatt ", "Forts. von Blatt ", "→ Sammelschiene Blatt ")
+#: The NAR's own distribution: circuits whose FI names no feeder ("Eingespeist von" not set).
+NAR_XREF = "→ Verteilung ohne Zähler Blatt "
+XREF_PREFIXES = ("→ Forts. Blatt ", "Forts. von Blatt ", "→ Sammelschiene Blatt ", NAR_XREF)
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,12 @@ def fields_text(fields: Sequence[int]) -> str:
     if len(numbers) > 1 and numbers == list(range(numbers[0], numbers[-1] + 1)):
         return f"Feld {numbers[0]}–{numbers[-1]}"
     return "Feld " + ", ".join(str(n) for n in numbers) if numbers else ""
+
+
+def nar_sheet(model: StromlaufModel, source_sheets: Mapping[str, int]) -> int | None:
+    """The first sheet of a distribution fed straight off the NAR (origin ``cabinet:``), or None."""
+    sheets = sorted(source_sheets[s.key] for s in model.sources if s.origin == "cabinet:" and s.key in source_sheets)
+    return sheets[0] if sheets else None
 
 
 def lane_links(model: StromlaufModel, source_sheets: Mapping[str, int]) -> dict[str, tuple[str, str]]:
@@ -241,10 +250,14 @@ def _draw_bus(b: Builder, page: _Page, section: CabinetSection, model: Stromlauf
     return corners
 
 
-def _draw_header(b: Builder, page: _Page, section: CabinetSection, model: StromlaufModel) -> None:
+def _draw_header(b: Builder, page: _Page, section: CabinetSection, model: StromlaufModel, nar: int | None) -> None:
     x = page.x0 + KIT[0]
     if page.index == 0:
-        b.text(x, page.top - 7.0, model.supply.caption, w=page.x1 - x, bold=True, size=7.5)
+        xref = f"{NAR_XREF}{nar}" if nar is not None else ""
+        xref_w = text_width(xref, FONT_BOLD, SIZE) + 0.1 if xref else 0.0
+        b.text(x, page.top - 7.0, model.supply.caption, w=page.x1 - x - (xref_w + 12 if xref else 0), bold=True, size=7.5)
+        # Paired with the distribution's "von Einspeisung · Blatt {this}": an FI without feeder hangs off the NAR.
+        b.text(page.x1, page.top - 7.0, xref, w=xref_w, bold=True, anchor="end", colour=WARN)
         for text, colour in supply_labels(model.supply):
             if text != "PEN-Aufteilung im NAR":
                 width = text_width(text, FONT, SIZE)
@@ -265,7 +278,7 @@ def _stub(b: Builder, page: _Page, segment: NarSegment | None, top: float) -> No
 
 
 def _sheet(model: StromlaufModel, frame: Any, pages: Sequence[Sequence[Item]], index: int,
-           links: Mapping[str, tuple[str, str]]) -> dict[str, Any]:
+           links: Mapping[str, tuple[str, str]], nar: int | None) -> dict[str, Any]:
     items = tuple(pages[index])
     top = frame.y1 - HEAD_H
     tops: list[float] = []
@@ -276,12 +289,12 @@ def _sheet(model: StromlaufModel, frame: Any, pages: Sequence[Sequence[Item]], i
     page = _Page(frame.x0, frame.x1, frame.y1, frame.first_sheet + index, index, index == len(pages) - 1, items,
                  tuple(tops))
     b = Builder()
-    _draw_header(b, page, section, model)
+    _draw_header(b, page, section, model, nar)
     corners = _draw_bus(b, page, section, model)
     for item, item_top in zip(items, tops):
         if item.lane is not None:
             draw_lane(b, page.x0, item.lane, item_top, bus_conductors(model.supply), corners, links[item.lane.key],
-                      section)
+                      section, unlinked=nar is not None)
         else:
             _stub(b, page, section.segments[item.segment] if item.segment < len(section.segments) else None, item_top)
     band_at = _band_index(cabinet_items(section), section)
@@ -318,4 +331,5 @@ def cabinet_sheets(model: StromlaufModel, frame: Any, source_sheets: Mapping[str
     if not pages:
         return []
     links = lane_links(model, source_sheets)
-    return [_sheet(model, frame, pages, index, links) for index in range(len(pages))]
+    nar = nar_sheet(model, source_sheets)
+    return [_sheet(model, frame, pages, index, links, nar) for index in range(len(pages))]

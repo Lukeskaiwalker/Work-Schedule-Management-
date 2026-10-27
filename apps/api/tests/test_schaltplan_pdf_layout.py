@@ -78,12 +78,29 @@ def test_several_groups_share_a_band() -> None:
 
 
 def test_a_group_wider_than_the_rest_of_a_band_continues_in_the_next_band() -> None:
-    # 4 + 6 circuits: one sheet, not two — F2 starts beside F1 and continues below.
+    # 4 + 6 circuits: one sheet, not two — and F2 whole in the empty band below (review 2:
+    # it was torn 3+3 although band 1 held all six).
     sheets = ov.paginate_overview([_group("f1", 4), _group("f2", 6)])
-    assert _shape(sheets) == [[[("f1", 0, 4), ("f2", 0, 3)], [("f2", 3, 6)]]]
+    assert _shape(sheets) == [[[("f1", 0, 4)], [("f2", 0, 6)]]]
     # Never a one-column chunk: with room for one column only, the group moves on.
     sheets = ov.paginate_overview([_group("f1", 6), _group("f2", 3)])
     assert _shape(sheets) == [[[("f1", 0, 6)], [("f2", 0, 3)]]]
+
+
+def test_a_group_that_fits_the_next_band_whole_is_not_split() -> None:
+    assert _shape(ov.paginate_overview([_group("f1", 4), _group("f2", 4)])) == [[[("f1", 0, 4)], [("f2", 0, 4)]]]
+    for sheet in ov.paginate_overview([_group("f1", 4), _group("f2", 4), _group("f3", 3)]):
+        for band in sheet.bands:
+            for chunk in band:
+                assert (chunk.start, chunk.stop) == (0, len(chunk.group["children"])), chunk.group["device"]["id"]
+
+
+def test_keeping_groups_whole_never_costs_a_sheet() -> None:
+    for fis in range(1, 5):
+        for sizes in itertools.product(range(2, 7), repeat=fis):
+            groups = [_group(f"f{i}", n) for i, n in enumerate(sizes, start=1)]
+            loads = ov._ordered_loads(groups)
+            assert len(ov.paginate_overview(groups)) <= len(ov._pack(loads, keep_whole=False)), sizes
 
 
 def test_a_group_wider_than_a_band_is_split_into_column_chunks() -> None:

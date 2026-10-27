@@ -31,6 +31,10 @@ class LabelFormatUnsupported(RuntimeError):
     """The requested format does not fit the material; str() is German."""
 
 
+class NothingToPrint(ValueError):
+    """Every text of a marking print cleaned to nothing (``~``/``^`` only); the route answers 400."""
+
+
 class LabelLayoutOutOfBounds(LabelFormatUnsupported):
     """An element would print outside the material (the coordinate guard)."""
 

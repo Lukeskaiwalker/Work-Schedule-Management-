@@ -18,7 +18,10 @@ with ``qty`` 0 and ``suppressed`` true, so the editor can strike it through.
 Busbar zones have a **role** (R4-11): ``main`` (unmetered: every NAR, the SAS
 of a communication field, a SAS that holds an SLS) or ``customer`` (every
 other SAS, after the meter). Joints and the infeed never cross roles: a
-connector between them would bridge around the meter.
+connector between them would bridge around the meter. A customer zone also
+knows the meter(s) feeding its module (``panel_enclosure_busbar_meters``):
+two customer zones of different meters are never joined, and a joint where
+a side's meter is unknown is planned unverified ("Zähler prüfen").
 
 Runs are measured in scene millimetres, vertical first then horizontal, on
 the unrounded points; ``lengthMm`` is rounded once and everything downstream
@@ -33,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from app.services.cable_section_parse import parse_cable_section
+from app.services.panel_enclosure_busbar_meters import different_meters, feed_index, meter_unknown, module_meters
 from app.services.panel_enclosure_catalog import EnclosureCatalog
 from app.services.panel_enclosure_control_block import (
     CONTROL_PARTS,
@@ -81,7 +85,8 @@ SABO_OFFSET_MM = 30.0  # the SABO sits this far right of the NAR busbar's left e
 K96ESA5_MAX_MM2 = 25.0
 K96ESA5_MAX_FUSE_A = 100
 _HEIGHT_DIGITS = {1100: "3", 1400: "5"}
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+#: ASCII digits only, as JS ``\d`` (``float`` would read "B１０" as 10 here, null in TS).
+_NUMBER = re.compile(r"[0-9]+(?:[.,][0-9]+)?", re.ASCII)
 #: Hager Bestellhilfe 20DE0173: (carrier family, cabinet height, APZ top/bottom) →
 #: the lead for 0, 1, 2, 3 fields between the APZ and the meter field.
 HAGER_NETWORK_TABLE: dict[tuple[str, int, str], tuple[str, str, str, str]] = {
@@ -93,12 +98,16 @@ HAGER_NETWORK_TABLE: dict[tuple[str, int, str], tuple[str, str, str, str]] = {
     ("meter_3p", 1400, "top"): ("ZZ45WAN100", "ZZ45WAN150", "ZZ45WAN150", "ZZ45WAN200"),
 }
 _LEAD_MM = {code: length for length, code in NETWORK_LEADS}
-_CLAMPS_CU = ((70.0, "K96F", "Sammelschienenklemme 25–70 mm² für 12×5 mm"),
-              (95.0, "K96H", "Sammelschienenklemme 16–95 mm² für 12×5 mm"),
-              (150.0, "K96K", "Sammelschienenklemme 50–150 mm² für 12×5 mm"),
-              (185.0, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"))
-_CLAMPS_AL = ((50.0, "K96N", "Sammelschienenklemme 10–50 mm², Al/Cu"),
-              (185.0, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"))
+#: (min mm², max mm², article, label) on a 12×5 mm busbar, first fit wins (hager.com, 2026-10-26:
+#: K96H takes 25–95 mm² on 12×5 mm; K96C 2,5–35 mm² Cu is only reached below 25 mm²).
+_CLAMPS_CU = ((25.0, 70.0, "K96F", "Sammelschienenklemme 25–70 mm² für 12×5 mm"),
+              (25.0, 95.0, "K96H", "Sammelschienenklemme 25–95 mm² für 12×5 mm"),
+              (50.0, 150.0, "K96K", "Sammelschienenklemme 50–150 mm² für 12×5 mm"),
+              (50.0, 185.0, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"),
+              (2.5, 35.0, "K96C", "Sammelschienenklemme 2,5–35 mm² für 12×5 mm"))
+_CLAMPS_AL = ((10.0, 50.0, "K96N", "Sammelschienenklemme 10–50 mm², Al/Cu"),
+              (50.0, 185.0, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"))
+CLAMP_MAX_MM2 = 185.0
 _SUPPLY_DEVICE = {"SA": "SABO 1,6 A", "LS": "LS 6 A", "SI": "Sicherungsbox 1 A"}
 _SUPPLY_PART = {"SA": "SABO 1,6 A", "LS": "Sammelschienen-LS 6 A", "SI": "Sicherungsbox 1 A im RfZ"}
 
@@ -183,6 +192,8 @@ def first_apz(document: Any, catalog: EnclosureCatalog) -> PlacedZone | None:
 class BusbarZone:
     placed: PlacedZone
     role: str
+    #: Customer zones: the meter modules feeding the module (empty = unknown); main zones: empty.
+    meters: frozenset[str] = frozenset()
 
     @property
     def field(self) -> int:
@@ -199,8 +210,9 @@ def _holds_sls(document: Any, catalog: EnclosureCatalog, placed: PlacedZone, rai
 
 
 def busbar_zones(document: Any, catalog: EnclosureCatalog) -> list[BusbarZone]:
-    """Every NAR/SAS zone with a busbar rail, with its role (R4-11)."""
+    """Every NAR/SAS zone with a busbar rail, with its role (R4-11) and, for a customer zone, its meters."""
     out: list[BusbarZone] = []
+    feeds = None
     for zone_type in ("NAR", "SAS"):
         for placed in placed_zones(document, catalog, zone_type):
             busbar = next((r for r in dicts(placed.zone.get("rails")) if r.get("mount") == "busbar"), None)
@@ -208,7 +220,11 @@ def busbar_zones(document: Any, catalog: EnclosureCatalog) -> list[BusbarZone]:
                 continue
             main = zone_type == "NAR" or placed.spec.get("family") == "communication" or _holds_sls(
                 document, catalog, placed, busbar)
-            out.append(BusbarZone(placed, ROLE_MAIN if main else ROLE_CUSTOMER))
+            if main:
+                out.append(BusbarZone(placed, ROLE_MAIN))
+                continue
+            feeds = feeds if feeds is not None else feed_index(document, catalog)
+            out.append(BusbarZone(placed, ROLE_CUSTOMER, module_meters(placed.module, feeds)))
     return sorted(out, key=lambda z: (z.field, z.placed.start, z.placed.index))
 
 
@@ -216,10 +232,27 @@ def _overlap(a: BusbarZone, b: BusbarZone) -> bool:
     return a.placed.start < b.placed.end and b.placed.start < a.placed.end
 
 
+def other_meters(a: BusbarZone, b: BusbarZone) -> bool:
+    """Two customer zones fed through different meters."""
+    return a.role == b.role == ROLE_CUSTOMER and different_meters(a.meters, b.meters)
+
+
+def unchecked_meter(a: BusbarZone, b: BusbarZone) -> bool:
+    """Two customer zones where a side's meter is unknown."""
+    return a.role == b.role == ROLE_CUSTOMER and meter_unknown(a.meters, b.meters)
+
+
 def joined(a: BusbarZone, b: BusbarZone) -> bool:
-    """Neighbouring fields, different modules, same role, spans overlapping."""
+    """Neighbouring fields, different modules, same role, spans overlapping — and, for customer zones, not of different meters."""
     return (abs(a.field - b.field) == 1 and a.placed.module_id != b.placed.module_id
-            and a.role == b.role and _overlap(a, b))
+            and a.role == b.role and _overlap(a, b) and not other_meters(a, b))
+
+
+def unchecked_pairs(zones: list[BusbarZone]) -> list[tuple[int, int]]:
+    """(left, right) fields of every joined customer pair with a meter unknown, once each."""
+    pairs = {(a.field, b.field) for a in zones for b in zones
+             if b.field == a.field + 1 and joined(a, b) and unchecked_meter(a, b)}
+    return sorted(pairs)
 
 
 def joint_pairs(zones: list[BusbarZone]) -> list[tuple[str, int, int]]:
@@ -416,11 +449,12 @@ def _supply(board: _Board) -> _Part:
 
 
 def _clamp(mm2: float | None, aluminium: bool) -> tuple[str, str] | None:
+    """The first clamp whose range holds the conductor; the table's first for an unknown section."""
+    table = _CLAMPS_AL if aluminium else _CLAMPS_CU
     if mm2 is None:
-        table = _CLAMPS_AL if aluminium else _CLAMPS_CU
-        return table[0][1], table[0][2]
-    for limit, article, label in _CLAMPS_AL if aluminium else _CLAMPS_CU:
-        if mm2 <= limit:
+        return table[0][2], table[0][3]
+    for low, high, article, label in table:
+        if low <= mm2 <= high:
             return article, label
     return None
 
@@ -457,7 +491,7 @@ def _infeed(board: _Board) -> _Part:
     adapter = effective == "K96ESA5" or (
         effective == "auto" and (mm2 is None or mm2 <= K96ESA5_MAX_MM2) and not aluminium)
     extra = "".join(f" · Feld {min(z.field for z in run) + 1}: eigene Einspeisung" for run in runs[1:])
-    facts: dict[str, Any] = {"infeed_size": mm2 if mm2 is not None and mm2 > 185 else None}
+    facts: dict[str, Any] = {"infeed_size": mm2 if mm2 is not None and mm2 > CLAMP_MAX_MM2 else None}
     items: list[dict[str, Any]] = []
     article: str | None = None
     if adapter:
@@ -470,6 +504,8 @@ def _infeed(board: _Board) -> _Part:
         qty = (cores if cores in (4, 5) else 5) * len(runs)
         items.append(item(f"accessory:{article}", article, clamp[1], qty, _clamp_reason(mm2, aluminium) + extra,
                           group=GROUP_BUSBAR, verified=False, override=choice, suppressed=choice == "off"))
+    elif mm2 is not None and mm2 <= CLAMP_MAX_MM2:
+        facts["infeed_small"] = {"mm2": mm2, "aluminium": aluminium}
     facts["infeed"] = {"mm2": mm2, "cores": cores, "aluminium": aluminium, "article": article,
                        "assumed": adapter and choice == "auto" and mm2 is None}
     if board.supply.get("system") == "TN-C-S" and cores == 4:
@@ -489,9 +525,11 @@ def _joints(board: _Board) -> _Part:
     count = len(pairs)
     spans = ", ".join(f"Feld {a + 1}–{b + 1}" for _, a, b in pairs)
     reason = f"1 Feldübergang: {spans}" if count == 1 else f"{count} Feldübergänge: {spans}"
+    unchecked = unchecked_pairs(list(board.zones))
+    reason += "".join(f" · Feld {a + 1}–{b + 1}: Zähler prüfen" for a, b in unchecked)
     choice = str(board.overrides["joints"])
     return _Part(items=(item("accessory:ZZ55SAVE", "ZZ55SAVE", "Sammelschienenverbinder Feld/Feld, 5-polig, 12×5 mm, 250 A",
-                             count, reason, group=GROUP_BUSBAR, verified=True, override=choice,
+                             count, reason, group=GROUP_BUSBAR, verified=not unchecked, override=choice,
                              suppressed=choice == "off"),))
 
 

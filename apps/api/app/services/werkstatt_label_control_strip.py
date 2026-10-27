@@ -115,16 +115,27 @@ class ControlStrip:
         return _round1(total)
 
 
+def printed_label(label: str) -> str:
+    """A label as the printer prints it (``_clean``): ``~``/``^`` and controls blanked.
+
+    Twin: ``printedLabel`` in schaltplanControlStrip.ts. Counts, sizes and the
+    preview all read this, so "A^B" is measured and shown as "A B" and a label
+    of only "~" is blank.
+    """
+    return _clean(label, CONTROL_LABEL_MAX)
+
+
 def control_strip(document: Any) -> ControlStrip | None:
     """The strip exists iff the parsed block exists, is not off and has a terminal.
 
     Read only through ``parse_control_block`` (``stored_block``); no
     catalogue is needed — the strip is printed whether the block sits yet.
+    The labels are the printed ones (``printed_label``).
     """
     block = stored_block(document)
     if block is None or block["off"] or not block["terminals"]:
         return None
-    labels = tuple(terminal["label"] for terminal in block["terminals"])
+    labels = tuple(printed_label(terminal["label"]) for terminal in block["terminals"])
     return ControlStrip(labels=labels, size=control_strip_size(labels))
 
 
@@ -264,8 +275,9 @@ def wire_label_segments(document: Any) -> list[tuple[str, float]] | None:
         return None
     segments: list[tuple[str, float]] = []
     for terminal in block["terminals"]:
-        if terminal["label"]:
-            segments += [(terminal["label"], WIRE_LABEL_PIECE_MM), (terminal["label"], WIRE_LABEL_PIECE_MM)]
+        label = printed_label(terminal["label"])
+        if label:
+            segments += [(label, WIRE_LABEL_PIECE_MM), (label, WIRE_LABEL_PIECE_MM)]
     return segments or None
 
 

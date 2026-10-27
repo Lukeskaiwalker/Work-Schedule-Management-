@@ -87,6 +87,9 @@ describe("draftFromSpec / entryFromDraft", () => {
       ],
     };
     expect(ok(draft).spec.accessories).toEqual([{ article_no: "ZZ99X1", label: "Feldverbinder (erfunden)", qty: 2, verified: true }]);
+    // Upper-cased like the API's AccessorySpec, so the preview shows what the server stores.
+    const typed = { ...draft, accessories: [{ article_no: " zz99x1 ", label: "Feldverbinder (erfunden)", qty: 2, verified: true }] };
+    expect(ok(typed).spec.accessories).toEqual([{ article_no: "ZZ99X1", label: "Feldverbinder (erfunden)", qty: 2, verified: true }]);
   });
 });
 

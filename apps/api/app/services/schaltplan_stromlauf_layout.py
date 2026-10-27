@@ -43,6 +43,7 @@ from app.services.schaltplan_stromlauf_layout_bands import (
     Band,
     Builder,
     Chunk,
+    WARN,
     SegmentPlan,
     bus_conductors,
     column_width,
@@ -59,6 +60,13 @@ from app.services.schaltplan_stromlauf_model import LoadGroup, Source, Stromlauf
 STROMLAUF_TITLE = "Stromlaufplan allpolig"
 SEGMENT_GAP = 20.0
 BAND_GAP = 8.0
+#: A backstop: no real board needs this many distribution sheets.
+MAX_SHEETS = 400
+
+
+class StromlaufTooLong(ValueError):
+    """A source's start (tags and the feeders in series) leaves no room for two columns
+    on an empty band: placing would never make progress. ``layout_stromlauf`` draws a note."""
 
 __all__ = ["STROMLAUF_TITLE", "Frame", "crossings", "layout_stromlauf", "paginate_columns"]
 
@@ -125,6 +133,8 @@ class _Packer:
         if self.band == 0:
             self.band = 1
         else:
+            if len(self.sheets) >= MAX_SHEETS:
+                raise StromlaufTooLong(f"mehr als {MAX_SHEETS} Blätter")
             self.sheets.append([[], []])
             self.band = 0
 
@@ -135,7 +145,10 @@ class _Packer:
             x0 = band[-1].x1 + SEGMENT_GAP if band else self.frame.x0
             opens_supply = first and source.origin == "supply"
             start = start_width(source, self.model.supply, first=first, opens_supply=opens_supply)
-            if x0 + start + CONT_W + 96.0 <= self.frame.x1 or not band:
+            fits = x0 + start + CONT_W + 96.0 <= self.frame.x1
+            if not fits and not band:
+                raise StromlaufTooLong(f"{len(source.series)} Schaltgeräte in Reihe")
+            if fits:
                 origin = self._origin_text(source) if first else "von Blatt 00"
                 plan = SegmentPlan(source, x0, start, (), first, origin if first else "")
                 caption_w = text_width(plan.caption + " · → Blatt 00", FONT_BOLD, SIZE)
@@ -170,6 +183,9 @@ class _Packer:
                 if fit >= 2:  # a chunk that continues is at least two columns wide
                     self._add(Chunk(group, start, start + fit, x, head, widths[start:start + fit]))
                     start += fit
+                elif not segment.chunks and len(self._band()) == 1:
+                    # A fresh band and still no room: a new band would be the same band again.
+                    raise StromlaufTooLong(f"{len(source.series)} Schaltgeräte in Reihe")
                 if self._band()[-1].chunks:
                     first = False
                 else:
@@ -261,10 +277,27 @@ def _sheet(plan: Sequence[Sequence[SegmentPlan]], model: StromlaufModel, frame: 
             "note": unknown_phase_note(len(b.unknown))}
 
 
+def _too_long_sheet(frame: Frame, reason: str) -> dict[str, Any]:
+    """One sheet that says why the allpolig sheets are not drawn; the Übersicht and the list still are."""
+    b = Builder()
+    b.text(frame.x0, frame.y1 - 30.0, f"Stromlaufplan allpolig nicht gezeichnet: Einspeisekette zu lang ({reason}).",
+           w=frame.x1 - frame.x0, bold=True, colour=WARN)
+    b.text(frame.x0, frame.y1 - 44.0, "Übersicht und Stromkreisliste gelten. Die Kette im Tab Aufbau prüfen "
+           "(„Eingespeist von“ der Schaltgeräte).", w=frame.x1 - frame.x0, colour=MUTED)
+    return {"kind": "distribution", "title": STROMLAUF_TITLE, "number": frame.first_sheet, "wires": [], "dots": [],
+            "hops": [], "boxes": [], "texts": b.texts, "xrefs": [], "note": ""}
+
+
 def layout_stromlauf(model: StromlaufModel, frame: Frame) -> list[dict[str, Any]]:
-    """Every Stromlauf sheet: the cabinet sheets, then the distribution sheets."""
+    """Every Stromlauf sheet: the cabinet sheets, then the distribution sheets.
+
+    A feeder chain no band can hold (``StromlaufTooLong``) gives one note sheet instead.
+    """
     origins = _cabinet_origins(model, frame)
-    plans = paginate_columns(model, frame, origins)
+    try:
+        plans = paginate_columns(model, frame, origins)
+    except StromlaufTooLong as exc:
+        return [_too_long_sheet(frame, str(exc))]
     first = frame.first_sheet + _cabinet_sheet_count(model, frame)
     source_sheets: dict[str, int] = {}
     for number, sheet in enumerate(plans, start=first):

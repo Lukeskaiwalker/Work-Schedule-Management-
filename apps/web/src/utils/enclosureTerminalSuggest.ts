@@ -30,6 +30,7 @@
  */
 
 import type { CatalogIndex } from "./enclosureCatalog";
+import { edgeTrimmed } from "./edgeTrim";
 import { enclosureDeviceWidthMm } from "./enclosureLayout";
 import { formatMmText } from "./enclosureGeometry";
 import {
@@ -81,7 +82,7 @@ export function joinAnd(items: readonly string[]): string {
 
 export const isPlaceholder = (device: PanelDevice): boolean => PLACEHOLDER_KINDS.has(String(device.kind ?? ""));
 
-const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const trimmed = edgeTrimmed;
 
 /** "Q1" / "FI" / "Einspeisung": how a group head reads in a sentence (`group_head_label`). */
 export function headLabel(head: PanelDevice | null): string {

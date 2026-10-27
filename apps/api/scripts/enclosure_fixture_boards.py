@@ -68,6 +68,10 @@ preparation.
   overrides supply LS, network off.
 * ``reserve_zb33s`` — a ZH33XL left of a ZH33X7: the carrier is the ZH33X7; a
   4-core TN-C-S infeed "NYY-J 4x35" (``pen_split``, K96F × 4).
+* ``two_meters_busbar_zb34s`` — Haushalt and Wärmepumpe meters side by side
+  (their NARs joined), each feeding its own ZH3ES5 distribution, the two
+  ZH3ES5 side by side: their customer busbars belong to different meters and
+  are never joined (``busbar_meters``, one ZZ55SAVE only).
 """
 
 from __future__ import annotations
@@ -544,6 +548,27 @@ def reserve_zb33s() -> dict[str, Any]:
     return document("ZB33S", modules, rows, supply={"incoming": "NYY-J 4x35"}, control_block=default_control_block())
 
 
+def two_meters_busbar_zb34s(second_feed: str | None = "dev-m2-q1") -> dict[str, Any]:
+    """``second_feed``: the switch feeding FI F2 in Feld 4 (``None``: Feld 4's rail is empty)."""
+    modules = [
+        module("mod-m1", "ZH3EL27", 0, {"nar": "row-m1-nar", "aar1": "row-m1-aar1"},
+               meters=[meter(0, "1XYZ0000000101", "Haushalt")]),
+        module("mod-m2", "ZH3EL27", 1, {"nar": "row-m2-nar", "aar1": "row-m2-aar1"},
+               meters=[meter(0, "1XYZ0000000102", "Wärmepumpe")]),
+        module("mod-s1", "ZH3ES5", 2, {"r3": "row-s1"}),
+        module("mod-s2", "ZH3ES5", 3, {"r3": "row-s2"}),
+    ]
+    second = [fi("dev-s2-f2", "F2", parent_id=second_feed), ls("dev-s2-1", "F2.1", "2", "Wärmepumpe", rating="C16")]
+    rows = [
+        *_meter_rows("m1", 1, "Q0", "Q1"),
+        *_meter_rows("m2", 2, "Q10", "Q11"),
+        row("row-s1", "F3 · Verteiler 3", [fi("dev-s1-f1", "F1", parent_id="dev-m1-q1"),
+                                            ls("dev-s1-1", "F1.1", "1", "Licht")]),
+        row("row-s2", "F4 · Verteiler 3", second if second_feed is not None else []),
+    ]
+    return document("ZB34S", modules, rows, control_block=default_control_block())
+
+
 BOARDS = {
     "meter_dist_zb33s": meter_dist_zb33s,
     "violations_zb34s": violations_zb34s,
@@ -558,4 +583,5 @@ BOARDS = {
     "control_3p_zb53s": control_3p_zb53s,
     "busbar_gap_zb34s": busbar_gap_zb34s,
     "reserve_zb33s": reserve_zb33s,
+    "two_meters_busbar_zb34s": two_meters_busbar_zb34s,
 }

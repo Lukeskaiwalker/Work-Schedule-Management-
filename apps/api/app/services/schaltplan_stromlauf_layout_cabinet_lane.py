@@ -36,6 +36,7 @@ KIT, SLS, METER, SWITCH, HLAK = (56.0, 120.0), (176.0, 56.0), (232.0, 96.0), (32
 LINE_END, XREF = 426.0, 432.0
 TEXT_LINES = (58.0, 65.5, 73.0)
 NOTE_LINE = 88.0
+SPD_LINE = 80.5  # the module's SPDs (NAR/AAR), between the column texts and the notes
 # The supply kit: its box under the lane, the tap x of L1 and N, and per lead end (N row, L1 row).
 KIT_BOX = (60.0, 72.0, 52.0, 62.0)          # x0, x1, top offset, bottom offset
 KIT_TAP = {"L1": 63.0, "N": 69.0}
@@ -173,8 +174,13 @@ def _wires(b: Builder, x0: float, top: float, elements: Sequence[_Element], cond
 
 
 def draw_lane(b: Builder, x0: float, lane: Lane, top: float, conductors: Sequence[str],
-              corners: set[tuple[float, float]], link: tuple[str, str], section: CabinetSection) -> None:
-    """The lane below ``top``: title, taps, kit, SLS, meter, Trennvorrichtung, HLAK, xref, notes."""
+              corners: set[tuple[float, float]], link: tuple[str, str], section: CabinetSection, *,
+              unlinked: bool = False) -> None:
+    """The lane below ``top``: title, taps, kit, SLS, meter, Trennvorrichtung, HLAK, xref, notes.
+
+    ``unlinked``: the board has a distribution fed straight off the NAR (an FI without
+    "Eingespeist von"); a lane with nothing behind it then says so instead of "keine Stromkreise".
+    """
     b.text(x0 + KIT[0], top - 9.0, lane.title, w=XREF - KIT[0] - 6, bold=True, size=7.0, colour=BLUE)
     for c in conductors:
         point = (round1(x0 + BUS_DX[c]), round1(top - ROWS[c]))
@@ -195,6 +201,10 @@ def draw_lane(b: Builder, x0: float, lane: Lane, top: float, conductors: Sequenc
     if xref:
         b.text(x0 + XREF, top - 27.0, xref, w=150.0, bold=True, colour=BLUE)
         b.text(x0 + XREF, top - 36.0, fields, w=150.0, colour=MUTED)
+    elif unlinked:
+        b.text(x0 + XREF, top - 27.0, "Verteilung nicht verknüpft", w=150.0, bold=True, colour=WARN)
+        b.text(x0 + XREF, top - 36.0, "„Eingespeist von“ am FI setzen", w=150.0, colour=WARN)
     else:
         b.text(x0 + XREF, top - 27.0, "keine Stromkreise geplant", w=150.0, colour=MUTED)
+    b.text(x0 + SLS[0], top - SPD_LINE, " · ".join(lane.spds), w=XREF - SLS[0] - 6, colour=MUTED)
     b.text(x0 + SLS[0], top - NOTE_LINE, " · ".join(lane.notes), w=XREF - SLS[0] - 6, colour=WARN)

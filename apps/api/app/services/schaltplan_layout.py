@@ -321,8 +321,9 @@ class StripSegment:
 # What is trimmed off a BMK before it counts as text. Spelled out (rather than
 # str.strip) because the editor's TypeScript twin trims with the same pattern:
 # JS trim() and Python strip() disagree on U+FEFF and the C0 controls, and a
-# designation made only of those must be "ohne BMK" on both sides.
-BMK_EDGE_JUNK = re.compile(r"^[\s\ufeff\x00-\x1f\x7f]+|[\s\ufeff\x00-\x1f\x7f]+$")
+# designation made only of those must be "ohne BMK" on both sides. C1 (U+0080–U+009F)
+# too: Python's \s strips U+0085, JS's does not.
+BMK_EDGE_JUNK = re.compile(r"^[\s\ufeff\x00-\x1f\x7f-\x9f]+|[\s\ufeff\x00-\x1f\x7f-\x9f]+$")
 
 
 def segment_text(device: dict[str, Any]) -> str:

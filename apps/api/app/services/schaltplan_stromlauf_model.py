@@ -25,6 +25,13 @@ layout turns it into "von Blatt i"), one that starts at the supply gets
 ``cabinet:`` (the NAR); sources follow the lanes; the meter-side devices
 (RfZ/APZ, NAR tap) hang off the supply lead on the cabinet sheet, never
 under a customer RCD; circuits on an AAR carry "AAR Feld n".
+
+**Überspannungsschutz** (the topology skips SPDs: they are no circuits) is
+read here: an SPD on a meter module's NAR/AAR is named in its lane; every
+other one is a column of the group that feeds it — its ``parent_id``, else
+the head before it in physical order, the topology's own rule — tapping the
+group's lines with a PE drop and no outgoing cable. A feeder head without a
+group of its own gets a headless group behind it on its bus for its SPDs.
 """
 
 from __future__ import annotations
@@ -33,8 +40,8 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from app.services.panel_enclosure_catalog import EnclosureCatalog
-from app.services.schaltplan_conductors import UNKNOWN_PHASE, outgoing_conductors, supply_conductors
-from app.services.schaltplan_layout import FEEDER_KINDS, build_topology
+from app.services.schaltplan_conductors import UNKNOWN_PHASE, Outgoing, outgoing_conductors, supply_conductors
+from app.services.schaltplan_layout import FEEDER_KINDS, build_topology, feeds_following, is_group_device, iter_devices
 from app.services.schaltplan_pdf_style import text_of as _text
 from app.services.schaltplan_stromlauf_cabinet import CabinetSection, cabinet_section
 from app.services.schaltplan_stromlauf_types import (  # noqa: F401  (re-exported for the layout)
@@ -65,12 +72,62 @@ def _is_series(group: Mapping[str, Any]) -> bool:
     return device is not None and str(device.get("kind") or "") in FEEDER_KINDS and not group.get("children")
 
 
+#: An SPD's column: its PE goes to the PE rail, no cable leaves it.
+SPD_OUTGOING = Outgoing(("PE",), "", "", None, None)
+SPD_LABEL = "Überspannungsschutz"
+
+
 def _circuit(device: Mapping[str, Any], terminal_labels: Mapping[str, Sequence[str]],
              locations: Mapping[str, str]) -> Circuit:
+    if device.get("kind") == "spd":
+        return Circuit(_unit(device), "", _text(device.get("label")) or SPD_LABEL, _text(device.get("room")),
+                       SPD_OUTGOING, "", locations.get(_ident(device), ""))
     labels = terminal_labels.get(_ident(device)) or ()
+    rcd = rcd_text(device) if device.get("kind") == "rcbo" else ""
     return Circuit(_unit(device), _text(device.get("circuit")), _text(device.get("label")),
                    _text(device.get("room")), outgoing_conductors(device, device.get("cable")),
-                   ", ".join(labels), locations.get(_ident(device), ""))
+                   ", ".join(labels), locations.get(_ident(device), ""), rcd)
+
+
+def _box(head: Head, circuits: Sequence[Circuit]) -> str:
+    """"warn" for a group without a head where a circuit has no RCD of its own (an RCBO has one; an SPD is none)."""
+    loads = [circuit for circuit in circuits if circuit.unit.kind != "spd"]
+    return "warn" if head.unit is None and any(not circuit.protected for circuit in loads) else "device"
+
+
+def _spd_targets(document: Mapping[str, Any], by_head: Mapping[str, Mapping[str, Any]],
+                 skip: frozenset[str]) -> list[tuple[Mapping[str, Any] | None, dict[str, Any]]]:
+    """(the group feeding it or None for the supply, SPD) in physical order: ``parent_id``, else the
+    head before it — the walk of ``build_topology``."""
+    out: list[tuple[Mapping[str, Any] | None, dict[str, Any]]] = []
+    current: Mapping[str, Any] | None = None
+    for _row, device in iter_devices(dict(document)):
+        device_id = _ident(device)
+        if device_id in by_head and (is_group_device(device) or feeds_following(device)):
+            current = by_head[device_id]
+        if device.get("kind") != "spd" or device_id in skip:
+            continue
+        explicit = str(device.get("parent_id") or "")
+        out.append((by_head[explicit] if explicit in by_head else current, device))
+    return out
+
+
+def _with_spds(loads: Sequence[_Load], targets: Sequence[tuple[Mapping[str, Any] | None, dict[str, Any]]],
+               by_head: Mapping[str, Mapping[str, Any]], order: Mapping[str, int]) -> list[_Load]:
+    """Each SPD into the load of its group; a group drawn as no load gets a headless one on its bus."""
+    out = list(loads)
+    for target, spd in targets:
+        index = next((i for i, load in enumerate(out) if (load.group is target if target is not None
+                                                           else load.group.get("device") is None)), None)
+        if index is None:
+            if target is None:
+                out.insert(0, _Load({"device": None, "children": []}, (), (spd,)))
+            else:
+                out.append(_Load(target, (*feeder_path(target, by_head), target["device"]), (spd,), True))
+            continue
+        children = sorted((*out[index].children, spd), key=lambda device: order.get(_ident(device), 0))
+        out[index] = replace(out[index], children=tuple(children))
+    return out
 
 
 def _head(group: Mapping[str, Any]) -> Head:
@@ -183,6 +240,9 @@ def build_stromlauf_model(document: Any, catalog: EnclosureCatalog | None = None
     loads = _loads(groups, by_head)
     if cabinet is not None:
         loads = _cabinet_loads(loads, cabinet)
+    order = {_ident(device): index for index, (_row, device) in enumerate(iter_devices(dict(document)))}
+    spds = _spd_targets(document, by_head, cabinet.spd_ids if cabinet is not None else frozenset())
+    loads = _with_spds(loads, spds, by_head, order)
     paths: dict[str, tuple[dict[str, Any], ...]] = {}
     for load in loads:
         paths.setdefault(source_key(load.path), load.path)
@@ -190,16 +250,15 @@ def build_stromlauf_model(document: Any, catalog: EnclosureCatalog | None = None
     if cabinet is not None:
         sources = tuple(_cabinet_source(s, paths[s.key], cabinet) for s in sources)
         sources = tuple(sorted(sources, key=lambda s: _lane_rank(s, cabinet)))
-    order = [source.key for source in sources]
+    source_order = [source.key for source in sources]
     labels = terminal_labels or {}
     locations = cabinet.locations if cabinet is not None else {}
-    ordered = sorted(loads, key=lambda load: order.index(source_key(load.path)))
-    out = tuple(
-        LoadGroup(_ident(load.group["device"]) or "supply", source_key(load.path),
-                  Head(None) if load.headless else _head(load.group),
-                  tuple(_circuit(child, labels, locations) for child in load.children),
-                  "warn" if load.group["device"] is None or load.headless else "device")
-        for load in ordered
-    )
+    ordered = sorted(loads, key=lambda load: source_order.index(source_key(load.path)))
+    out: list[LoadGroup] = []
+    for load in ordered:
+        head = Head(None) if load.headless else _head(load.group)
+        circuits = tuple(_circuit(child, labels, locations) for child in load.children)
+        out.append(LoadGroup(_ident(load.group["device"]) or "supply", source_key(load.path), head, circuits,
+                             _box(head, circuits)))
     unknown = sum(1 for g in out for c in g.circuits if UNKNOWN_PHASE in c.unit.conductors)
-    return StromlaufModel(supply, sources, out, unknown, cabinet)
+    return StromlaufModel(supply, sources, tuple(out), unknown, cabinet)

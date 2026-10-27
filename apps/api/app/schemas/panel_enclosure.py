@@ -260,8 +260,13 @@ def _number(value: Any) -> bool:
 
 
 def parse_length_m(value: Any) -> float | None:
-    """Rule 8 of §2.1: a finite number, ``round1`` half up, kept in [0,5; 20]."""
-    if not _number(value) or not math.isfinite(value) or abs(value) > 1e9:
+    """Rule 8 of §2.1: a finite number, ``round1`` half up, kept in [0,5; 20].
+
+    The magnitude check comes first: ``abs(int) > 1e9`` compares exactly,
+    while ``math.isfinite`` converts an int beyond float range and raises
+    OverflowError, which pydantic passes through as a 500.
+    """
+    if not _number(value) or abs(value) > 1e9 or not math.isfinite(value):
         return None
     rounded = math.floor(value * 10 + 0.5) / 10
     return rounded if LENGTH_MIN_M <= rounded <= LENGTH_MAX_M else None
@@ -495,7 +500,9 @@ class FittingSpec(_Spec):
 
 
 class AccessorySpec(_Spec):
-    article_no: str = Field(min_length=1, max_length=40)
+    #: Upper-cased like a code: the Materialliste merges a derived item with the
+    #: admin's line by article number, so "zz55save" must be ZZ55SAVE (R4 §6).
+    article_no: Annotated[str, BeforeValidator(normalize_code)] = Field(min_length=1, max_length=40)
     label: str = Field(min_length=1, max_length=160)
     qty: Annotated[int, _between(1, 99)]
     verified: bool = True

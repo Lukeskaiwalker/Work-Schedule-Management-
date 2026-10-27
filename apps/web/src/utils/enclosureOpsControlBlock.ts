@@ -121,14 +121,17 @@ export function resetControlBlock(doc: PanelDocument): OpResult {
 
 // ── Terminals ────────────────────────────────────────────────────────────────
 
+/** Ids t1…t6 are the BDEW slots (the Stromlaufplan reads a renamed clamp's role from them): an added clamp starts at t7. */
+const FIRST_ADDED_ID = 7;
+
 function freeTerminalId(terminals: readonly ControlTerminal[]): string {
   const taken = new Set(terminals.map((terminal) => terminal.id));
-  let n = 1;
+  let n = FIRST_ADDED_ID;
   while (taken.has(`t${n}`)) n += 1;
   return `t${n}`;
 }
 
-/** "+ Klemme": at the right end, the smallest free `t<n>`, the default colour of its position, no label yet. */
+/** "+ Klemme": at the right end, the smallest free `t<n>` from t7, the default colour of its position, no label yet. */
 export function addControlTerminal(doc: PanelDocument): OpResult {
   return editBlock(doc, (block) => {
     if (block.terminals.length >= MAX_CONTROL_TERMINALS) return CONTROL_TERMINALS_FULL;

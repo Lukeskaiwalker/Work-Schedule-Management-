@@ -64,7 +64,7 @@ type Props = {
   /** The page's "wait for the autosave" handler for the PDF link: the server draws the list from the saved board. */
   onPdfClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
   printing?: boolean;
-  /** The board has a printable §14a block strip: the strip print has something to print without terminals. */
+  /** The board has a §14a block strip: the strip print opens without terminals (a too-long label is explained in the dialog). */
   hasControlStrip?: boolean;
   /** "Aderbeschriftung drucken" (the label dialog in mode `adern`); absent without a block. */
   onPrintWires?: () => void;

@@ -41,7 +41,7 @@ def readable_document(document: Any) -> tuple[Any, PanelDocument, list[dict[str,
     """
     try:
         return document, PanelDocument.model_validate(document), []
-    except ValidationError:
+    except (ValidationError, OverflowError):  # a parser bug must not lock a board out
         cleaned = readable_blocks(document)
         if cleaned is document:
             raise
@@ -91,6 +91,6 @@ def _readable_enclosure(enclosure: Any) -> bool:
     # filled in, unlike Slice P's raw measure) is part of the check.
     try:
         PanelDocument.model_validate({"enclosure": enclosure})
-    except ValidationError:
+    except (ValidationError, OverflowError):
         return False
     return True

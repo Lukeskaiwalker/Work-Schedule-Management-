@@ -302,6 +302,17 @@ def test_archived_entries_stay_listed(client: TestClient, admin_token: str) -> N
     assert restored.json()["archived"] is False
 
 
+def test_a_discontinued_built_in_ships_archived_and_an_admin_may_restore_it(client: TestClient,
+                                                                             admin_token: str) -> None:
+    assert _entry(_get(client, admin_token), "ZH53XSRK")["archived"] is True
+    restored = client.patch(f"{CATALOG}/ZH53XSRK", headers=auth(admin_token), json={"archived": False})
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["archived"] is False
+    assert _entry(_get(client, admin_token), "ZH53XSRK")["archived"] is False
+    again = client.patch(f"{CATALOG}/ZH53XSRK", headers=auth(admin_token), json={"archived": True})
+    assert again.json()["archived"] is True
+
+
 def test_keys_are_append_only(client: TestClient, admin_token: str) -> None:
     renamed = _builtin("ZU37KS")
     renamed["zones"][0]["rails"][6]["key"] = "r8"

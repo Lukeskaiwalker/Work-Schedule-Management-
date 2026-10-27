@@ -143,7 +143,8 @@ CONDUCTOR_COLOURS: Mapping[str, ConductorStyle] = MappingProxyType({
     "PEN": ConductorStyle("#2f8f3a", overlay="#2867d1"),
     "CTRL": ConductorStyle("#7547c9", dash=(4.0, 3.0)),
     "DATA": ConductorStyle("#0f8b8d", dash=(2.0, 2.0)),
-    "L?": ConductorStyle("#b45309"),
+    # Magenta and dashed: the old orange read as L1 brown in grey-scale.
+    "L?": ConductorStyle("#c026d3", dash=(2.0, 2.0)),
 })
 OVERLAY_DASH = (3.0, 3.0)
 
@@ -327,7 +328,12 @@ def draw_conductor_key(c: pdfcanvas.Canvas, note: str = "") -> None:
         x += 15 + text_width(words, FONT, size) + 9
     c.setFillColor(MUTED)
     draw_text(c, x + 6, KEY_Y, CROSSING_KEY, font=FONT, size=size)
-    if note:
+    if note:  # the "L? = …" note with its swatch in front
+        swatch = DRAW_X1 - text_width(note, FONT_BOLD, size) - 15
+        stroke_conductor(c, "L?")
+        c.setLineWidth(1.6)
+        c.line(swatch, KEY_Y + 2.2, swatch + 12, KEY_Y + 2.2)
+        c.setDash()
         c.setFillColor(WARN)
         draw_text(c, DRAW_X1, KEY_Y, note, font=FONT_BOLD, size=size, anchor="end")
     c.restoreState()

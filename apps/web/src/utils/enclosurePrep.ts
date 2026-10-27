@@ -18,7 +18,10 @@
  * Busbar zones have a **role** (R4-11): `main` (unmetered: every NAR, the SAS
  * of a communication field, a SAS that holds an SLS) or `customer` (every
  * other SAS, after the meter). Joints and the infeed never cross roles: a
- * connector between them would bridge around the meter.
+ * connector between them would bridge around the meter. A customer zone also
+ * knows the meter(s) feeding its module (`enclosureBusbarMeters`): two
+ * customer zones of different meters are never joined, and a joint where a
+ * side's meter is unknown is planned unverified ("Zähler prüfen").
  *
  * Runs are measured in scene millimetres, vertical first then horizontal, on
  * the unrounded points; `lengthMm` is rounded once and everything downstream
@@ -27,6 +30,8 @@
 
 import { parseCableSection, parseFuseAmps } from "./cableSectionParse";
 import type { CatalogIndex } from "./enclosureCatalog";
+import { edgeTrimmed } from "./edgeTrim";
+import { differentMeters, feedIndex, meterUnknown, moduleMeters, type FeedIndex } from "./enclosureBusbarMeters";
 import {
   CONTROL_PARTS,
   DERIVE,
@@ -113,7 +118,7 @@ export const SMALL_TAP_A = 10;
 export const SABO_OFFSET_MM = 30;
 export const K96ESA5_MAX_MM2 = 25;
 export const K96ESA5_MAX_FUSE_A = 100;
-const CLAMP_MAX_MM2 = 185;
+export const CLAMP_MAX_MM2 = 185;
 const HEIGHT_DIGITS: Readonly<Record<number, string>> = { 1100: "3", 1400: "5" };
 /**
  * Hager Bestellhilfe 20DE0173, keyed "family|cabinet height|APZ top/bottom":
@@ -128,16 +133,22 @@ export const HAGER_NETWORK_TABLE: Readonly<Record<string, readonly [string, stri
   "meter_3p|1400|top": ["ZZ45WAN100", "ZZ45WAN150", "ZZ45WAN150", "ZZ45WAN200"],
 };
 const LEAD_MM = new Map(NETWORK_LEADS.map(([length, code]) => [code, length] as const));
-type Clamp = readonly [number, string, string];
+/**
+ * (min mm², max mm², article, label) on a 12×5 mm busbar, first fit wins
+ * (hager.com, 2026-10-26: K96H takes 25–95 mm² on 12×5 mm; K96C 2,5–35 mm²
+ * Cu is only reached below 25 mm²).
+ */
+type Clamp = readonly [number, number, string, string];
 const CLAMPS_CU: readonly Clamp[] = [
-  [70, "K96F", "Sammelschienenklemme 25–70 mm² für 12×5 mm"],
-  [95, "K96H", "Sammelschienenklemme 16–95 mm² für 12×5 mm"],
-  [150, "K96K", "Sammelschienenklemme 50–150 mm² für 12×5 mm"],
-  [185, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"],
+  [25, 70, "K96F", "Sammelschienenklemme 25–70 mm² für 12×5 mm"],
+  [25, 95, "K96H", "Sammelschienenklemme 25–95 mm² für 12×5 mm"],
+  [50, 150, "K96K", "Sammelschienenklemme 50–150 mm² für 12×5 mm"],
+  [50, 185, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"],
+  [2.5, 35, "K96C", "Sammelschienenklemme 2,5–35 mm² für 12×5 mm"],
 ];
 const CLAMPS_AL: readonly Clamp[] = [
-  [50, "K96N", "Sammelschienenklemme 10–50 mm², Al/Cu"],
-  [185, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"],
+  [10, 50, "K96N", "Sammelschienenklemme 10–50 mm², Al/Cu"],
+  [50, 185, "KS18D", "Sammelschienenklemme 50–185 mm², Al/Cu, für 12×5 mm"],
 ];
 type SupplyVariant = "SA" | "LS" | "SI";
 const SUPPLY_DEVICE: Readonly<Record<SupplyVariant, string>> = { SA: "SABO 1,6 A", LS: "LS 6 A", SI: "Sicherungsbox 1 A" };
@@ -171,7 +182,7 @@ export function prepOverrides(doc: unknown): PrepOverrides {
   return (enclosure ? parsePrep(enclosure.prep) : null) ?? { ...DEFAULT_PREP };
 }
 
-const trimmed = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+const trimmed = edgeTrimmed;
 
 /** The last number in a rating ("B16" → 16, "C 32A" → 32, "0,5 A" → 0.5); null when there is none. */
 export function ratingValue(rating: unknown): number | null {
@@ -240,6 +251,8 @@ export function firstApz(doc: unknown, index: CatalogIndex): PlacedZone | null {
 
 export interface BusbarZone extends PlacedZone {
   role: BusbarRole;
+  /** Customer zones: the meter modules feeding the module, sorted (empty = unknown); main zones: empty. */
+  meters: readonly string[];
 }
 
 /** The row on a module's rail, when that link is the live one (`linked_rows`). */
@@ -257,6 +270,7 @@ export function busbarZones(doc: unknown, index: CatalogIndex): BusbarZone[] {
   const linked = linkedRails(doc, index);
   const rows = rowMap(doc);
   const out: BusbarZone[] = [];
+  let feeds: FeedIndex | null = null;
   for (const type of ["NAR", "SAS"] as const) {
     for (const placed of placedZones(doc, index, type)) {
       const busbar = placed.zone.rails.find((rail) => rail.mount === "busbar");
@@ -264,7 +278,12 @@ export function busbarZones(doc: unknown, index: CatalogIndex): BusbarZone[] {
       const row = liveRow(linked, rows, placed.module, String(busbar.key));
       const sls = rowDevices(row ?? undefined).some((device) => kindOf(device) === "sls");
       const main = type === "NAR" || placed.spec.family === "communication" || sls;
-      out.push({ ...placed, role: main ? ROLE_MAIN : ROLE_CUSTOMER });
+      if (main) {
+        out.push({ ...placed, role: ROLE_MAIN, meters: [] });
+        continue;
+      }
+      feeds = feeds ?? feedIndex(doc, index);
+      out.push({ ...placed, role: ROLE_CUSTOMER, meters: moduleMeters(placed.module, feeds) });
     }
   }
   return out.sort((a, b) => a.field - b.field || a.start - b.start || a.index - b.index);
@@ -272,9 +291,25 @@ export function busbarZones(doc: unknown, index: CatalogIndex): BusbarZone[] {
 
 export const spansOverlap = (a: PlacedZone, b: PlacedZone): boolean => a.start < b.end && b.start < a.end;
 
-/** Neighbouring fields, different modules, same role, spans overlapping. */
+/** Two customer zones fed through different meters. */
+export const otherMeters = (a: BusbarZone, b: BusbarZone): boolean =>
+  a.role === ROLE_CUSTOMER && b.role === ROLE_CUSTOMER && differentMeters(a.meters, b.meters);
+
+/** Two customer zones where a side's meter is unknown. */
+const uncheckedMeter = (a: BusbarZone, b: BusbarZone): boolean =>
+  a.role === ROLE_CUSTOMER && b.role === ROLE_CUSTOMER && meterUnknown(a.meters, b.meters);
+
+/** Neighbouring fields, different modules, same role, spans overlapping — and, for customer zones, not of different meters. */
 export function joined(a: BusbarZone, b: BusbarZone): boolean {
-  return Math.abs(a.field - b.field) === 1 && a.moduleId !== b.moduleId && a.role === b.role && spansOverlap(a, b);
+  return Math.abs(a.field - b.field) === 1 && a.moduleId !== b.moduleId && a.role === b.role && spansOverlap(a, b)
+    && !otherMeters(a, b);
+}
+
+/** [left, right] fields of every joined customer pair with a meter unknown, once each, by left field. */
+export function uncheckedPairs(zones: readonly BusbarZone[]): [number, number][] {
+  const lefts = new Set<number>();
+  for (const a of zones) for (const b of zones) if (b.field === a.field + 1 && joined(a, b) && uncheckedMeter(a, b)) lefts.add(a.field);
+  return [...lefts].sort((x, y) => x - y).map((left) => [left, left + 1]);
 }
 
 export interface JointPair {
@@ -418,6 +453,8 @@ export interface PrepFacts {
   infeed?: PrepInfeed;
   /** The parsed cross-section above 185 mm². */
   infeedSize?: number | null;
+  /** A known cross-section no clamp holds (Cu below 2,5 mm², Al below 10 mm²). */
+  infeedSmall?: { mm2: number; aluminium: boolean };
   /** 0-based field of the NAR whose PEN is split. */
   penField?: number;
 }
@@ -497,11 +534,12 @@ function supplyPart(board: Board): Part {
   return part([kit], runs, { supplyExisting: tap });
 }
 
+/** The first clamp whose range holds the conductor; the table's first for an unknown section. */
 function clampFor(mm2: number | null, aluminium: boolean): readonly [string, string] | null {
   const table = aluminium ? CLAMPS_AL : CLAMPS_CU;
-  if (mm2 === null) return [table[0][1], table[0][2]];
-  const hit = table.find(([limit]) => mm2 <= limit);
-  return hit ? [hit[1], hit[2]] : null;
+  if (mm2 === null) return [table[0][2], table[0][3]];
+  const hit = table.find(([low, high]) => low <= mm2 && mm2 <= high);
+  return hit ? [hit[2], hit[3]] : null;
 }
 
 const sectionText = (mm2: number | null, aluminium: boolean): string =>
@@ -542,8 +580,10 @@ function infeedPart(board: Board): Part {
     const qty = (cores === 4 || cores === 5 ? cores : 5) * runs.length;
     items.push(item(`accessory:${article}`, article, clamp[1], qty, clampReason(mm2, aluminium) + extra, { ...options, verified: false }));
   }
+  const small = !adapter && !clamp && mm2 !== null && mm2 <= CLAMP_MAX_MM2;
   const facts: PrepFacts = {
     infeedSize: mm2 !== null && mm2 > CLAMP_MAX_MM2 ? mm2 : null,
+    ...(small ? { infeedSmall: { mm2, aluminium } } : {}),
     infeed: { mm2, cores, aluminium, article, assumed: adapter && picked === "auto" && mm2 === null },
   };
   if (board.supply.system === "TN-C-S" && cores === 4) {
@@ -560,11 +600,13 @@ function jointsPart(board: Board): Part {
   const pairs = jointPairs(board.zones);
   if (pairs.length === 0) return part();
   const spans = pairs.map((pair) => `Feld ${fieldNo(pair.left)}–${fieldNo(pair.right)}`).join(", ");
-  const reason = pairs.length === 1 ? `1 Feldübergang: ${spans}` : `${pairs.length} Feldübergänge: ${spans}`;
+  const unchecked = uncheckedPairs(board.zones);
+  const reason = (pairs.length === 1 ? `1 Feldübergang: ${spans}` : `${pairs.length} Feldübergänge: ${spans}`)
+    + unchecked.map(([a, b]) => ` · Feld ${fieldNo(a)}–${fieldNo(b)}: Zähler prüfen`).join("");
   const picked = board.overrides.joints;
   const label = "Sammelschienenverbinder Feld/Feld, 5-polig, 12×5 mm, 250 A";
   return part([item("accessory:ZZ55SAVE", "ZZ55SAVE", label, pairs.length, reason, {
-    group: GROUP_BUSBAR, verified: true, override: picked, suppressed: picked === "off",
+    group: GROUP_BUSBAR, verified: unchecked.length === 0, override: picked, suppressed: picked === "off",
   })]);
 }
 

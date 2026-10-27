@@ -50,7 +50,7 @@ from app.schemas.panel_enclosure import (
     normalize_code,
 )
 from app.services.audit import log_admin_action
-from app.services.panel_enclosure_catalog_data import BUILTIN_ENCLOSURES, BUILTIN_MODULES
+from app.services.panel_enclosure_catalog_data import BUILTIN_ENCLOSURES, BUILTIN_MODULES, DISCONTINUED_BUILTINS
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,8 @@ def builtin_catalog() -> EnclosureCatalog:
     for entry_type, specs in (("enclosure", BUILTIN_ENCLOSURES), ("module", BUILTIN_MODULES)):
         for raw in specs:
             spec = SPEC_MODELS[entry_type].model_validate(raw).model_dump()
-            entries[spec["code"]] = CatalogEntry(spec["code"], entry_type, spec, "builtin", False)  # type: ignore[arg-type]
+            archived = spec["code"] in DISCONTINUED_BUILTINS
+            entries[spec["code"]] = CatalogEntry(spec["code"], entry_type, spec, "builtin", archived)  # type: ignore[arg-type]
     return EnclosureCatalog(MappingProxyType(entries))
 
 
@@ -428,10 +429,10 @@ def set_archived(db: Session, *, code: str, archived: bool, user: User) -> Catal
     if current is None:
         raise CatalogError(status.HTTP_404_NOT_FOUND, NOT_FOUND)
     row = _row(db, code)
-    if row is None and not archived:
-        return current  # a built-in nobody archived: nothing to restore
+    if row is None and archived == current.archived:
+        return current  # a built-in already in that state (a discontinued one ships archived)
     if row is None:
-        db.add(PanelCatalogEntry(code=code, entry_type=current.entry_type, spec=None, is_archived=True,
+        db.add(PanelCatalogEntry(code=code, entry_type=current.entry_type, spec=None, is_archived=archived,
                                  created_by=user.id, updated_by=user.id))
     else:
         row.is_archived = archived
